@@ -185,3 +185,53 @@ class TestCanonicalizeTitle:
         from worship_catalog.normalize import canonicalize_title
 
         assert canonicalize_title("We  Will   Glorify") == "we will glorify"
+
+
+@pytest.mark.unit
+class TestHymnNumberFiltering:
+    """Tests for filtering out hymn numbers and reference markers."""
+
+    def test_select_best_title_skips_hymn_numbers(self):
+        """Hymn numbers like '#480' should be filtered out."""
+        from worship_catalog.normalize import select_best_title
+
+        # When both a hymn number and a real title are present, prefer the title
+        candidates = [
+            "1 – Blessed Assurance",
+            "#480",
+        ]
+        assert select_best_title(candidates) == "Blessed Assurance"
+
+    def test_select_best_title_skips_bare_numbers(self):
+        """Bare hymn numbers like '480' should be filtered out."""
+        from worship_catalog.normalize import select_best_title
+
+        candidates = [
+            "c – My Great Redeemer",
+            "480",
+        ]
+        assert select_best_title(candidates) == "My Great Redeemer"
+
+    def test_select_best_title_prefers_real_title_over_number(self):
+        """Real titles should always win over hymn reference numbers."""
+        from worship_catalog.normalize import select_best_title
+
+        candidates = [
+            "#480",  # Just a number
+            "Blessed Assurance",  # Real title
+        ]
+        assert select_best_title(candidates) == "Blessed Assurance"
+
+    def test_blessed_assurance_extraction(self):
+        """Test extraction from Blessed Assurance slides."""
+        from worship_catalog.normalize import select_best_title
+
+        # Typical candidates on a Blessed Assurance slide
+        candidates = [
+            "1 – Blessed Assurance",
+            "PaperlessHymnal.com",
+            "#480",
+        ]
+        best = select_best_title(candidates)
+        assert best == "Blessed Assurance"
+

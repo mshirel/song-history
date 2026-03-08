@@ -82,6 +82,13 @@ Constraints:
 
 - UNIQUE(service\_date, service\_name, source\_hash)
 
+**Idempotency guarantee:**
+- Re-importing the same PPTX file (identified by source_hash) will replace the previous import
+- The import command automatically detects when a service with the same (date, name, hash) already exists
+- Old service data (service_songs and copy_events) are deleted before inserting new data
+- Result: importing the same file 1x, 2x, or 3x produces identical database state (no duplicates)
+- Songs and song_editions tables are never automatically deleted (they may be used by other services)
+
 ### Table: songs
 
 Represents the **canonical song identity**.
@@ -292,6 +299,41 @@ Candidate selection rule:
 
 - If the slide has both a prefixed line (`1-1 Title`) AND a plain line (`Title`), always choose the plain line.
 
+### A.1) Non-song content filtering
+
+Filter out slides that are NOT songs (announcements, instructions, giving/offering/communion content):
+
+**Skip any line containing:**
+- `copyright`, `all rights`, `permission` — footer/legal markers
+- `paperlesshymnal`, `taylor publications`, `presentation ©` — publisher/source markers
+- `admin` — administrative content
+- `give online`, `text give`, `giving`, `offering`, `communion`, `tithe`, `donation`, `giving online` — service logistics/giving phases (not songs)
+
+**Skip lines that are:**
+- Single character or pure punctuation (`,`, `.`, `;`, `:`, `-`, `'`)
+- Longer than 120 characters (likely lyrics or service instructions)
+
+Example non-songs:
+- `"To Give Online, text GIVE to (931) 208-4654"` → Skip (contains `give online`)
+- `"Copyright © 2024"` → Skip
+- `"Verse 1: O come all ye faithful, joyful and triumphant..."` → Skip (too long, likely lyrics)
+
+### A.2) Hymn number filtering
+
+Filter out hymn reference numbers that appear on slides but are NOT song titles:
+
+**Skip any line matching:**
+- `#\d+` (e.g., "#480", "#123") — hymnal reference numbers (must be exact, with optional `#`)
+- `^\d+$` (e.g., "480", "123") — bare numbers that are clearly hymn references, not titles
+
+**Rationale:** Hymnal publishers include reference numbers (e.g., "#480" in Paperless Hymnal) that label the song but are NOT the song title. When both a hymn number and a real title appear on a slide, the title candidate selection must prefer the real title.
+
+**Example correction:**
+- Slide has candidates: `["1 – Blessed Assurance", "#480"]`
+- `#480` is filtered (it's a hymn number)
+- `"1 – Blessed Assurance"` is stripped to `"Blessed Assurance"` (the actual title)
+- Result: Song identified as "Blessed Assurance" ✓ (not "#480" ✗)
+
 ### B) Publisher detection
 
 | Marker text found                                                       | Publisher             |
@@ -336,9 +378,16 @@ Iterate slides in order:
 - When extracted canonical title changes from previous title → start a new song occurrence
 - Track `first_slide_index`, `last_slide_index`, and `occurrences`
 
-Handle “picture-only” slides (score images) that precede the first text slide:
+**Gap detection (text-less streak closing):**
+- If 5 or more consecutive slides have zero text content (image-only slides), close the current song group
+- Rationale: Long sequences of text-less slides typically indicate transition from song section to sermon/presentation section
+- Example: After "Blessed Assurance" text ends (slide 57), sermon images follow (slides 58-141 with no text)
+- When 5+ image-only slides encountered, the song group ends and sermon slides are skipped
 
-- If a slide has no usable title but matches publisher markers/picture heuristic, and the next slide yields a title, assign it to that title.
+Handle "picture-only" slides (score images) that precede the first text slide:
+
+- If a slide has no usable title but has text or is a short sequence (< 5 slides), include it with the current song
+- If it's part of a long text-less streak (≥ 5 slides), skip it as non-song content
 
 ### Step 5: De-dup and aliasing
 

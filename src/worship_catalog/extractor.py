@@ -115,6 +115,9 @@ def _group_song_slides(slides: list[Slide]) -> list[tuple[str, list[Slide]]]:
 
     Returns list of (canonical_title, [slides]) tuples in order.
     Skips groups with empty canonical titles.
+
+    Handles gap detection: if we encounter many consecutive slides with zero text
+    (image-only slides), we assume the song has ended and close the group.
     """
     if not slides:
         return []
@@ -122,16 +125,38 @@ def _group_song_slides(slides: list[Slide]) -> list[tuple[str, list[Slide]]]:
     groups = []
     current_canonical = None
     current_group = []
+    no_text_streak = 0  # Track consecutive slides with no text
 
     for slide in slides:
         # Extract title candidates from slide
         title_candidates = _extract_title_candidates(slide)
 
         if not title_candidates:
-            # No title found - add to current group if exists
-            if current_group:
+            # Check if this slide has any text at all
+            has_text = bool(slide.text.text_lines)
+
+            if not has_text:
+                # Increment no-text streak
+                no_text_streak += 1
+
+                # If we've seen 5+ slides with no text, close current group
+                # (likely transitioned from song to sermon/presentation)
+                if no_text_streak >= 5 and current_group and current_canonical:
+                    groups.append((current_canonical, current_group))
+                    current_canonical = None
+                    current_group = []
+                    continue
+            else:
+                # Reset streak if this slide has text (even if no title)
+                no_text_streak = 0
+
+            # Add to current group if exists (but only if not breaking from long text gap)
+            if current_group and no_text_streak < 5:
                 current_group.append(slide)
             continue
+
+        # Reset streak when we find a title
+        no_text_streak = 0
 
         # Get best candidate and canonicalize
         best_title = select_best_title(title_candidates)
@@ -142,6 +167,22 @@ def _group_song_slides(slides: list[Slide]) -> list[tuple[str, list[Slide]]]:
 
         # Skip empty canonical titles
         if not canonical or not canonical.strip():
+            continue
+
+        # Skip giving/offering/communion content at canonical level
+        canonical_lower = canonical.lower()
+        if any(
+            marker in canonical_lower
+            for marker in [
+                "give online",
+                "text give",
+                "giving",
+                "offering",
+                "communion",
+                "tithe",
+                "donation",
+            ]
+        ):
             continue
 
         stripped = strip_title_prefix(best_title)
@@ -187,7 +228,7 @@ def _extract_title_candidates(slide: Slide) -> list[str]:
         if len(line) <= 1 or all(c in ".,;:-'" for c in line):
             continue
 
-        # Skip footer/copyright lines
+        # Skip footer/copyright lines and non-song content
         lower = line.lower()
         if any(
             marker in lower
@@ -199,6 +240,15 @@ def _extract_title_candidates(slide: Slide) -> list[str]:
                 "taylor publications",
                 "presentation ©",
                 "admin",
+                # Skip giving/offering/communion content
+                "give online",
+                "text give",
+                "giving",
+                "offering",
+                "communion",
+                "tithe",
+                "donation",
+                "giving online",
             ]
         ):
             continue

@@ -141,6 +141,10 @@ def _is_invalid_line(line: str) -> bool:
     ]):
         return True
 
+    # Hymn numbers (e.g., "#480", "480") - hymnal reference numbers, not song titles
+    if re.match(r'^\s*#?\s*\d+\s*$', line):
+        return True
+
     # Very long lines are likely lyrics, not titles
     if len(line) > 120:
         return True

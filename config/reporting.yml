@@ -1,0 +1,18 @@
+# CCLI Reproduction Count Defaults
+# These values define how many times each song is counted for copyright reporting
+
+reproduction_counts:
+  # Lyrics projected on screen during service
+  projection: 1
+  # Printed copies distributed to congregation
+  print: 0
+  # Livestreamed or recorded for later viewing
+  recording: 1
+  # Translated to another language for the service
+  translation: 0
+
+# Public domain songs (do not require CCLI reporting)
+public_domain_songs: []
+
+# Song number overrides (CCLI number mapping)
+song_number_overrides: {}
