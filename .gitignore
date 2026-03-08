@@ -1,6 +1,8 @@
 # MATT
 ccli_report.csv
 stats_report.md
+data/*.db
+data/*.db-journal
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
