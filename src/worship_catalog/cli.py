@@ -421,6 +421,14 @@ def stats(start_date: str, end_date: str, out: str, db: str, all_songs: bool) ->
         services = database.query_services(start_date, end_date)
         events = database.query_copy_events(start_date, end_date)
 
+        # Use actual DB min/max dates for the report header instead of wildcards
+        if services:
+            report_start = services[0]["service_date"]
+            report_end = services[-1]["service_date"]
+        else:
+            report_start = start_date
+            report_end = end_date
+
         # Build statistics: count distinct services per song (not copy events,
         # which are doubled by projection + recording). Also collect credits.
         song_services: dict[str, set] = {}
@@ -450,7 +458,7 @@ def stats(start_date: str, end_date: str, out: str, db: str, all_songs: bool) ->
         output_path = Path(out)
         with open(output_path, "w") as f:
             f.write(f"# Song Statistics Report\n\n")
-            f.write(f"**Period:** {start_date} to {end_date}\n\n")
+            f.write(f"**Period:** {report_start} to {report_end}\n\n")
 
             f.write(f"## Summary\n\n")
             f.write(f"- Services: {len(services)}\n")
