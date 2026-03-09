@@ -105,7 +105,7 @@ def validate(pptx: str, format: str) -> None:
         sys.exit(1)
 
 
-@main.command()
+@main.command(name="import")
 @click.argument("pptx_or_folder", type=click.Path(exists=True))
 @click.option(
     "--db",
@@ -421,16 +421,30 @@ def stats(start_date: str, end_date: str, out: str, db: str, all_songs: bool) ->
         services = database.query_services(start_date, end_date)
         events = database.query_copy_events(start_date, end_date)
 
-        # Build statistics
-        song_counts = {}
+        # Build statistics: count distinct services per song (not copy events,
+        # which are doubled by projection + recording). Also collect credits.
+        song_services: dict[str, set] = {}
+        song_credits: dict[str, str] = {}
         for event in events:
             title = event["display_title"]
-            if title not in song_counts:
-                song_counts[title] = 0
-            song_counts[title] += 1
+            if title not in song_services:
+                song_services[title] = set()
+            song_services[title].add(event["service_id"])
+            # Collect credits (first non-null value seen wins)
+            if title not in song_credits:
+                parts = []
+                if event.get("words_by"):
+                    parts.append(f"Words: {event['words_by']}")
+                if event.get("music_by") and event.get("music_by") != event.get("words_by"):
+                    parts.append(f"Music: {event['music_by']}")
+                if event.get("arranger"):
+                    parts.append(f"Arr: {event['arranger']}")
+                if parts:
+                    song_credits[title] = ", ".join(parts)
+        song_counts = {title: len(s) for title, s in song_services.items()}
 
-        # Sort by frequency
-        sorted_songs = sorted(song_counts.items(), key=lambda x: x[1], reverse=True)
+        # Sort by count descending, then alphabetically by title
+        sorted_songs = sorted(song_counts.items(), key=lambda x: (-x[1], x[0].lower()))
 
         # Write markdown
         output_path = Path(out)
@@ -441,25 +455,28 @@ def stats(start_date: str, end_date: str, out: str, db: str, all_songs: bool) ->
             f.write(f"## Summary\n\n")
             f.write(f"- Services: {len(services)}\n")
             f.write(f"- Unique Songs: {len(sorted_songs)}\n")
-            f.write(f"- Total Song Performances: {sum(song_counts.values())}\n\n")
+            f.write(f"- Total Song Performances: {sum(song_counts.values())}\n")
+            f.write(f"- Total Copy Events: {len(events)}\n\n")
 
             heading = "All Songs" if all_songs else "Most Frequent Songs"
             songs_to_show = sorted_songs if all_songs else sorted_songs[:20]
             f.write(f"## {heading}\n\n")
-            f.write(f"| Song | Count |\n")
-            f.write(f"|------|-------|\n")
+            f.write(f"| Song | Credits | Count |\n")
+            f.write(f"|------|---------|-------|\n")
             for song, count in songs_to_show:
-                f.write(f"| {song} | {count} |\n")
+                credits = song_credits.get(song, "")
+                f.write(f"| {song} | {credits} | {count} |\n")
 
             f.write(f"\n## Services\n\n")
-            f.write(f"| Date | Service | Songs |\n")
-            f.write(f"|------|---------|-------|\n")
+            f.write(f"| Date | Service | Song Leader | Songs |\n")
+            f.write(f"|------|---------|-------------|-------|\n")
             for service in services:
                 service_songs = [e for e in events if e["service_id"] == service["id"]]
                 unique_songs = len(set(e["song_id"] for e in service_songs))
+                leader = service.get("song_leader") or ""
                 f.write(
                     f"| {service['service_date']} | "
-                    f"{service['service_name']} | {unique_songs} |\n"
+                    f"{service['service_name']} | {leader} | {unique_songs} |\n"
                 )
 
         database.close()

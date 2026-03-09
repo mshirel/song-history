@@ -368,10 +368,12 @@ class Database:
         cursor = self.conn.cursor()
         cursor.execute(
             """
-            SELECT ce.*, s.canonical_title, s.display_title, sv.service_date, sv.service_name
+            SELECT ce.*, s.canonical_title, s.display_title, sv.service_date, sv.service_name,
+                   se.words_by, se.music_by, se.arranger
             FROM copy_events ce
             JOIN services sv ON ce.service_id = sv.id
             JOIN songs s ON ce.song_id = s.id
+            LEFT JOIN song_editions se ON ce.song_edition_id = se.id
             WHERE sv.service_date >= ? AND sv.service_date <= ? AND ce.reportable = 1
             ORDER BY sv.service_date, s.canonical_title
             """,

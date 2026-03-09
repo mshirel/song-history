@@ -104,9 +104,14 @@ def select_best_title(candidates: list[str]) -> Optional[str]:
     if not valid:
         return None
 
-    # Normalize all candidates
+    # Prefer candidates with a recognizable section prefix (e.g., "c – Title", "1 - Title").
+    # On slides that mix lyric lines with a prefixed title, the lyric lines are often shorter
+    # and would win a min-by-length comparison. Using only the prefixed lines avoids this.
+    prefixed = [c for c in valid if strip_title_prefix(c) != c.strip()]
+    candidates_to_use = prefixed if prefixed else valid
+
     normalized = set()
-    for candidate in valid:
+    for candidate in candidates_to_use:
         norm = strip_title_prefix(candidate)
         if norm:
             normalized.add(norm)

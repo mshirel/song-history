@@ -1,6 +1,7 @@
 # MATT
 ccli_report.csv
 stats_report.md
+data/*.pptx
 data/*.db
 data/*.db-journal
 

@@ -192,13 +192,18 @@ def _group_song_slides(slides: list[Slide]) -> list[tuple[str, list[Slide]]]:
 
         # Check if this starts a new song or continues current
         if canonical != current_canonical:
-            # New song - save current group if exists and has valid title
-            if current_group and current_canonical:
-                groups.append((current_canonical, current_group))
-
-            # Start new group
-            current_canonical = canonical
-            current_group = [slide]
+            if _is_song_title_slide(slide):
+                # New song - save current group if exists and has valid title
+                if current_group and current_canonical:
+                    groups.append((current_canonical, current_group))
+                # Start new group
+                current_canonical = canonical
+                current_group = [slide]
+            else:
+                # Slide has text but no publisher/section-prefix marker - not a song title slide.
+                # Add to current group (if any) to avoid creating spurious song entries.
+                if current_group:
+                    current_group.append(slide)
         else:
             # Continue current song
             current_group.append(slide)
@@ -208,6 +213,29 @@ def _group_song_slides(slides: list[Slide]) -> list[tuple[str, list[Slide]]]:
         groups.append((current_canonical, current_group))
 
     return groups
+
+
+def _is_song_title_slide(slide: Slide) -> bool:
+    """
+    Return True if this slide is allowed to start a new song group.
+
+    A slide qualifies if it has:
+    - A publisher marker (PaperlessHymnal.com, Taylor Publications), OR
+    - A line with a recognizable section prefix (c–, 1–, Verse, Chorus, etc.)
+
+    This prevents devotional/sermon prose slides from being mistaken for song starts.
+    """
+    combined = " ".join(slide.text.text_lines).lower()
+    if any(
+        marker in combined
+        for marker in ["paperlesshymnal", "taylor publications", "presentation ©"]
+    ):
+        return True
+    for line in slide.text.text_lines:
+        stripped = strip_title_prefix(line)
+        if stripped != line.strip() and stripped:
+            return True
+    return False
 
 
 def _extract_title_candidates(slide: Slide) -> list[str]:
