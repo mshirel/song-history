@@ -181,6 +181,9 @@ def _group_song_slides(slides: list[Slide]) -> list[tuple[str, list[Slide]]]:
                 "communion",
                 "tithe",
                 "donation",
+                "lesson",
+                "scripture reading",
+                "announcements",
             ]
         ):
             continue
@@ -249,6 +252,9 @@ def _extract_title_candidates(slide: Slide) -> list[str]:
                 "tithe",
                 "donation",
                 "giving online",
+                "lesson",
+                "scripture reading",
+                "announcements",
             ]
         ):
             continue

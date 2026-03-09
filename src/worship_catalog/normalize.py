@@ -45,10 +45,10 @@ def strip_title_prefix(line: str) -> str:
                 stripped = match.group(1).strip()
                 return _normalize_whitespace(stripped)
 
-    # 3. Strip named sections (e.g., "Bridge1 Title", "Verse Title")
+    # 3. Strip named sections (e.g., "Bridge1 Title", "Verse Title", "T - Highest Place")
     # Only matches if FOLLOWED by whitespace + title (not if it's part of compound number)
     match = re.match(
-        r'^\s*(Verse|V|Chorus|C|Refrain|R|Bridge|B|Tag|Intro|Outro|Coda|CODA|DS)\s*\d*\s*[-–:]?\s+(.+)$',
+        r'^\s*(Verse|V|Chorus|C|Refrain|R|Bridge|B|Tag|T|Intro|Outro|Coda|CODA|DS)\s*\d*\s*[-–:]?\s+(.+)$',
         stripped,
         re.IGNORECASE
     )
@@ -143,6 +143,10 @@ def _is_invalid_line(line: str) -> bool:
 
     # Hymn numbers (e.g., "#480", "480") - hymnal reference numbers, not song titles
     if re.match(r'^\s*#?\s*\d+\s*$', line):
+        return True
+
+    # Phone numbers (e.g., "(931) 208-4654") - giving/contact info, not songs
+    if re.match(r'^\s*\(?\d{3}\)?\s*\d{3}[-\s]?\d{4}\s*$', line):
         return True
 
     # Very long lines are likely lyrics, not titles

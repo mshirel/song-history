@@ -239,7 +239,8 @@ def import_cmd(
                     )
 
                     # Create copy events (default: projection and recording)
-                    database.insert_copy_event(
+                    # Use insert_or_get to handle songs that appear multiple times in same service
+                    database.insert_or_get_copy_event(
                         service_id=service_id,
                         song_id=song_id,
                         song_edition_id=edition_id,
@@ -248,7 +249,7 @@ def import_cmd(
                         reportable=True,
                     )
 
-                    database.insert_copy_event(
+                    database.insert_or_get_copy_event(
                         service_id=service_id,
                         song_id=song_id,
                         song_edition_id=edition_id,
@@ -288,15 +289,15 @@ def report():
     "--from",
     "start_date",
     type=str,
-    required=True,
-    help="Start date (YYYY-MM-DD)",
+    default=None,
+    help="Start date (YYYY-MM-DD), defaults to showing all data",
 )
 @click.option(
     "--to",
     "end_date",
     type=str,
-    required=True,
-    help="End date (YYYY-MM-DD)",
+    default=None,
+    help="End date (YYYY-MM-DD), defaults to showing all data",
 )
 @click.option(
     "--out",
@@ -314,11 +315,18 @@ def ccli(start_date: str, end_date: str, out: str, db: str) -> None:
     """Generate CCLI report for date range.
 
     Output CSV with song performances and reproduction types.
+    If no date range specified, includes all data in database.
     """
     try:
         db_path = Path(db)
         database = Database(db_path)
         database.connect()
+
+        # Use broad date range if not specified
+        if not start_date:
+            start_date = "0000-01-01"
+        if not end_date:
+            end_date = "9999-12-31"
 
         # Query copy events
         events = database.query_copy_events(start_date, end_date)
@@ -365,15 +373,15 @@ def ccli(start_date: str, end_date: str, out: str, db: str) -> None:
     "--from",
     "start_date",
     type=str,
-    required=True,
-    help="Start date (YYYY-MM-DD)",
+    default=None,
+    help="Start date (YYYY-MM-DD), defaults to showing all data",
 )
 @click.option(
     "--to",
     "end_date",
     type=str,
-    required=True,
-    help="End date (YYYY-MM-DD)",
+    default=None,
+    help="End date (YYYY-MM-DD), defaults to showing all data",
 )
 @click.option(
     "--out",
@@ -387,15 +395,27 @@ def ccli(start_date: str, end_date: str, out: str, db: str) -> None:
     default="data/worship.db",
     help="Path to SQLite database",
 )
-def stats(start_date: str, end_date: str, out: str, db: str) -> None:
+@click.option(
+    "--all-songs",
+    is_flag=True,
+    help="Export all songs instead of only the top 20 most frequent",
+)
+def stats(start_date: str, end_date: str, out: str, db: str, all_songs: bool) -> None:
     """Generate statistics report for date range.
 
     Output markdown with frequency tables and trends.
+    If no date range specified, includes all data in database.
     """
     try:
         db_path = Path(db)
         database = Database(db_path)
         database.connect()
+
+        # Use broad date range if not specified
+        if not start_date:
+            start_date = "0000-01-01"
+        if not end_date:
+            end_date = "9999-12-31"
 
         # Query services and events
         services = database.query_services(start_date, end_date)
@@ -423,10 +443,12 @@ def stats(start_date: str, end_date: str, out: str, db: str) -> None:
             f.write(f"- Unique Songs: {len(sorted_songs)}\n")
             f.write(f"- Total Song Performances: {sum(song_counts.values())}\n\n")
 
-            f.write(f"## Most Frequent Songs\n\n")
+            heading = "All Songs" if all_songs else "Most Frequent Songs"
+            songs_to_show = sorted_songs if all_songs else sorted_songs[:20]
+            f.write(f"## {heading}\n\n")
             f.write(f"| Song | Count |\n")
             f.write(f"|------|-------|\n")
-            for song, count in sorted_songs[:20]:
+            for song, count in songs_to_show:
                 f.write(f"| {song} | {count} |\n")
 
             f.write(f"\n## Services\n\n")

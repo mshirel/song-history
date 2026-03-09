@@ -172,6 +172,69 @@ class TestImportCommand:
             )
             assert result.exit_code != 0
 
+    def test_import_handles_duplicate_songs_in_service(self, runner):
+        """Import file with same song appearing multiple times in service.
+
+        When a song is sung more than once in the same service, it should:
+        1. Import successfully without constraint violations
+        2. Create only one copy_event per reproduction type (not duplicates)
+        """
+        pptx_file = Path(__file__).parent.parent / "data" / "AM Worship 2026.02.01.pptx"
+        if not pptx_file.exists():
+            pytest.skip(f"Test PPTX not found: {pptx_file}")
+
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "test.db"
+
+            # Import file with duplicate songs
+            result = runner.invoke(
+                main,
+                ["import", str(pptx_file), "--db", str(db_path), "--non-interactive"],
+            )
+            assert result.exit_code == 0
+            assert "Imported" in result.output
+
+            # Verify database state
+            db = Database(db_path)
+            db.connect()
+
+            cursor = db.conn.cursor()
+
+            # Check that services were created
+            cursor.execute("SELECT COUNT(*) FROM services")
+            service_count = cursor.fetchone()[0]
+            assert service_count > 0
+
+            # Check copy_events - should have one per song per reproduction type
+            cursor.execute(
+                """
+                SELECT DISTINCT service_id, song_id, song_edition_id, reproduction_type
+                FROM copy_events
+                """
+            )
+            copy_events = cursor.fetchall()
+
+            # Each unique (service_id, song_id, song_edition_id, reproduction_type)
+            # tuple should appear only once due to UNIQUE constraint
+            cursor.execute("SELECT COUNT(*) FROM copy_events")
+            total_count = cursor.fetchone()[0]
+
+            cursor.execute(
+                """
+                SELECT COUNT(*) FROM (
+                    SELECT DISTINCT service_id, song_id, song_edition_id, reproduction_type
+                    FROM copy_events
+                )
+                """
+            )
+            unique_count = cursor.fetchone()[0]
+
+            # They should match if no duplicates exist
+            assert total_count == unique_count, \
+                f"Copy events have duplicates: {total_count} total vs {unique_count} unique"
+
+            db.close()
+
 
 @pytest.mark.integration
 class TestReportCCLICommand:
