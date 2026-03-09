@@ -146,8 +146,8 @@ def _is_invalid_line(line: str) -> bool:
     ]):
         return True
 
-    # Hymn numbers (e.g., "#480", "480") - hymnal reference numbers, not song titles
-    if re.match(r'^\s*#?\s*\d+\s*$', line):
+    # Hymn/verse numbers (e.g., "#480", "480", "2.") - reference numbers, not song titles
+    if re.match(r'^\s*#?\s*\d+\.?\s*$', line):
         return True
 
     # Phone numbers (e.g., "(931) 208-4654") - giving/contact info, not songs
@@ -213,47 +213,47 @@ def parse_credits(text: str) -> dict[str, Optional[str]]:
     if not text:
         return result
 
-    # Handle "Words and Music by:" / "Words & Music:"
-    for pattern in [
-        r'Words\s+(?:and|&)\s+Music\s*(?:by)?:\s*([^/\n]+?)(?:/|[\n]|$)',
-        r'Words\s+and\s+Music\s*(?:by)?:\s*([^/\n]+?)(?:/|[\n]|$)',
-        r'Words\s+&\s+Music\s*(?:by)?:\s*([^/\n]+?)(?:/|[\n]|$)',
-    ]:
-        match = re.search(pattern, text, re.IGNORECASE)
-        if match:
-            combined = match.group(1).strip()
-            # Try to split if contains "/"
-            if '/' in combined:
-                parts = combined.split('/')
-                result['words_by'] = parts[0].strip()
-                result['music_by'] = parts[1].strip() if len(parts) > 1 else None
-            else:
-                # Assume same for both
-                result['words_by'] = combined
-                result['music_by'] = combined
-            break
+    # Handle "Words and Music by:" / "Words & Music:" / "Music and Words by:"
+    # Stop at "/" or ", Arr" so the arranger isn't swallowed into the combined value.
+    match = re.search(
+        r'(?:Words\s+(?:and|&)\s+Music|Music\s+and\s+Words)\s*(?:by)?:\s*([^/\n]+?)(?:,\s*Arr|/|\n|$)',
+        text, re.IGNORECASE
+    )
+    if match:
+        result['words_by'] = match.group(1).strip()
+        result['music_by'] = match.group(1).strip()
 
-    # Handle standalone "Words by:"
+    # Handle standalone "Words by:" or "Words:" (no "by")
     if not result['words_by']:
         match = re.search(r'Words\s+by:\s*([^/\n,]+)', text, re.IGNORECASE)
+        if not match:
+            match = re.search(r'Words:\s*([^/\n,]+)', text, re.IGNORECASE)
         if match:
             result['words_by'] = match.group(1).strip()
 
-    # Handle standalone "Music by:"
+    # Handle standalone "Music by:" or "Music:" (no "by")
+    # Stop at "/" or "," so inline "Arr:" on the same line is extracted separately.
     if not result['music_by']:
         match = re.search(r'Music\s+by:\s*([^/\n,]+)', text, re.IGNORECASE)
+        if not match:
+            match = re.search(r'Music:\s*([^/\n,]+)', text, re.IGNORECASE)
         if match:
             result['music_by'] = match.group(1).strip()
 
-    # Handle "Arrangement by:" / "Arr:" / "Arr."
+    # Handle arranger: "Arrangement by:", "Arr. by", "Arr.:", "Arr:", "Arr. Name"
+    # Skip "Arr. Copyright" lines (copyright notices, not arranger credits).
     for pattern in [
-        r'Arrangement\s+by:\s*([^/\n]+?)(?:/|$)',
-        r'Arr\.?:\s*([^/\n]+?)(?:/|$)',
+        r'Arrangement\s+by[:\s]\s*([^/\n,]+)',
+        r'Arr\.\s+by\s+([^/\n,]+)',
+        r'Arr\.?:\s*([^/\n,]+)',
+        r'Arr\.\s+(?!Copyright)([^/\n,]+)',
     ]:
         match = re.search(pattern, text, re.IGNORECASE)
         if match:
-            result['arranger'] = match.group(1).strip()
-            break
+            value = match.group(1).strip()
+            if not re.match(r'(?i)copyright', value):
+                result['arranger'] = value
+                break
 
     # Capture remaining credit text
     remaining = text
