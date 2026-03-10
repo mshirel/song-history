@@ -1,11 +1,15 @@
 """TPH library lookup — read song credits from OLE metadata in .ppt files."""
 
+import json
 import re
 import subprocess
 from pathlib import Path
 from typing import Optional
 
 from worship_catalog.normalize import canonicalize_title
+
+# Serialized index schema: {canonical_title: {words_by, music_by, arranger, display_title}}
+LibraryIndex = dict[str, dict[str, Optional[str]]]
 
 # Suffixes to strip when deriving a song title from a library filename.
 # Order matters — strip longest/most specific first.
@@ -27,39 +31,68 @@ _FILENAME_SUFFIXES = [
 ]
 
 
-def build_library_index(library_path: Path) -> dict[str, Path]:
+def scrape_library(library_path: Path) -> LibraryIndex:
     """
-    Walk the library directory and build a mapping from canonical song title
-    to the best matching .ppt file path.
+    Walk the library directory, read OLE metadata from each .ppt file,
+    and return a fully-parsed credits index.
 
+    Returns {canonical_title: {words_by, music_by, arranger, display_title}}.
     Prefers -PH-HD variants over -HD over plain _16x9.
     """
-    index: dict[str, list[tuple[int, Path]]] = {}  # canonical → [(priority, path)]
+    # First pass: collect best file path per canonical title
+    file_candidates: dict[str, list[tuple[int, Path]]] = {}
 
     for ppt_file in library_path.rglob("*.ppt"):
-        # Skip temp files
         if ppt_file.name.startswith("~"):
             continue
-
         stem = ppt_file.stem
         title = _stem_to_title(stem)
         if not title:
             continue
-
         canonical = canonicalize_title(title)
         if not canonical:
             continue
-
         priority = _file_priority(stem)
-        if canonical not in index:
-            index[canonical] = []
-        index[canonical].append((priority, ppt_file))
+        if canonical not in file_candidates:
+            file_candidates[canonical] = []
+        file_candidates[canonical].append((priority, ppt_file, title))
 
-    # Keep only the highest-priority file per title
-    return {
-        canonical: sorted(files, key=lambda x: x[0])[0][1]
-        for canonical, files in index.items()
-    }
+    # Second pass: read OLE metadata from best file and parse credits
+    index: LibraryIndex = {}
+    for canonical, candidates in file_candidates.items():
+        _, best_path, display_title = sorted(candidates, key=lambda x: x[0])[0]
+        author = read_ppt_author(best_path)
+        if not author:
+            continue
+        credits = parse_author_credits(author)
+        if not any(credits.values()):
+            continue
+        index[canonical] = {
+            "display_title": display_title,
+            "words_by": credits.get("words_by"),
+            "music_by": credits.get("music_by"),
+            "arranger": credits.get("arranger"),
+        }
+
+    return index
+
+
+def save_library_index(index: LibraryIndex, path: Path) -> None:
+    """Write the library index to a JSON file."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(index, f, indent=2, ensure_ascii=False)
+
+
+def load_library_index(path: Path) -> LibraryIndex:
+    """Load a previously-scraped library index from a JSON file."""
+    with open(path, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def build_library_index(library_path: Path) -> LibraryIndex:
+    """Alias for scrape_library — builds index from a directory at runtime."""
+    return scrape_library(library_path)
 
 
 def _stem_to_title(stem: str) -> str:
@@ -162,19 +195,18 @@ def parse_author_credits(author: str) -> dict[str, Optional[str]]:
 
 def lookup_song_credits(
     canonical_title: str,
-    library_index: dict[str, Path],
+    library_index: LibraryIndex,
 ) -> Optional[dict[str, Optional[str]]]:
     """
     Look up credits for a song by canonical title using the library index.
 
     Returns a credits dict (words_by, music_by, arranger), or None if not found.
     """
-    ppt_path = library_index.get(canonical_title)
-    if not ppt_path:
+    entry = library_index.get(canonical_title)
+    if not entry:
         return None
-
-    author = read_ppt_author(ppt_path)
-    if not author:
-        return None
-
-    return parse_author_credits(author)
+    return {
+        "words_by": entry.get("words_by"),
+        "music_by": entry.get("music_by"),
+        "arranger": entry.get("arranger"),
+    }

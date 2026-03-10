@@ -124,10 +124,11 @@ def validate(pptx: str, format: str) -> None:
     help="Skip interactive prompts",
 )
 @click.option(
-    "--library",
-    type=click.Path(exists=True),
-    default=None,
-    help="Path to TPH song library directory for credit lookup",
+    "--library-index",
+    type=click.Path(),
+    default="data/library_index.json",
+    show_default=True,
+    help="Path to scraped library index JSON (see: worship-catalog library index)",
 )
 @click.option(
     "--ocr",
@@ -139,7 +140,7 @@ def import_cmd(
     db: str,
     recurse: bool,
     non_interactive: bool,
-    library: Optional[str],
+    library_index: str,
     ocr: bool,
 ) -> None:
     """Import PPTX file(s) to database.
@@ -148,7 +149,7 @@ def import_cmd(
     If folder path provided, imports all PPTX files.
     """
     try:
-        from worship_catalog.library import build_library_index, lookup_song_credits
+        from worship_catalog.library import load_library_index, lookup_song_credits
 
         path = Path(pptx_or_folder)
         db_path = Path(db)
@@ -156,10 +157,11 @@ def import_cmd(
         database.connect()
         database.init_schema()
 
-        # Build library index once upfront if provided
-        library_index = {}
-        if library:
-            library_index = build_library_index(Path(library))
+        # Load library index from JSON if it exists
+        lib_index = {}
+        lib_index_path = Path(library_index)
+        if lib_index_path.exists():
+            lib_index = load_library_index(lib_index_path)
 
         # Determine which files to process
         if path.is_file():
@@ -242,8 +244,8 @@ def import_cmd(
                     words_by = song.words_by
                     music_by = song.music_by
                     arranger = song.arranger
-                    if library_index and not any([words_by, music_by, arranger]):
-                        lib_credits = lookup_song_credits(song.canonical_title, library_index)
+                    if lib_index and not any([words_by, music_by, arranger]):
+                        lib_credits = lookup_song_credits(song.canonical_title, lib_index)
                         if lib_credits:
                             words_by = lib_credits.get("words_by")
                             music_by = lib_credits.get("music_by")
@@ -535,35 +537,37 @@ def stats(start_date: str, end_date: str, out: str, db: str, all_songs: bool) ->
     help="Path to SQLite database",
 )
 @click.option(
-    "--library",
-    type=click.Path(exists=True),
-    default=None,
-    help="Path to TPH song library directory (reads OLE metadata from .ppt files)",
+    "--library-index",
+    type=click.Path(),
+    default="data/library_index.json",
+    show_default=True,
+    help="Path to scraped library index JSON (see: worship-catalog library index)",
 )
 @click.option(
     "--ocr",
     is_flag=True,
-    help="Fall back to Claude Vision API if library lookup fails (requires ANTHROPIC_API_KEY)",
+    help="Fall back to Claude Vision API for any songs not in the library index (requires ANTHROPIC_API_KEY)",
 )
 @click.option(
     "--dry-run",
     is_flag=True,
     help="Show which songs would be updated without writing to DB",
 )
-def repair_credits(db: str, library: Optional[str], ocr: bool, dry_run: bool) -> None:
+def repair_credits(db: str, library_index: str, ocr: bool, dry_run: bool) -> None:
     """Repair missing credits for songs in the database.
 
-    Two strategies (can be combined):
+    Uses the pre-scraped library index JSON by default. Two strategies:
 
     \b
-    1. --library PATH  Read OLE metadata from the TPH .ppt library files.
-                       Fast, accurate, no API key required.
-    2. --ocr           Fall back to Claude Vision API for any songs the
-                       library doesn't cover (requires ANTHROPIC_API_KEY).
+    1. Library index (default): fast JSON lookup, no library mount needed.
+    2. --ocr: Claude Vision API fallback for songs not in the index.
+
+    To build or refresh the library index, run:
+      worship-catalog library index --path tph_libarary/
     """
     try:
         from worship_catalog.extractor import _try_ocr_credits
-        from worship_catalog.library import build_library_index, lookup_song_credits
+        from worship_catalog.library import load_library_index, lookup_song_credits
         from worship_catalog.normalize import parse_credits
         from worship_catalog.pptx_reader import load_pptx, parse_all_slides
 
@@ -580,12 +584,17 @@ def repair_credits(db: str, library: Optional[str], ocr: bool, dry_run: bool) ->
 
         click.echo(f"Found {len(missing)} song(s) with missing credits.")
 
-        # Build library index if path provided
-        library_index = {}
-        if library:
-            click.echo(f"Indexing library at {library}...")
-            library_index = build_library_index(Path(library))
-            click.echo(f"  {len(library_index)} songs indexed.")
+        # Load library index from JSON
+        lib_index = {}
+        lib_index_path = Path(library_index)
+        if lib_index_path.exists():
+            lib_index = load_library_index(lib_index_path)
+        elif not ocr:
+            click.echo(
+                f"Library index not found at {library_index}. "
+                f"Run: worship-catalog library index --path <library-dir>",
+                err=True,
+            )
 
         updated = 0
         for row in missing:
@@ -595,9 +604,9 @@ def repair_credits(db: str, library: Optional[str], ocr: bool, dry_run: bool) ->
 
             credits = None
 
-            # Strategy 1: Library OLE metadata lookup
-            if library_index:
-                credits = lookup_song_credits(canonical, library_index)
+            # Strategy 1: Library index lookup
+            if lib_index:
+                credits = lookup_song_credits(canonical, lib_index)
                 if credits and any(credits.values()):
                     click.echo(f"    [library] found")
                 else:
@@ -664,6 +673,56 @@ def repair_credits(db: str, library: Optional[str], ocr: bool, dry_run: bool) ->
             click.echo(f"\nDry run: would update {updated} of {len(missing)} song(s).")
         else:
             click.echo(f"\nUpdated credits for {updated} song(s).")
+        sys.exit(0)
+
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+
+@main.group()
+def library() -> None:
+    """Manage the TPH song library index."""
+    pass
+
+
+@library.command(name="index")
+@click.option(
+    "--path",
+    type=click.Path(exists=True),
+    required=True,
+    help="Path to TPH song library directory",
+)
+@click.option(
+    "--out",
+    type=click.Path(),
+    default="data/library_index.json",
+    show_default=True,
+    help="Output JSON file path",
+)
+def library_index_cmd(path: str, out: str) -> None:
+    """Scrape the TPH library and save a portable credits index.
+
+    Reads OLE metadata from all .ppt files in the library directory
+    and writes a JSON index to disk. After running this once, import
+    and repair-credits will use the JSON automatically without needing
+    the library mounted.
+
+    Example:
+      worship-catalog library index --path tph_libarary/
+    """
+    try:
+        from worship_catalog.library import save_library_index, scrape_library
+
+        library_path = Path(path)
+        out_path = Path(out)
+
+        click.echo(f"Scanning {library_path} ...")
+        index = scrape_library(library_path)
+        click.echo(f"  {len(index)} songs with credits found.")
+
+        save_library_index(index, out_path)
+        click.echo(f"Index saved to {out_path}")
         sys.exit(0)
 
     except Exception as e:

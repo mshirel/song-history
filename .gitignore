@@ -4,6 +4,13 @@ stats_report.md
 data/*.pptx
 data/*.db
 data/*.db-journal
+data/library_index.json
+tph_libarary
+tph_libarary/
+tph_library
+tph_library/
+library/
+tph/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
