@@ -43,6 +43,30 @@
   </tbody>
 </table>
 
+{% if leader_breakdown %}
+<h3 style="font-size:1rem;margin:1.5rem 0 0.75rem;">By Song Leader</h3>
+<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:1rem;margin-bottom:1.5rem;">
+  {% for ldr_name, ldr_songs in leader_breakdown.items() %}
+  <div style="background:#fff;border:1px solid #dee2e6;border-radius:6px;overflow:hidden;">
+    <div style="background:#343a40;color:#fff;padding:0.5rem 0.75rem;font-size:0.85rem;font-weight:600;display:flex;justify-content:space-between;align-items:center;">
+      <span>{{ ldr_name }}</span>
+      <span style="font-weight:400;opacity:0.75;">{{ leader_service_counts.get(ldr_name, 0) }} service{{ 's' if leader_service_counts.get(ldr_name, 0) != 1 else '' }}</span>
+    </div>
+    <table style="margin:0;">
+      <tbody>
+        {% for song_title, count in ldr_songs %}
+        <tr>
+          <td style="padding:0.35rem 0.75rem;">{{ song_title }}</td>
+          <td style="text-align:right;padding:0.35rem 0.75rem;color:#6c757d;white-space:nowrap;">× {{ count }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+
 <h3 style="font-size:1rem;margin:1.5rem 0 0.5rem;">Services</h3>
 <table>
   <thead>

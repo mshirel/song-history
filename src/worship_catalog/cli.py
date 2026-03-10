@@ -510,6 +510,29 @@ def stats(start_date: str, end_date: str, out: str, db: str, all_songs: bool, le
                     song_credits[title] = ", ".join(parts)
         song_counts = {title: len(s) for title, s in song_services.items()}
 
+        # Build per-leader breakdown (only when not already filtered to one leader)
+        leader_breakdown: dict[str, list[tuple[str, int]]] = {}
+        if not leader:
+            service_leader_map = {s["id"]: (s.get("song_leader") or "Unknown") for s in services}
+            ldr_song_services: dict[str, dict[str, set]] = {}
+            for event in events:
+                ldr = service_leader_map.get(event["service_id"], "Unknown")
+                title = event["display_title"]
+                ldr_song_services.setdefault(ldr, {}).setdefault(title, set()).add(
+                    event["service_id"]
+                )
+            # Sort each leader's songs by count desc, then alpha; leaders by service count desc
+            leader_breakdown = {
+                ldr: sorted(
+                    [(t, len(sids)) for t, sids in songs.items()],
+                    key=lambda x: (-x[1], x[0].lower()),
+                )
+                for ldr, songs in sorted(
+                    ldr_song_services.items(),
+                    key=lambda kv: -sum(len(v) for v in kv[1].values()),
+                )
+            }
+
         # Sort by count descending, then alphabetically by title
         sorted_songs = sorted(song_counts.items(), key=lambda x: (-x[1], x[0].lower()))
 
@@ -536,16 +559,27 @@ def stats(start_date: str, end_date: str, out: str, db: str, all_songs: bool, le
                 credits = song_credits.get(song, "")
                 f.write(f"| {song} | {credits} | {count} |\n")
 
+            if leader_breakdown:
+                f.write(f"\n## By Song Leader\n\n")
+                for ldr_name, ldr_songs in leader_breakdown.items():
+                    service_count = sum(1 for s in services if (s.get("song_leader") or "Unknown") == ldr_name)
+                    f.write(f"### {ldr_name} ({service_count} service{'s' if service_count != 1 else ''})\n\n")
+                    f.write(f"| Song | Count |\n")
+                    f.write(f"|------|-------|\n")
+                    for song_title, count in ldr_songs:
+                        f.write(f"| {song_title} | {count} |\n")
+                    f.write(f"\n")
+
             f.write(f"\n## Services\n\n")
             f.write(f"| Date | Service | Song Leader | Songs |\n")
             f.write(f"|------|---------|-------------|-------|\n")
             for service in services:
                 service_songs = [e for e in events if e["service_id"] == service["id"]]
                 unique_songs = len(set(e["song_id"] for e in service_songs))
-                leader = service.get("song_leader") or ""
+                svc_leader = service.get("song_leader") or ""
                 f.write(
                     f"| {service['service_date']} | "
-                    f"{service['service_name']} | {leader} | {unique_songs} |\n"
+                    f"{service['service_name']} | {svc_leader} | {unique_songs} |\n"
                 )
 
         database.close()

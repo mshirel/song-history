@@ -232,3 +232,41 @@ class TestStatsReport:
         assert response.status_code == 200
         # stats_result.html partial is returned directly — no <nav>
         assert "<nav" not in response.text
+
+    def test_stats_shows_leader_breakdown(self, client):
+        """Stats without leader filter shows By Song Leader breakdown."""
+        response = client.post(
+            "/reports/stats",
+            data={"start_date": "2026-01-01", "end_date": "2026-12-31"},
+        )
+        assert response.status_code == 200
+        assert "By Song Leader" in response.text
+        assert "Matt" in response.text  # leader name from fixture
+
+    def test_stats_leader_breakdown_hidden_when_filtered(self, client):
+        """Stats with leader filter does NOT show the breakdown section."""
+        response = client.post(
+            "/reports/stats",
+            data={"start_date": "2026-01-01", "end_date": "2026-12-31", "leader": "Matt"},
+        )
+        assert response.status_code == 200
+        assert "By Song Leader" not in response.text
+
+    def test_stats_breakdown_shows_leader_service_count(self, client):
+        """Leader card in breakdown shows service count."""
+        response = client.post(
+            "/reports/stats",
+            data={"start_date": "2026-01-01", "end_date": "2026-12-31"},
+        )
+        # Fixture has 1 service led by Matt
+        assert "1 service" in response.text
+
+    def test_stats_breakdown_shows_songs_per_leader(self, client):
+        """Leader card lists songs with repeat counts."""
+        response = client.post(
+            "/reports/stats",
+            data={"start_date": "2026-01-01", "end_date": "2026-12-31"},
+        )
+        # Both fixture songs should appear under Matt
+        assert "Amazing Grace" in response.text
+        assert "How Great Thou Art" in response.text

@@ -120,6 +120,33 @@ async def reports_stats(
     if not all_songs:
         sorted_songs = sorted_songs[:20]
 
+    # Build per-leader breakdown (only when not already filtered to one leader)
+    leader_breakdown: dict[str, list[tuple[str, int]]] = {}
+    if not leader:
+        service_leader_map = {s["id"]: (s.get("song_leader") or "Unknown") for s in services}
+        ldr_song_services: dict[str, dict[str, set]] = {}
+        for e in events:
+            ldr = service_leader_map.get(e["service_id"], "Unknown")
+            title = e["display_title"]
+            ldr_song_services.setdefault(ldr, {}).setdefault(title, set()).add(e["service_id"])
+        leader_breakdown = {
+            ldr: sorted(
+                [(t, len(sids)) for t, sids in songs.items()],
+                key=lambda x: (-x[1], x[0].lower()),
+            )
+            for ldr, songs in sorted(
+                ldr_song_services.items(),
+                key=lambda kv: -sum(len(v) for v in kv[1].values()),
+            )
+        }
+    # Build per-leader service count for display
+    leader_service_counts = {
+        s.get("song_leader") or "Unknown": 0 for s in services
+    }
+    for s in services:
+        ldr = s.get("song_leader") or "Unknown"
+        leader_service_counts[ldr] = leader_service_counts.get(ldr, 0) + 1
+
     return templates.TemplateResponse(
         request,
         "stats_result.html",
@@ -133,6 +160,8 @@ async def reports_stats(
             "total_performances": sum(song_counts.values()),
             "total_events": len(events),
             "all_songs": all_songs,
+            "leader_breakdown": leader_breakdown,
+            "leader_service_counts": leader_service_counts,
         },
     )
 

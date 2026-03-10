@@ -547,6 +547,70 @@ class TestReportStatsLeaderFilter:
         result = runner.invoke(main, ["report", "stats", "--help"])
         assert "--leader" in result.output
 
+    def test_stats_leader_breakdown_included_without_filter(self, runner, leader_db):
+        """Without --leader, report includes a 'By Song Leader' section."""
+        with TemporaryDirectory() as tmpdir:
+            output_file = Path(tmpdir) / "stats.md"
+            result = runner.invoke(
+                main,
+                ["report", "stats", "--db", str(leader_db), "--out", str(output_file)],
+            )
+            assert result.exit_code == 0
+            content = output_file.read_text()
+            assert "By Song Leader" in content
+
+    def test_stats_leader_breakdown_shows_each_leader(self, runner, leader_db):
+        """Breakdown section contains a heading for each leader."""
+        with TemporaryDirectory() as tmpdir:
+            output_file = Path(tmpdir) / "stats.md"
+            runner.invoke(
+                main,
+                ["report", "stats", "--db", str(leader_db), "--out", str(output_file)],
+            )
+            content = output_file.read_text()
+            assert "### Alice" in content
+            assert "### Bob" in content
+
+    def test_stats_leader_breakdown_shows_songs(self, runner, leader_db):
+        """Breakdown lists each leader's songs."""
+        with TemporaryDirectory() as tmpdir:
+            output_file = Path(tmpdir) / "stats.md"
+            runner.invoke(
+                main,
+                ["report", "stats", "--db", str(leader_db), "--out", str(output_file)],
+            )
+            content = output_file.read_text()
+            assert "Song 0" in content  # Alice's song
+            assert "Song 1" in content  # Bob's song
+
+    def test_stats_leader_breakdown_omitted_when_filtered(self, runner, leader_db):
+        """With --leader, the breakdown section is NOT included."""
+        with TemporaryDirectory() as tmpdir:
+            output_file = Path(tmpdir) / "stats.md"
+            runner.invoke(
+                main,
+                [
+                    "report", "stats",
+                    "--db", str(leader_db),
+                    "--leader", "Alice",
+                    "--out", str(output_file),
+                ],
+            )
+            content = output_file.read_text()
+            assert "By Song Leader" not in content
+
+    def test_stats_leader_breakdown_service_count(self, runner, leader_db):
+        """Breakdown shows service count in each leader heading."""
+        with TemporaryDirectory() as tmpdir:
+            output_file = Path(tmpdir) / "stats.md"
+            runner.invoke(
+                main,
+                ["report", "stats", "--db", str(leader_db), "--out", str(output_file)],
+            )
+            content = output_file.read_text()
+            # Each leader has 1 service in the fixture
+            assert "1 service" in content
+
 
 @pytest.mark.integration
 class TestRepairCreditsCommand:
