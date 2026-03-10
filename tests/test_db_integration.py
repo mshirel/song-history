@@ -556,6 +556,217 @@ class TestQueryOperations:
         assert len(results) == 1
         assert results[0]["service_date"] == "2026-02-22"
 
+    def test_query_services_by_leader_exact(self, temp_db):
+        """Filter services by song leader (exact name)."""
+        temp_db.insert_or_update_service(
+            service_date="2026-02-15",
+            service_name="Morning Worship",
+            source_file="file1.pptx",
+            source_hash="hash1",
+            song_leader="Matt Shirel",
+        )
+        temp_db.insert_or_update_service(
+            service_date="2026-02-22",
+            service_name="Morning Worship",
+            source_file="file2.pptx",
+            source_hash="hash2",
+            song_leader="John Smith",
+        )
+
+        results = temp_db.query_services("2026-01-01", "2026-12-31", song_leader="Matt Shirel")
+        assert len(results) == 1
+        assert results[0]["song_leader"] == "Matt Shirel"
+
+    def test_query_services_by_leader_partial(self, temp_db):
+        """Filter services by song leader (partial, case-insensitive)."""
+        temp_db.insert_or_update_service(
+            service_date="2026-02-15",
+            service_name="Morning Worship",
+            source_file="file1.pptx",
+            source_hash="hash1",
+            song_leader="Matthew Shirel",
+        )
+        temp_db.insert_or_update_service(
+            service_date="2026-02-22",
+            service_name="Evening Worship",
+            source_file="file2.pptx",
+            source_hash="hash2",
+            song_leader="John Smith",
+        )
+
+        results = temp_db.query_services("2026-01-01", "2026-12-31", song_leader="matt")
+        assert len(results) == 1
+        assert "Matthew" in results[0]["song_leader"]
+
+    def test_query_services_no_leader_filter(self, temp_db):
+        """query_services without leader returns all services."""
+        for i, leader in enumerate(["Alice", "Bob", "Carol"]):
+            temp_db.insert_or_update_service(
+                service_date=f"2026-02-{15 + i:02d}",
+                service_name="Morning Worship",
+                source_file=f"file{i}.pptx",
+                source_hash=f"hash{i}",
+                song_leader=leader,
+            )
+
+        results = temp_db.query_services("2026-01-01", "2026-12-31")
+        assert len(results) == 3
+
+    def test_query_copy_events_by_service_ids(self, temp_db):
+        """Filter copy events to specific service IDs."""
+        service_id_1 = temp_db.insert_or_update_service(
+            service_date="2026-02-15",
+            service_name="Morning Worship",
+            source_file="file1.pptx",
+            source_hash="hash1",
+        )
+        service_id_2 = temp_db.insert_or_update_service(
+            service_date="2026-02-22",
+            service_name="Morning Worship",
+            source_file="file2.pptx",
+            source_hash="hash2",
+        )
+
+        song_id = temp_db.insert_or_get_song("majesty", "Majesty")
+
+        temp_db.insert_copy_event(service_id=service_id_1, song_id=song_id, reproduction_type="projection", reportable=True)
+        temp_db.insert_copy_event(service_id=service_id_2, song_id=song_id, reproduction_type="projection", reportable=True)
+
+        # Restrict to service_id_1 only
+        results = temp_db.query_copy_events("2026-01-01", "2026-12-31", service_ids=[service_id_1])
+        assert len(results) == 1
+        assert results[0]["service_id"] == service_id_1
+
+
+@pytest.mark.integration
+class TestMissingCredits:
+    """Tests for query_songs_missing_credits and update_song_edition_credits."""
+
+    @pytest.fixture
+    def temp_db(self):
+        """Create a temporary database for testing."""
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "test.db"
+            db = Database(db_path)
+            db.connect()
+            db.init_schema()
+            yield db
+            db.close()
+
+    def _setup_song_in_service(self, db, canonical, display, source_file="test.pptx", edition_id=None):
+        """Helper: create a service+song+service_song and optional copy_event."""
+        service_id = db.insert_or_update_service(
+            service_date="2026-02-15",
+            service_name="Morning Worship",
+            source_file=source_file,
+            source_hash=f"hash-{canonical}",
+        )
+        song_id = db.insert_or_get_song(canonical, display)
+        db.insert_service_song(service_id=service_id, song_id=song_id, ordinal=1, song_edition_id=edition_id)
+        return service_id, song_id
+
+    def test_query_songs_missing_credits_no_edition(self, temp_db):
+        """Songs with no edition row appear in missing credits query."""
+        self._setup_song_in_service(temp_db, "amazing grace", "Amazing Grace")
+
+        missing = temp_db.query_songs_missing_credits()
+        titles = [r["display_title"] for r in missing]
+        assert "Amazing Grace" in titles
+
+    def test_query_songs_missing_credits_null_credits_edition(self, temp_db):
+        """Songs with edition but all-NULL credits appear in missing query."""
+        song_id = temp_db.insert_or_get_song("holy holy holy", "Holy Holy Holy")
+        edition_id = temp_db.insert_or_get_song_edition(song_id=song_id)  # no credits
+        service_id = temp_db.insert_or_update_service(
+            service_date="2026-02-15", service_name="Morning Worship",
+            source_file="test.pptx", source_hash="hash-hhh"
+        )
+        temp_db.insert_service_song(service_id=service_id, song_id=song_id, ordinal=1, song_edition_id=edition_id)
+
+        missing = temp_db.query_songs_missing_credits()
+        titles = [r["display_title"] for r in missing]
+        assert "Holy Holy Holy" in titles
+
+    def test_query_songs_with_credits_excluded(self, temp_db):
+        """Songs with credits do NOT appear in missing query."""
+        song_id = temp_db.insert_or_get_song("majesty", "Majesty")
+        edition_id = temp_db.insert_or_get_song_edition(
+            song_id=song_id, words_by="Jack Hayford"
+        )
+        service_id = temp_db.insert_or_update_service(
+            service_date="2026-02-15", service_name="Morning Worship",
+            source_file="test.pptx", source_hash="hash-maj"
+        )
+        temp_db.insert_service_song(service_id=service_id, song_id=song_id, ordinal=1, song_edition_id=edition_id)
+
+        missing = temp_db.query_songs_missing_credits()
+        titles = [r["display_title"] for r in missing]
+        assert "Majesty" not in titles
+
+    def test_update_song_edition_credits_updates_existing(self, temp_db):
+        """update_song_edition_credits updates a NULL-credit edition row."""
+        song_id = temp_db.insert_or_get_song("amazing grace", "Amazing Grace")
+        # Insert edition with no credits
+        temp_db.insert_or_get_song_edition(song_id=song_id)
+
+        temp_db.update_song_edition_credits(song_id, words_by="John Newton")
+
+        cursor = temp_db.conn.cursor()
+        cursor.execute("SELECT words_by FROM song_editions WHERE song_id = ?", (song_id,))
+        row = cursor.fetchone()
+        assert row[0] == "John Newton"
+
+    def test_update_song_edition_credits_inserts_when_missing(self, temp_db):
+        """update_song_edition_credits inserts edition row when none exists."""
+        song_id = temp_db.insert_or_get_song("o worship the king", "O Worship The King")
+        # No edition row exists
+
+        temp_db.update_song_edition_credits(song_id, words_by="Robert Grant", music_by="Johann Haydn")
+
+        cursor = temp_db.conn.cursor()
+        cursor.execute("SELECT words_by, music_by FROM song_editions WHERE song_id = ?", (song_id,))
+        row = cursor.fetchone()
+        assert row[0] == "Robert Grant"
+        assert row[1] == "Johann Haydn"
+
+    def test_update_song_edition_credits_backfills_copy_events(self, temp_db):
+        """update_song_edition_credits backfills NULL song_edition_id in copy_events."""
+        song_id = temp_db.insert_or_get_song("a common love", "A Common Love")
+        service_id = temp_db.insert_or_update_service(
+            service_date="2026-02-15", service_name="Morning Worship",
+            source_file="test.pptx", source_hash="hash-acl"
+        )
+        # Insert copy event with NULL edition
+        temp_db.insert_copy_event(
+            service_id=service_id, song_id=song_id,
+            reproduction_type="projection", reportable=True
+        )
+
+        # Now repair credits
+        temp_db.update_song_edition_credits(song_id, words_by="Bob Gillman")
+
+        # copy_events should now have the edition_id backfilled
+        cursor = temp_db.conn.cursor()
+        cursor.execute("SELECT song_edition_id FROM copy_events WHERE song_id = ?", (song_id,))
+        row = cursor.fetchone()
+        assert row[0] is not None
+
+    def test_update_song_edition_credits_backfills_service_songs(self, temp_db):
+        """update_song_edition_credits backfills NULL song_edition_id in service_songs."""
+        song_id = temp_db.insert_or_get_song("a common love", "A Common Love")
+        service_id = temp_db.insert_or_update_service(
+            service_date="2026-02-15", service_name="Morning Worship",
+            source_file="test.pptx", source_hash="hash-acl2"
+        )
+        temp_db.insert_service_song(service_id=service_id, song_id=song_id, ordinal=1)
+
+        temp_db.update_song_edition_credits(song_id, words_by="Bob Gillman")
+
+        cursor = temp_db.conn.cursor()
+        cursor.execute("SELECT song_edition_id FROM service_songs WHERE song_id = ?", (song_id,))
+        row = cursor.fetchone()
+        assert row[0] is not None
+
 
 @pytest.mark.integration
 class TestServiceCleanup:

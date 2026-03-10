@@ -470,6 +470,264 @@ class TestReportStatsCommand:
 
 
 @pytest.mark.integration
+class TestReportStatsLeaderFilter:
+    """Tests for report stats --leader option."""
+
+    @pytest.fixture
+    def runner(self):
+        return CliRunner()
+
+    @pytest.fixture
+    def leader_db(self):
+        """Database with two services led by different leaders."""
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "test.db"
+            db = Database(db_path)
+            db.connect()
+            db.init_schema()
+
+            for i, leader in enumerate(["Alice", "Bob"]):
+                service_id = db.insert_or_update_service(
+                    service_date=f"2026-02-{15 + i:02d}",
+                    service_name="Morning Worship",
+                    source_file=f"test{i}.pptx",
+                    source_hash=f"hash{i}",
+                    song_leader=leader,
+                )
+                song_id = db.insert_or_get_song(f"song {i}", f"Song {i}")
+                db.insert_service_song(service_id=service_id, song_id=song_id, ordinal=1)
+                db.insert_copy_event(
+                    service_id=service_id,
+                    song_id=song_id,
+                    reproduction_type="projection",
+                    reportable=True,
+                )
+
+            db.close()
+            yield db_path
+
+    def test_stats_leader_filter_restricts_output(self, runner, leader_db):
+        """--leader filters the stats report to that leader's services."""
+        with TemporaryDirectory() as tmpdir:
+            output_file = Path(tmpdir) / "stats.md"
+
+            result = runner.invoke(
+                main,
+                [
+                    "report", "stats",
+                    "--db", str(leader_db),
+                    "--leader", "Alice",
+                    "--out", str(output_file),
+                ],
+            )
+            assert result.exit_code == 0
+            content = output_file.read_text()
+            assert "Alice" in content
+            assert "Bob" not in content
+
+    def test_stats_leader_header_in_report(self, runner, leader_db):
+        """--leader writes a Song Leader line in the report."""
+        with TemporaryDirectory() as tmpdir:
+            output_file = Path(tmpdir) / "stats.md"
+
+            runner.invoke(
+                main,
+                [
+                    "report", "stats",
+                    "--db", str(leader_db),
+                    "--leader", "Alice",
+                    "--out", str(output_file),
+                ],
+            )
+            content = output_file.read_text()
+            assert "**Song Leader:**" in content
+
+    def test_stats_leader_filter_help(self, runner):
+        """--leader option appears in help."""
+        result = runner.invoke(main, ["report", "stats", "--help"])
+        assert "--leader" in result.output
+
+
+@pytest.mark.integration
+class TestRepairCreditsCommand:
+    """Tests for repair-credits command."""
+
+    @pytest.fixture
+    def runner(self):
+        return CliRunner()
+
+    @pytest.fixture
+    def db_with_missing_credits(self):
+        """Database with a song that has no credits."""
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "test.db"
+            db = Database(db_path)
+            db.connect()
+            db.init_schema()
+
+            service_id = db.insert_or_update_service(
+                service_date="2026-02-15",
+                service_name="Morning Worship",
+                source_file="test.pptx",
+                source_hash="hash1",
+            )
+            song_id = db.insert_or_get_song("amazing grace", "Amazing Grace")
+            db.insert_service_song(service_id=service_id, song_id=song_id, ordinal=1)
+
+            db.close()
+            yield db_path
+
+    def test_repair_credits_help(self, runner):
+        result = runner.invoke(main, ["repair-credits", "--help"])
+        assert result.exit_code == 0
+        assert "--library-index" in result.output
+        assert "--dry-run" in result.output
+        assert "--ocr" in result.output
+
+    def test_repair_credits_no_missing(self, runner):
+        """repair-credits with no missing credits exits cleanly."""
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "test.db"
+            db = Database(db_path)
+            db.connect()
+            db.init_schema()
+            db.close()
+
+            result = runner.invoke(main, ["repair-credits", "--db", str(db_path)])
+            assert result.exit_code == 0
+            assert "No songs" in result.output
+
+    def test_repair_credits_dry_run_with_library(self, runner, db_with_missing_credits):
+        """repair-credits --dry-run uses library index without writing to DB."""
+        with TemporaryDirectory() as tmpdir:
+            # Create a minimal library index that has Amazing Grace
+            index_path = Path(tmpdir) / "index.json"
+            index = {
+                "amazing grace": {
+                    "display_title": "Amazing Grace",
+                    "words_by": "John Newton",
+                    "music_by": None,
+                    "arranger": None,
+                }
+            }
+            index_path.write_text(__import__("json").dumps(index))
+
+            result = runner.invoke(
+                main,
+                [
+                    "repair-credits",
+                    "--db", str(db_with_missing_credits),
+                    "--library-index", str(index_path),
+                    "--dry-run",
+                ],
+            )
+            assert result.exit_code == 0
+            assert "Dry run" in result.output
+            assert "1" in result.output  # would update 1 song
+
+    def test_repair_credits_applies_library_credits(self, runner, db_with_missing_credits):
+        """repair-credits writes credits from library index to DB."""
+        with TemporaryDirectory() as tmpdir:
+            index_path = Path(tmpdir) / "index.json"
+            index = {
+                "amazing grace": {
+                    "display_title": "Amazing Grace",
+                    "words_by": "John Newton",
+                    "music_by": None,
+                    "arranger": None,
+                }
+            }
+            index_path.write_text(__import__("json").dumps(index))
+
+            result = runner.invoke(
+                main,
+                [
+                    "repair-credits",
+                    "--db", str(db_with_missing_credits),
+                    "--library-index", str(index_path),
+                ],
+            )
+            assert result.exit_code == 0
+
+            # Verify credits are now in DB
+            db = Database(db_with_missing_credits)
+            db.connect()
+            cursor = db.conn.cursor()
+            cursor.execute(
+                """
+                SELECT se.words_by FROM songs s
+                JOIN song_editions se ON se.song_id = s.id
+                WHERE s.canonical_title = 'amazing grace'
+                """
+            )
+            row = cursor.fetchone()
+            assert row is not None
+            assert row[0] == "John Newton"
+            db.close()
+
+    def test_repair_credits_not_in_library(self, runner, db_with_missing_credits):
+        """repair-credits reports when a song is not found in library."""
+        with TemporaryDirectory() as tmpdir:
+            index_path = Path(tmpdir) / "index.json"
+            index_path.write_text("{}")  # empty index
+
+            result = runner.invoke(
+                main,
+                [
+                    "repair-credits",
+                    "--db", str(db_with_missing_credits),
+                    "--library-index", str(index_path),
+                ],
+            )
+            assert result.exit_code == 0
+            # No credits found, should skip
+            assert "skipping" in result.output.lower() or "No credits" in result.output
+
+
+@pytest.mark.integration
+class TestLibraryIndexCommand:
+    """Tests for library index command."""
+
+    @pytest.fixture
+    def runner(self):
+        return CliRunner()
+
+    def test_library_index_help(self, runner):
+        result = runner.invoke(main, ["library", "index", "--help"])
+        assert result.exit_code == 0
+        assert "--path" in result.output
+        assert "--out" in result.output
+
+    def test_library_index_requires_path(self, runner):
+        """--path is required."""
+        result = runner.invoke(main, ["library", "index"])
+        assert result.exit_code != 0
+
+    def test_library_index_nonexistent_path(self, runner):
+        """--path that doesn't exist is rejected by Click."""
+        result = runner.invoke(main, ["library", "index", "--path", "/nonexistent/library"])
+        assert result.exit_code != 0
+
+    def test_library_index_empty_directory(self, runner):
+        """library index on empty directory writes empty JSON."""
+        with TemporaryDirectory() as tmpdir:
+            lib_dir = Path(tmpdir) / "library"
+            lib_dir.mkdir()
+            out_path = Path(tmpdir) / "index.json"
+
+            result = runner.invoke(
+                main,
+                ["library", "index", "--path", str(lib_dir), "--out", str(out_path)],
+            )
+            assert result.exit_code == 0
+            assert out_path.exists()
+
+            import json
+            data = json.loads(out_path.read_text())
+            assert isinstance(data, dict)
+
+
+@pytest.mark.integration
 class TestCLIIntegration:
     """End-to-end CLI integration tests."""
 
