@@ -21,6 +21,8 @@ class SlideImage:
     """Image/picture information."""
     shape_id: int
     """Unique identifier for the shape."""
+    blob: Optional[bytes] = None
+    """Raw image bytes, if extracted."""
 
 
 @dataclass
@@ -110,12 +112,16 @@ def extract_text_from_slide(slide) -> SlideText:
 
 
 def extract_images_from_slide(slide) -> list[SlideImage]:
-    """Extract image/picture shape information from slide."""
+    """Extract image/picture shape information from slide, including raw bytes."""
     images = []
 
     for shape in slide.shapes:
         if shape.shape_type == 13:  # Picture shape type
-            images.append(SlideImage(shape_id=shape.shape_id))
+            try:
+                blob = shape.image.blob
+            except Exception:
+                blob = None
+            images.append(SlideImage(shape_id=shape.shape_id, blob=blob))
 
     return images
 

@@ -17,6 +17,7 @@ from worship_catalog.pptx_reader import (
     load_pptx,
     parse_all_slides,
 )
+from worship_catalog.ocr import extract_credits_via_vision
 
 
 @dataclass
@@ -61,7 +62,7 @@ class ExtractionResult:
     """List of extraction anomalies and low-confidence items."""
 
 
-def extract_songs(file_path: Path | str) -> ExtractionResult:
+def extract_songs(file_path: Path | str, use_ocr: bool = False) -> ExtractionResult:
     """
     Extract songs from a PPTX file.
 
@@ -70,8 +71,12 @@ def extract_songs(file_path: Path | str) -> ExtractionResult:
     2. Extract service metadata
     3. Identify song slides
     4. Group by canonical title
-    5. Extract credits
+    5. Extract credits (with optional Vision OCR fallback)
     6. Return normalized results
+
+    Args:
+        file_path: Path to the PPTX file
+        use_ocr: If True, use Claude Vision API to extract credits from image-only slides
     """
     file_path = Path(file_path)
 
@@ -91,7 +96,7 @@ def extract_songs(file_path: Path | str) -> ExtractionResult:
     # Step 4: Convert groups to song occurrences
     songs = []
     for ordinal, (canonical, group) in enumerate(song_groups, 1):
-        song = _create_song_occurrence(ordinal, canonical, group)
+        song = _create_song_occurrence(ordinal, canonical, group, use_ocr=use_ocr)
         songs.append(song)
 
     # Create result
@@ -297,12 +302,14 @@ def _extract_title_candidates(slide: Slide) -> list[str]:
 
 
 def _create_song_occurrence(
-    ordinal: int, canonical_title: str, slides: list[Slide]
+    ordinal: int, canonical_title: str, slides: list[Slide], use_ocr: bool = False
 ) -> SongOccurrence:
     """
     Create a song occurrence from grouped slides.
 
     Extracts credits and metadata from all slides in group.
+    If use_ocr is True and no credits are found via text, falls back to
+    Claude Vision API on the first slide's image.
     """
     # Extract display title from first slide with text
     display_title = ""
@@ -319,8 +326,14 @@ def _create_song_occurrence(
         "\n".join(slide.text.text_lines) for slide in slides
     )
 
-    # Extract credits
+    # Extract credits from text
     credits = parse_credits(all_text)
+
+    # OCR fallback: if no credits found and first slide has an image, try Vision API
+    if use_ocr and not any([credits.get("words_by"), credits.get("music_by"), credits.get("arranger")]):
+        ocr_text = _try_ocr_credits(slides)
+        if ocr_text:
+            credits = parse_credits(ocr_text)
 
     # Detect publisher
     publisher = detect_publisher(all_text)
@@ -341,3 +354,28 @@ def _create_song_occurrence(
         last_slide_index=last_index,
         slide_count=len(slides),
     )
+
+
+def _try_ocr_credits(slides: list[Slide]) -> Optional[str]:
+    """
+    Attempt to extract credits text from the first image on the first slide
+    using Claude Vision API.
+
+    Returns raw credits text string, or None if OCR fails or yields nothing.
+    """
+    if not slides:
+        return None
+
+    # Use the first slide's first image blob
+    first_slide = slides[0]
+    if not first_slide.images:
+        return None
+
+    blob = first_slide.images[0].blob
+    if not blob:
+        return None
+
+    try:
+        return extract_credits_via_vision(blob)
+    except Exception:
+        return None

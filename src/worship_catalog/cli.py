@@ -123,11 +123,17 @@ def validate(pptx: str, format: str) -> None:
     is_flag=True,
     help="Skip interactive prompts",
 )
+@click.option(
+    "--ocr",
+    is_flag=True,
+    help="Use Claude Vision API to extract credits from image-only slides (requires ANTHROPIC_API_KEY)",
+)
 def import_cmd(
     pptx_or_folder: str,
     db: str,
     recurse: bool,
     non_interactive: bool,
+    ocr: bool,
 ) -> None:
     """Import PPTX file(s) to database.
 
@@ -159,7 +165,7 @@ def import_cmd(
             click.echo(f"Processing {pptx_file.name}...", err=False)
 
             try:
-                result = extract_songs(pptx_file)
+                result = extract_songs(pptx_file, use_ocr=ocr)
 
                 # Check for missing metadata
                 needs_review = False
@@ -489,6 +495,150 @@ def stats(start_date: str, end_date: str, out: str, db: str, all_songs: bool) ->
 
         database.close()
         click.echo(f"Report written to {output_path}")
+        sys.exit(0)
+
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+
+@main.command(name="repair-credits")
+@click.option(
+    "--db",
+    type=click.Path(),
+    default="data/worship.db",
+    help="Path to SQLite database",
+)
+@click.option(
+    "--library",
+    type=click.Path(exists=True),
+    default=None,
+    help="Path to TPH song library directory (reads OLE metadata from .ppt files)",
+)
+@click.option(
+    "--ocr",
+    is_flag=True,
+    help="Fall back to Claude Vision API if library lookup fails (requires ANTHROPIC_API_KEY)",
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help="Show which songs would be updated without writing to DB",
+)
+def repair_credits(db: str, library: Optional[str], ocr: bool, dry_run: bool) -> None:
+    """Repair missing credits for songs in the database.
+
+    Two strategies (can be combined):
+
+    \b
+    1. --library PATH  Read OLE metadata from the TPH .ppt library files.
+                       Fast, accurate, no API key required.
+    2. --ocr           Fall back to Claude Vision API for any songs the
+                       library doesn't cover (requires ANTHROPIC_API_KEY).
+    """
+    try:
+        from worship_catalog.extractor import _try_ocr_credits
+        from worship_catalog.library import build_library_index, lookup_song_credits
+        from worship_catalog.normalize import parse_credits
+        from worship_catalog.pptx_reader import load_pptx, parse_all_slides
+
+        db_path = Path(db)
+        database = Database(db_path)
+        database.connect()
+
+        missing = database.query_songs_missing_credits()
+
+        if not missing:
+            click.echo("No songs with missing credits found.")
+            database.close()
+            sys.exit(0)
+
+        click.echo(f"Found {len(missing)} song(s) with missing credits.")
+
+        # Build library index if path provided
+        library_index = {}
+        if library:
+            click.echo(f"Indexing library at {library}...")
+            library_index = build_library_index(Path(library))
+            click.echo(f"  {len(library_index)} songs indexed.")
+
+        updated = 0
+        for row in missing:
+            title = row["display_title"]
+            canonical = row["canonical_title"]
+            click.echo(f"  {title}")
+
+            credits = None
+
+            # Strategy 1: Library OLE metadata lookup
+            if library_index:
+                credits = lookup_song_credits(canonical, library_index)
+                if credits and any(credits.values()):
+                    click.echo(f"    [library] found")
+                else:
+                    credits = None
+                    click.echo(f"    [library] not found", err=True)
+
+            # Strategy 2: Vision OCR fallback
+            if credits is None and ocr:
+                source_file = row.get("source_file")
+                if source_file and Path(source_file).exists():
+                    try:
+                        prs = load_pptx(source_file)
+                        all_slides = parse_all_slides(prs)
+                        song_slides = [
+                            s for s in all_slides[1:]
+                            if any(canonical in line.lower() for line in s.text.text_lines)
+                        ]
+                        ocr_text = _try_ocr_credits(song_slides) if song_slides else None
+                        if ocr_text:
+                            raw = parse_credits(ocr_text)
+                            if any(raw.values()):
+                                credits = raw
+                                click.echo(f"    [ocr] found")
+                            else:
+                                click.echo(f"    [ocr] no parseable credits: {ocr_text!r}", err=True)
+                        else:
+                            click.echo(f"    [ocr] no text returned", err=True)
+                    except Exception as e:
+                        click.echo(f"    [ocr] error: {e}", err=True)
+                else:
+                    click.echo(f"    [ocr] source file not found", err=True)
+
+            if credits is None or not any(credits.values()):
+                click.echo(f"    ✗ No credits found — skipping", err=True)
+                continue
+
+            words_by = credits.get("words_by")
+            music_by = credits.get("music_by")
+            arranger = credits.get("arranger")
+
+            parts = []
+            if words_by:
+                parts.append(f"Words: {words_by}")
+            if music_by and music_by != words_by:
+                parts.append(f"Music: {music_by}")
+            if arranger:
+                parts.append(f"Arr: {arranger}")
+            click.echo(f"    ✓ {', '.join(parts)}")
+
+            if not dry_run:
+                database.update_song_edition_credits(
+                    song_id=row["song_id"],
+                    words_by=words_by,
+                    music_by=music_by,
+                    arranger=arranger,
+                )
+                updated += 1
+            else:
+                updated += 1
+
+        database.close()
+
+        if dry_run:
+            click.echo(f"\nDry run: would update {updated} of {len(missing)} song(s).")
+        else:
+            click.echo(f"\nUpdated credits for {updated} song(s).")
         sys.exit(0)
 
     except Exception as e:

@@ -381,6 +381,91 @@ class Database:
         )
         return [dict(row) for row in cursor.fetchall()]
 
+    def query_songs_missing_credits(self) -> list[dict]:
+        """
+        Return songs that have no credits (words_by, music_by, arranger all NULL).
+
+        Includes the source_file from the most recent service where the song appeared,
+        so the repair command can re-open the PPTX.
+        """
+        cursor = self.conn.cursor()
+        cursor.execute(
+            """
+            SELECT DISTINCT s.id AS song_id, s.canonical_title, s.display_title,
+                   se.id AS edition_id,
+                   sv.source_file
+            FROM songs s
+            LEFT JOIN song_editions se ON se.song_id = s.id
+            JOIN service_songs ss ON ss.song_id = s.id
+            JOIN services sv ON ss.service_id = sv.id
+            WHERE (se.words_by IS NULL AND se.music_by IS NULL AND se.arranger IS NULL)
+               OR se.id IS NULL
+            ORDER BY s.display_title
+            """
+        )
+        return [dict(row) for row in cursor.fetchall()]
+
+    def update_song_edition_credits(
+        self,
+        song_id: int,
+        words_by: Optional[str] = None,
+        music_by: Optional[str] = None,
+        arranger: Optional[str] = None,
+    ) -> None:
+        """
+        Update or insert credits on a song's edition row, then backfill
+        copy_events and service_songs rows that have NULL edition links.
+
+        If a NULL-credit edition row exists, updates it in place.
+        If no edition row exists, inserts one.
+        """
+        cursor = self.conn.cursor()
+
+        # Check for an existing edition with no credits
+        cursor.execute(
+            """
+            SELECT id FROM song_editions
+            WHERE song_id = ?
+              AND words_by IS NULL AND music_by IS NULL AND arranger IS NULL
+            LIMIT 1
+            """,
+            (song_id,),
+        )
+        row = cursor.fetchone()
+
+        if row:
+            edition_id = row[0]
+            cursor.execute(
+                """
+                UPDATE song_editions
+                SET words_by = ?, music_by = ?, arranger = ?
+                WHERE id = ?
+                """,
+                (words_by, music_by, arranger, edition_id),
+            )
+        else:
+            # Insert a new edition with only credits (no publisher)
+            cursor.execute(
+                """
+                INSERT INTO song_editions (song_id, words_by, music_by, arranger)
+                VALUES (?, ?, ?, ?)
+                """,
+                (song_id, words_by, music_by, arranger),
+            )
+            edition_id = cursor.lastrowid
+
+        # Backfill NULL edition links in copy_events and service_songs
+        cursor.execute(
+            "UPDATE copy_events SET song_edition_id = ? WHERE song_id = ? AND song_edition_id IS NULL",
+            (edition_id, song_id),
+        )
+        cursor.execute(
+            "UPDATE service_songs SET song_edition_id = ? WHERE song_id = ? AND song_edition_id IS NULL",
+            (edition_id, song_id),
+        )
+
+        self.conn.commit()
+
     def delete_service_data(self, service_id: int) -> None:
         """Delete all data for a service (for idempotent re-import)."""
         cursor = self.conn.cursor()
