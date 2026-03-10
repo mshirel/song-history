@@ -124,15 +124,22 @@ def validate(pptx: str, format: str) -> None:
     help="Skip interactive prompts",
 )
 @click.option(
+    "--library",
+    type=click.Path(exists=True),
+    default=None,
+    help="Path to TPH song library directory for credit lookup",
+)
+@click.option(
     "--ocr",
     is_flag=True,
-    help="Use Claude Vision API to extract credits from image-only slides (requires ANTHROPIC_API_KEY)",
+    help="Fall back to Claude Vision API for credits not found in library (requires ANTHROPIC_API_KEY)",
 )
 def import_cmd(
     pptx_or_folder: str,
     db: str,
     recurse: bool,
     non_interactive: bool,
+    library: Optional[str],
     ocr: bool,
 ) -> None:
     """Import PPTX file(s) to database.
@@ -141,11 +148,18 @@ def import_cmd(
     If folder path provided, imports all PPTX files.
     """
     try:
+        from worship_catalog.library import build_library_index, lookup_song_credits
+
         path = Path(pptx_or_folder)
         db_path = Path(db)
         database = Database(db_path)
         database.connect()
         database.init_schema()
+
+        # Build library index once upfront if provided
+        library_index = {}
+        if library:
+            library_index = build_library_index(Path(library))
 
         # Determine which files to process
         if path.is_file():
@@ -224,14 +238,25 @@ def import_cmd(
                         song.display_title,
                     )
 
+                    # Fill missing credits from library if available
+                    words_by = song.words_by
+                    music_by = song.music_by
+                    arranger = song.arranger
+                    if library_index and not any([words_by, music_by, arranger]):
+                        lib_credits = lookup_song_credits(song.canonical_title, library_index)
+                        if lib_credits:
+                            words_by = lib_credits.get("words_by")
+                            music_by = lib_credits.get("music_by")
+                            arranger = lib_credits.get("arranger")
+
                     edition_id = None
-                    if song.publisher or song.words_by or song.music_by or song.arranger:
+                    if song.publisher or words_by or music_by or arranger:
                         edition_id = database.insert_or_get_song_edition(
                             song_id=song_id,
                             publisher=song.publisher,
-                            words_by=song.words_by,
-                            music_by=song.music_by,
-                            arranger=song.arranger,
+                            words_by=words_by,
+                            music_by=music_by,
+                            arranger=arranger,
                         )
 
                     database.insert_service_song(
