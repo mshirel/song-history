@@ -1,0 +1,61 @@
+services:
+
+  # ---------------------------------------------------------------------------
+  # cli — run any worship-catalog command ad-hoc
+  #
+  # Examples:
+  #   docker compose run --rm cli report ccli --from 2026-01-01
+  #   docker compose run --rm cli report stats --all-songs
+  #   docker compose run --rm cli repair-credits
+  # ---------------------------------------------------------------------------
+  cli:
+    build: .
+    volumes:
+      - ./data:/data
+      - ./inbox:/inbox
+      - ./config:/config
+    environment:
+      - DB_PATH=/data/worship.db
+      - INBOX_DIR=/inbox
+
+  # ---------------------------------------------------------------------------
+  # watcher — poll the inbox folder every 5 minutes and import new PPTX files
+  #
+  # Start:  docker compose up -d watcher
+  # Logs:   docker compose logs -f watcher
+  # ---------------------------------------------------------------------------
+  watcher:
+    build: .
+    entrypoint: /bin/sh
+    command: >
+      -c "while true;
+            do /app/scripts/import-new.sh;
+            sleep 300;
+          done"
+    volumes:
+      - ./data:/data
+      - ./inbox:/inbox
+      - ./config:/config
+    environment:
+      - DB_PATH=/data/worship.db
+      - INBOX_DIR=/inbox
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # web — FastAPI + HTMX reporting & song browser UI
+  #
+  # Start:  docker compose up -d web
+  # Open:   http://localhost:8000
+  # ---------------------------------------------------------------------------
+  web:
+    build: .
+    entrypoint: uvicorn
+    command: worship_catalog.web.app:app --host 0.0.0.0 --port 8000
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/data
+      - ./config:/config
+    environment:
+      - DB_PATH=/data/worship.db
+    restart: unless-stopped

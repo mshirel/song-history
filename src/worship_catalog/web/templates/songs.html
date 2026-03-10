@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}Songs — Worship Catalog{% endblock %}
+{% block content %}
+<h1>Song Library</h1>
+
+<div class="search-row">
+  <input
+    type="text"
+    name="q"
+    value="{{ q }}"
+    placeholder="Search by title or credits…"
+    hx-get="/songs"
+    hx-trigger="input changed delay:300ms, search"
+    hx-target="#song-tbody"
+    hx-include="[name='q']"
+    hx-indicator="#spinner"
+    autofocus
+  >
+  <span id="spinner" class="htmx-indicator" style="align-self:center;color:#6c757d;font-size:0.85rem;">searching…</span>
+</div>
+
+<div class="card" style="padding:0;overflow:hidden;">
+  <table>
+    <thead>
+      <tr>
+        <th>Title</th>
+        <th>Words By</th>
+        <th>Music By</th>
+        <th>Arranger</th>
+        <th style="text-align:right">Performances</th>
+      </tr>
+    </thead>
+    <tbody id="song-tbody">
+      {% include "songs_rows.html" %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

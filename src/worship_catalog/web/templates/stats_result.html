@@ -1,0 +1,66 @@
+{% if not services %}
+<p style="color:#6c757d;">No services found for the selected date range.</p>
+{% else %}
+
+<div class="summary-grid">
+  <div class="stat-box">
+    <div class="val">{{ services | length }}</div>
+    <div class="lbl">Services</div>
+  </div>
+  <div class="stat-box">
+    <div class="val">{{ sorted_songs | length }}</div>
+    <div class="lbl">Unique Songs{% if not all_songs %} (top 20){% endif %}</div>
+  </div>
+  <div class="stat-box">
+    <div class="val">{{ total_performances }}</div>
+    <div class="lbl">Total Performances</div>
+  </div>
+  <div class="stat-box">
+    <div class="val">{{ total_events }}</div>
+    <div class="lbl">Copy Events</div>
+  </div>
+</div>
+
+<h3 style="font-size:1rem;margin:1rem 0 0.5rem;">{% if all_songs %}All Songs{% else %}Top Songs{% endif %}</h3>
+<table>
+  <thead>
+    <tr>
+      <th>#</th>
+      <th>Song</th>
+      <th>Credits</th>
+      <th style="text-align:right">Count</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for title, count in sorted_songs %}
+    <tr>
+      <td style="color:#6c757d;">{{ loop.index }}</td>
+      <td>{{ title }}</td>
+      <td style="font-size:0.85rem;color:#495057;">{{ song_credits.get(title, '') }}</td>
+      <td style="text-align:right">{{ count }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+<h3 style="font-size:1rem;margin:1.5rem 0 0.5rem;">Services</h3>
+<table>
+  <thead>
+    <tr>
+      <th>Date</th>
+      <th>Service</th>
+      <th>Song Leader</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for svc in services %}
+    <tr>
+      <td>{{ svc.service_date }}</td>
+      <td>{{ svc.service_name }}</td>
+      <td>{{ svc.song_leader or '—' }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+{% endif %}

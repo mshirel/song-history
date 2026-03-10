@@ -1,0 +1,39 @@
+# Python artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+dist/
+build/
+.ruff_cache/
+.mypy_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Data (mounted as volumes at runtime)
+data/
+inbox/
+
+# Library symlink (large, not needed in image — bundled index is used)
+tph_libarary/
+tph_library/
+
+# Dev / editor files
+.env
+.envrc
+.git/
+.gitignore
+tests/
+*.md
+spec.md
+GETTING_STARTED.md
+demo.sh
+QUICK_REFERENCE.sh
+ccli_report.csv
+stats_report.md

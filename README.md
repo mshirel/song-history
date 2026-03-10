@@ -19,6 +19,14 @@ pip install -e ".[ocr]"
 export ANTHROPIC_API_KEY=sk-ant-...
 ```
 
+For the web UI (optional):
+
+```bash
+pip install -e ".[web]"
+uvicorn worship_catalog.web.app:app --reload
+# Open http://localhost:8000
+```
+
 ### Basic Workflow
 
 ```
@@ -65,16 +73,22 @@ Use a custom database path:
 worship-catalog import "data/" --db "path/to/custom.db" --recurse
 ```
 
-**Fill in missing credits from the library index** (see [library index](#library-index--build-a-portable-credits-index)):
+**Fill in missing credits from the library index** (bundled by default — no flag needed):
 
 ```bash
-worship-catalog import "data/" --library-index data/library_index.json
+worship-catalog import "data/AM Worship 2026.02.15.pptx"
+```
+
+**Override with a custom library index:**
+
+```bash
+worship-catalog import "data/" --library-index /path/to/my_index.json
 ```
 
 **Use Claude Vision API** as a further fallback for credits not in the library:
 
 ```bash
-worship-catalog import "data/" --library-index data/library_index.json --ocr
+worship-catalog import "data/" --ocr
 ```
 
 Options:
@@ -84,7 +98,7 @@ Options:
 | `--db` | `data/worship.db` | SQLite database path |
 | `--recurse` | off | Recurse into subdirectories |
 | `--non-interactive` | off | Skip interactive prompts |
-| `--library-index` | `data/library_index.json` | Pre-scraped credits index |
+| `--library-index` | bundled | Pre-scraped credits index (overrides bundled default) |
 | `--ocr` | off | Fall back to Claude Vision API |
 
 ---
@@ -155,24 +169,19 @@ to backfill credits from the library index or via Vision OCR.
 **From library index (fast, no API key needed):**
 
 ```bash
-worship-catalog repair-credits \
-  --library-index data/library_index.json
+worship-catalog repair-credits
 ```
 
 **With Claude Vision OCR fallback for songs not in the library:**
 
 ```bash
-worship-catalog repair-credits \
-  --library-index data/library_index.json \
-  --ocr
+worship-catalog repair-credits --ocr
 ```
 
 **Dry run — preview changes without writing:**
 
 ```bash
-worship-catalog repair-credits \
-  --library-index data/library_index.json \
-  --dry-run
+worship-catalog repair-credits --dry-run
 ```
 
 Options:
@@ -180,17 +189,16 @@ Options:
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--db` | `data/worship.db` | SQLite database path |
-| `--library-index` | `data/library_index.json` | Pre-scraped credits index |
+| `--library-index` | bundled | Pre-scraped credits index (overrides bundled default) |
 | `--ocr` | off | Fall back to Claude Vision API |
 | `--dry-run` | off | Show what would change without writing |
 
 ---
 
-### `library index` — Build a portable credits index
+### `library index` — Rebuild the credits index from the TPH library
 
-Scrape OLE metadata from `.ppt` files in the song library directory and write a
-portable JSON index. After running this once, `import` and `repair-credits` will
-use the JSON automatically without needing the library mounted.
+The package ships with a bundled credits index covering ~3,800 songs. You only
+need this command if the library has been updated and you want to refresh the index.
 
 ```bash
 worship-catalog library index \
@@ -198,8 +206,8 @@ worship-catalog library index \
   --out data/library_index.json
 ```
 
-The index is stored at `data/library_index.json` by default and is excluded from
-version control (`.gitignore`).
+Pass the new file with `--library-index` on subsequent import/repair-credits runs,
+or replace the bundled file at `src/worship_catalog/data/library_index.json`.
 
 Options:
 
@@ -210,15 +218,109 @@ Options:
 
 ---
 
+## Automated Inbox Ingestion
+
+Drop new PPTX files into an `inbox/` folder and run the import script to process them
+automatically. Successfully imported files are moved to `inbox/archive/`; files that
+fail three times are quarantined to `inbox/quarantine/`.
+
+```bash
+./scripts/import-new.sh
+```
+
+Configure via environment variables:
+
+```bash
+INBOX_DIR=/data/inbox \
+DB_PATH=/data/worship.db \
+MAX_FAILURES=3 \
+LOG_FILE=/var/log/worship-import.log \
+./scripts/import-new.sh
+```
+
+Add to cron (example: every 5 minutes):
+
+```cron
+*/5 * * * * INBOX_DIR=/data/inbox DB_PATH=/data/worship.db /app/scripts/import-new.sh
+```
+
+---
+
+## Docker / Podman
+
+The app ships with a `Dockerfile` and `compose.yml` for portable deployment.
+The bundled library index is baked into the image — no separate volume needed.
+
+### Build
+
+```bash
+docker build -t worship-catalog .
+# or: podman build -t worship-catalog .
+```
+
+### Ad-hoc CLI commands
+
+```bash
+docker compose run --rm cli report ccli --from 2026-01-01 --to 2026-12-31
+docker compose run --rm cli report stats --all-songs
+docker compose run --rm cli repair-credits
+```
+
+### Persistent services
+
+```bash
+# Start the inbox watcher (polls every 5 minutes) and web UI
+docker compose up -d watcher web
+
+# View logs
+docker compose logs -f watcher
+```
+
+### Volume layout
+
+| Host path | Container path | Contents |
+|-----------|---------------|----------|
+| `./data/` | `/data` | `worship.db` database |
+| `./inbox/` | `/inbox` | New PPTX files to import |
+| `./config/` | `/config` | `reporting.yml` (optional) |
+
+---
+
+## Web UI
+
+Start the web server:
+
+```bash
+uvicorn worship_catalog.web.app:app --host 0.0.0.0 --port 8000
+# or via Docker: docker compose up -d web
+```
+
+Open `http://localhost:8000`.
+
+### Pages
+
+| Page | URL | Description |
+|------|-----|-------------|
+| Songs | `/songs` | Searchable song browser with performance counts and credits |
+| Reports | `/reports` | Generate CCLI CSV download or view stats report in browser |
+
+The song search filters results live as you type (powered by HTMX — no page reload).
+The stats report supports date range, song leader filter, and top-20 vs all-songs toggle.
+
+---
+
 ## Features
 
 - **Song Extraction**: Parses PowerPoint slides to extract song titles, credits, and slide positions
-- **Credit Sources**: Text-based parsing → library OLE index → Claude Vision OCR (cascading fallback)
+- **Credit Sources**: Text-based parsing → bundled library index → Claude Vision OCR (cascading fallback)
+- **Bundled Library Index**: ~3,800 song credits shipped with the package; no setup required
 - **Duplicate Handling**: Songs appearing multiple times in a service are counted once for reporting
 - **CCLI Reporting**: CSV reports for CCLI license compliance (projection + recording)
 - **Statistics**: Markdown reports with frequency tables, service summaries, and leader filtering
 - **Idempotent Imports**: Re-importing the same file updates existing data instead of duplicating it
-- **Portable Library Index**: Song credits scraped from `.ppt` OLE metadata, stored as JSON
+- **Inbox Automation**: Shell script watches a folder, archives successes, quarantines repeat failures
+- **Container Ready**: Dockerfile + compose.yml for local use or server deployment
+- **Web UI**: FastAPI + HTMX browser interface for song browsing and report generation
 
 ---
 
@@ -241,16 +343,18 @@ Default location: `data/worship.db`
 ### Running Tests
 
 ```bash
-pytest                          # Run all tests
-pytest tests/test_cli.py -v    # CLI tests
-pytest tests/test_library.py   # Library/credits parsing tests
-pytest -k "missing_credits"    # Run tests matching keyword
+pytest                           # Run all tests
+pytest tests/test_cli.py -v     # CLI tests
+pytest tests/test_web.py -v     # Web UI tests
+pytest tests/test_library.py    # Library/credits parsing tests
+pytest -k "missing_credits"     # Run tests matching keyword
 ```
 
 ### Test Coverage
 
-The project maintains 84%+ test coverage including:
+The project maintains 80%+ test coverage including:
 - CLI commands: validate, import, report ccli/stats, repair-credits, library index
+- Bundled library index resolution (`_resolve_library_index`)
 - PPTX parsing and song extraction
 - Database operations and querying
 - Title normalization and canonicalization
@@ -258,6 +362,7 @@ The project maintains 84%+ test coverage including:
 - Library index save/load round-trip
 - Song leader filtering in stats reports
 - Missing-credits repair with FK backfill
+- Web UI: songs browser, HTMX search, CCLI CSV download, stats report
 
 ---
 
@@ -267,4 +372,4 @@ The project maintains 84%+ test coverage including:
 - Song credits are parsed from text patterns (Words by, Music by, Arranger, Publisher)
 - Taylor Publications / sheet-music slides store credits in images — use `repair-credits` with `--library-index` or `--ocr` to fill these in
 - Vision OCR requires `ANTHROPIC_API_KEY` and `pip install -e ".[ocr]"`
-- Requires Python 3.12+
+- Requires Python 3.10+

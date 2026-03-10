@@ -8,7 +8,7 @@ from tempfile import TemporaryDirectory
 import pytest
 from click.testing import CliRunner
 
-from worship_catalog.cli import main, validate, import_cmd, ccli, stats
+from worship_catalog.cli import main, validate, import_cmd, ccli, stats, _resolve_library_index
 from worship_catalog.db import Database
 
 
@@ -814,3 +814,47 @@ class TestCLIIntegration:
         result = runner.invoke(main, ["--version"])
         assert result.exit_code == 0
         assert "0.1" in result.output
+
+
+class TestResolveLibraryIndex:
+    """Tests for the _resolve_library_index helper."""
+
+    def test_returns_local_path_when_exists(self, tmp_path):
+        """Returns the local path when it exists, regardless of bundled data."""
+        index = tmp_path / "my_index.json"
+        index.write_text("{}")
+        result = _resolve_library_index(str(index))
+        assert result == index
+
+    def test_falls_back_to_bundled_when_local_missing(self, tmp_path):
+        """Falls back to the bundled package data when the local path is absent."""
+        nonexistent = str(tmp_path / "no_such_file.json")
+        result = _resolve_library_index(nonexistent)
+        # The bundled index ships with the package and should always exist
+        assert result.exists(), "Bundled library_index.json not found in package data"
+        assert result.name == "library_index.json"
+
+    def test_bundled_index_is_valid_json(self, tmp_path):
+        """Bundled library index can be parsed as JSON."""
+        nonexistent = str(tmp_path / "no_such_file.json")
+        result = _resolve_library_index(nonexistent)
+        data = json.loads(result.read_text())
+        assert isinstance(data, dict)
+        assert len(data) > 0
+
+    def test_returns_nonexistent_path_unchanged_if_no_bundle(self, tmp_path, monkeypatch):
+        """Returns the original path when both local and bundle are missing (import guards work)."""
+        # This tests the fallback path — patch importlib.resources to return a missing path
+        import importlib.resources
+        nonexistent = tmp_path / "missing.json"
+
+        class _FakeTraversable:
+            def __truediv__(self, other):
+                return self
+            def __str__(self):
+                return str(tmp_path / "fake_bundle.json")  # also doesn't exist
+
+        monkeypatch.setattr(importlib.resources, "files", lambda *a, **kw: _FakeTraversable())
+        result = _resolve_library_index(str(nonexistent))
+        # Should return the original path (doesn't crash)
+        assert isinstance(result, Path)

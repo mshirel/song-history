@@ -1,5 +1,6 @@
 """CLI interface for worship catalog."""
 
+import importlib.resources
 import json
 import sys
 from datetime import datetime
@@ -7,6 +8,24 @@ from pathlib import Path
 from typing import Optional
 
 import click
+
+
+def _resolve_library_index(path_arg: str) -> Path:
+    """Return the best available library index path.
+
+    Priority:
+    1. Explicit user-supplied path (if it exists)
+    2. Bundled package data (src/worship_catalog/data/library_index.json)
+    """
+    p = Path(path_arg)
+    if p.exists():
+        return p
+    # Fall back to bundled package data
+    pkg_data = importlib.resources.files("worship_catalog") / "data" / "library_index.json"
+    bundled = Path(str(pkg_data))
+    if bundled.exists():
+        return bundled
+    return p  # return original (callers check .exists())
 
 from worship_catalog.db import Database
 from worship_catalog.extractor import extract_songs
@@ -157,9 +176,9 @@ def import_cmd(
         database.connect()
         database.init_schema()
 
-        # Load library index from JSON if it exists
+        # Load library index from JSON if it exists (local override or bundled default)
         lib_index = {}
-        lib_index_path = Path(library_index)
+        lib_index_path = _resolve_library_index(library_index)
         if lib_index_path.exists():
             lib_index = load_library_index(lib_index_path)
 
@@ -593,9 +612,9 @@ def repair_credits(db: str, library_index: str, ocr: bool, dry_run: bool) -> Non
 
         click.echo(f"Found {len(missing)} song(s) with missing credits.")
 
-        # Load library index from JSON
+        # Load library index from JSON (local override or bundled default)
         lib_index = {}
-        lib_index_path = Path(library_index)
+        lib_index_path = _resolve_library_index(library_index)
         if lib_index_path.exists():
             lib_index = load_library_index(lib_index_path)
         elif not ocr:

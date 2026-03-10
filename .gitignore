@@ -5,6 +5,15 @@ data/*.pptx
 data/*.db
 data/*.db-journal
 data/library_index.json
+
+# Inbox (PPTX files and runtime artifacts; .gitkeep files are tracked)
+inbox/*.pptx
+inbox/*.PPTX
+inbox/archive/*
+!inbox/archive/.gitkeep
+inbox/quarantine/*
+!inbox/quarantine/.gitkeep
+inbox/.import_failures.json
 tph_libarary
 tph_libarary/
 tph_library

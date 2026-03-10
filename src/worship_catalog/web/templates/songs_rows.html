@@ -1,0 +1,17 @@
+{% for song in songs %}
+<tr>
+  <td>{{ song.display_title }}</td>
+  <td>{{ song.words_by or '' }}</td>
+  <td>{{ song.music_by or '' }}</td>
+  <td>{{ song.arranger or '' }}</td>
+  <td style="text-align:right">
+    {% if song.performance_count %}
+      {{ song.performance_count }}
+    {% else %}
+      <span class="badge-missing">—</span>
+    {% endif %}
+  </td>
+</tr>
+{% else %}
+<tr><td colspan="5" style="text-align:center;color:#6c757d;padding:1.5rem">No songs found.</td></tr>
+{% endfor %}

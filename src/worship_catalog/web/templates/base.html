@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Worship Catalog{% endblock %}</title>
+  <script src="https://unpkg.com/htmx.org@1.9.12"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; }
+
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      margin: 0;
+      background: #f8f9fa;
+      color: #212529;
+    }
+
+    nav {
+      background: #1a1a2e;
+      color: #fff;
+      padding: 0.75rem 1.5rem;
+      display: flex;
+      align-items: center;
+      gap: 2rem;
+    }
+    nav .brand { font-weight: 700; font-size: 1.1rem; letter-spacing: .02em; }
+    nav a { color: #ccc; text-decoration: none; font-size: 0.95rem; }
+    nav a:hover, nav a.active { color: #fff; }
+
+    main { max-width: 1100px; margin: 2rem auto; padding: 0 1rem; }
+
+    h1 { font-size: 1.5rem; margin-bottom: 1.25rem; }
+    h2 { font-size: 1.2rem; margin: 1.5rem 0 0.75rem; }
+
+    table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+    th { background: #343a40; color: #fff; text-align: left; padding: 0.5rem 0.75rem; }
+    td { padding: 0.45rem 0.75rem; border-bottom: 1px solid #dee2e6; }
+    tr:hover td { background: #f1f3f5; }
+
+    input[type=text], input[type=date], select {
+      padding: 0.45rem 0.65rem;
+      border: 1px solid #ced4da;
+      border-radius: 4px;
+      font-size: 0.9rem;
+    }
+    button, .btn {
+      padding: 0.45rem 1rem;
+      background: #1a1a2e;
+      color: #fff;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 0.9rem;
+    }
+    button:hover { background: #2d2d5e; }
+
+    .search-row { display: flex; gap: 0.5rem; margin-bottom: 1rem; }
+    .search-row input { flex: 1; max-width: 360px; }
+
+    .form-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 0.75rem 1rem; align-items: end; margin-bottom: 1.25rem; }
+    .form-grid label { display: block; font-size: 0.8rem; font-weight: 600; margin-bottom: 0.25rem; color: #495057; }
+    .form-grid input, .form-grid select { width: 100%; }
+
+    .card { background: #fff; border-radius: 6px; padding: 1.25rem 1.5rem; box-shadow: 0 1px 3px rgba(0,0,0,.1); margin-bottom: 1.5rem; }
+    .summary-grid { display: flex; gap: 1.5rem; flex-wrap: wrap; margin-bottom: 1rem; }
+    .stat-box { background: #f1f3f5; border-radius: 6px; padding: 0.75rem 1.25rem; text-align: center; }
+    .stat-box .val { font-size: 1.6rem; font-weight: 700; }
+    .stat-box .lbl { font-size: 0.75rem; color: #6c757d; }
+
+    .htmx-indicator { opacity: 0; transition: opacity 200ms; }
+    .htmx-request .htmx-indicator { opacity: 1; }
+
+    .badge-missing { color: #dc3545; font-size: 0.8rem; }
+  </style>
+</head>
+<body>
+<nav>
+  <span class="brand">Worship Catalog</span>
+  <a href="/songs" {% if request.url.path == '/songs' %}class="active"{% endif %}>Songs</a>
+  <a href="/reports" {% if request.url.path == '/reports' %}class="active"{% endif %}>Reports</a>
+</nav>
+<main>
+  {% block content %}{% endblock %}
+</main>
+</body>
+</html>
