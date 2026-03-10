@@ -350,35 +350,68 @@ class Database:
         self.conn.commit()
         return cursor.lastrowid
 
-    def query_services(self, start_date: str, end_date: str) -> list[dict]:
-        """Query services by date range."""
+    def query_services(
+        self, start_date: str, end_date: str, song_leader: Optional[str] = None
+    ) -> list[dict]:
+        """Query services by date range, with optional case-insensitive song leader filter."""
         cursor = self.conn.cursor()
-        cursor.execute(
-            """
-            SELECT * FROM services
-            WHERE service_date >= ? AND service_date <= ?
-            ORDER BY service_date
-            """,
-            (start_date, end_date),
-        )
+        if song_leader:
+            cursor.execute(
+                """
+                SELECT * FROM services
+                WHERE service_date >= ? AND service_date <= ?
+                  AND LOWER(song_leader) LIKE LOWER(?)
+                ORDER BY service_date
+                """,
+                (start_date, end_date, f"%{song_leader}%"),
+            )
+        else:
+            cursor.execute(
+                """
+                SELECT * FROM services
+                WHERE service_date >= ? AND service_date <= ?
+                ORDER BY service_date
+                """,
+                (start_date, end_date),
+            )
         return [dict(row) for row in cursor.fetchall()]
 
-    def query_copy_events(self, start_date: str, end_date: str) -> list[dict]:
-        """Query copy events for date range."""
+    def query_copy_events(
+        self, start_date: str, end_date: str, service_ids: Optional[list[int]] = None
+    ) -> list[dict]:
+        """Query copy events for date range, optionally restricted to given service IDs."""
         cursor = self.conn.cursor()
-        cursor.execute(
-            """
-            SELECT ce.*, s.canonical_title, s.display_title, sv.service_date, sv.service_name,
-                   se.words_by, se.music_by, se.arranger
-            FROM copy_events ce
-            JOIN services sv ON ce.service_id = sv.id
-            JOIN songs s ON ce.song_id = s.id
-            LEFT JOIN song_editions se ON ce.song_edition_id = se.id
-            WHERE sv.service_date >= ? AND sv.service_date <= ? AND ce.reportable = 1
-            ORDER BY sv.service_date, s.canonical_title
-            """,
-            (start_date, end_date),
-        )
+        if service_ids is not None:
+            placeholders = ",".join("?" * len(service_ids))
+            cursor.execute(
+                f"""
+                SELECT ce.*, s.canonical_title, s.display_title, sv.service_date, sv.service_name,
+                       se.words_by, se.music_by, se.arranger
+                FROM copy_events ce
+                JOIN services sv ON ce.service_id = sv.id
+                JOIN songs s ON ce.song_id = s.id
+                LEFT JOIN song_editions se ON ce.song_edition_id = se.id
+                WHERE sv.service_date >= ? AND sv.service_date <= ?
+                  AND ce.reportable = 1
+                  AND ce.service_id IN ({placeholders})
+                ORDER BY sv.service_date, s.canonical_title
+                """,
+                (start_date, end_date, *service_ids),
+            )
+        else:
+            cursor.execute(
+                """
+                SELECT ce.*, s.canonical_title, s.display_title, sv.service_date, sv.service_name,
+                       se.words_by, se.music_by, se.arranger
+                FROM copy_events ce
+                JOIN services sv ON ce.service_id = sv.id
+                JOIN songs s ON ce.song_id = s.id
+                LEFT JOIN song_editions se ON ce.song_edition_id = se.id
+                WHERE sv.service_date >= ? AND sv.service_date <= ? AND ce.reportable = 1
+                ORDER BY sv.service_date, s.canonical_title
+                """,
+                (start_date, end_date),
+            )
         return [dict(row) for row in cursor.fetchall()]
 
     def query_songs_missing_credits(self) -> list[dict]:

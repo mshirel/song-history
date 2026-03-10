@@ -433,7 +433,13 @@ def ccli(start_date: str, end_date: str, out: str, db: str) -> None:
     is_flag=True,
     help="Export all songs instead of only the top 20 most frequent",
 )
-def stats(start_date: str, end_date: str, out: str, db: str, all_songs: bool) -> None:
+@click.option(
+    "--leader",
+    type=str,
+    default=None,
+    help="Filter to services led by this song leader (partial match, case-insensitive)",
+)
+def stats(start_date: str, end_date: str, out: str, db: str, all_songs: bool, leader: Optional[str]) -> None:
     """Generate statistics report for date range.
 
     Output markdown with frequency tables and trends.
@@ -450,9 +456,10 @@ def stats(start_date: str, end_date: str, out: str, db: str, all_songs: bool) ->
         if not end_date:
             end_date = "9999-12-31"
 
-        # Query services and events
-        services = database.query_services(start_date, end_date)
-        events = database.query_copy_events(start_date, end_date)
+        # Query services (with optional leader filter) then scope events to those services
+        services = database.query_services(start_date, end_date, song_leader=leader)
+        service_ids = [s["id"] for s in services] if leader else None
+        events = database.query_copy_events(start_date, end_date, service_ids=service_ids)
 
         # Use actual DB min/max dates for the report header instead of wildcards
         if services:
@@ -492,6 +499,8 @@ def stats(start_date: str, end_date: str, out: str, db: str, all_songs: bool) ->
         with open(output_path, "w") as f:
             f.write(f"# Song Statistics Report\n\n")
             f.write(f"**Period:** {report_start} to {report_end}\n\n")
+            if leader:
+                f.write(f"**Song Leader:** {leader}\n\n")
 
             f.write(f"## Summary\n\n")
             f.write(f"- Services: {len(services)}\n")
