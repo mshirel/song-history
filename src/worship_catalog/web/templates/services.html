@@ -3,9 +3,15 @@
 {% block content %}
 <h1>Services</h1>
 
-{# Hidden inputs carry filter+sort state across all HTMX requests #}
-<input type="hidden" name="sort"     value="{{ sort }}">
-<input type="hidden" name="sort_dir" value="{{ sort_dir }}">
+{# Hidden inputs carry sort+filter state into HTMX filter requests #}
+<input type="hidden" name="sort"       value="{{ sort }}">
+<input type="hidden" name="sort_dir"   value="{{ sort_dir }}">
+<input type="hidden" name="start_date" value="{{ start_date }}">
+<input type="hidden" name="end_date"   value="{{ end_date }}">
+<input type="hidden" name="q_service"  value="{{ q_service }}">
+<input type="hidden" name="q_leader"   value="{{ q_leader }}">
+<input type="hidden" name="q_preacher" value="{{ q_preacher }}">
+<input type="hidden" name="q_sermon"   value="{{ q_sermon }}">
 
 {# Filter bar #}
 <div class="card" style="margin-bottom:1rem;">
@@ -49,14 +55,16 @@
   </div>
 </div>
 
+{# Build a query string from current filter params for sort links #}
+{% set filter_qs %}start_date={{ start_date }}&end_date={{ end_date }}&q_service={{ q_service | urlencode }}&q_leader={{ q_leader | urlencode }}&q_preacher={{ q_preacher | urlencode }}&q_sermon={{ q_sermon | urlencode }}{% endset %}
+
 {% macro sort_th(label, col, align="left") %}
 {% set next_dir = "asc" if (sort == col and sort_dir == "desc") else "desc" %}
-<th style="text-align:{{ align }};cursor:pointer;white-space:nowrap;user-select:none;"
-    hx-get="/services"
-    hx-target="#services-tbody"
-    hx-include="[name='start_date'],[name='end_date'],[name='q_service'],[name='q_leader'],[name='q_preacher'],[name='q_sermon']"
-    hx-vals='{"sort": "{{ col }}", "sort_dir": "{{ next_dir }}"}'>
-  {{ label }}{% if sort == col %} {{ '▲' if sort_dir == 'asc' else '▼' }}{% endif %}
+<th style="text-align:{{ align }};white-space:nowrap;user-select:none;cursor:pointer;">
+  <a href="/services?sort={{ col }}&sort_dir={{ next_dir }}&{{ filter_qs }}"
+     style="color:inherit;text-decoration:none;">
+    {{ label }}{% if sort == col %}&nbsp;{{ '▲' if sort_dir == 'asc' else '▼' }}{% endif %}
+  </a>
 </th>
 {% endmacro %}
 
