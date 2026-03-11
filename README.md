@@ -301,11 +301,15 @@ Open `http://localhost:8000`.
 
 | Page | URL | Description |
 |------|-----|-------------|
-| Songs | `/songs` | Searchable song browser with performance counts and credits |
+| Songs | `/songs` | Searchable, sortable song browser with performance counts and credits |
+| Song Detail | `/songs/{id}` | Full service history for a single song |
+| Services | `/services` | Filterable, sortable list of all imported services |
+| Service Detail | `/services/{id}` | Complete setlist and metadata for a single service |
 | Reports | `/reports` | Generate CCLI CSV download or view stats report in browser |
 
-The song search filters results live as you type (powered by HTMX — no page reload).
-The stats report supports date range, song leader filter, and top-20 vs all-songs toggle.
+**Songs page:** search filters live as you type; click any column header to sort.
+**Services page:** filter by date range, service name, song leader, preacher, or sermon title; click headers to sort.
+**Reports:** stats report supports date range, song leader filter (partial match), and top-20 vs all-songs toggle.
 
 ---
 
@@ -320,7 +324,8 @@ The stats report supports date range, song leader filter, and top-20 vs all-song
 - **Idempotent Imports**: Re-importing the same file updates existing data instead of duplicating it
 - **Inbox Automation**: Shell script watches a folder, archives successes, quarantines repeat failures
 - **Container Ready**: Dockerfile + compose.yml for local use or server deployment
-- **Web UI**: FastAPI + HTMX browser interface for song browsing and report generation
+- **Web UI**: FastAPI + HTMX browser interface — sortable/filterable song and service tables, song history detail, report generation
+- **Scripture Guard**: Slide content matching Bible reference patterns (e.g. `John 3:16`, `1 Peter 1:3-4`) is automatically excluded from song title extraction
 
 ---
 

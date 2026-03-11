@@ -3,6 +3,10 @@
 {% block content %}
 <h1>Song Library</h1>
 
+{# Hidden inputs carry sort state into HTMX search requests #}
+<input type="hidden" name="sort" value="{{ sort }}">
+<input type="hidden" name="sort_dir" value="{{ sort_dir }}">
+
 <div class="search-row">
   <input
     type="text"
@@ -12,22 +16,34 @@
     hx-get="/songs"
     hx-trigger="input changed delay:300ms, search"
     hx-target="#song-tbody"
-    hx-include="[name='q']"
+    hx-include="[name='q'],[name='sort'],[name='sort_dir']"
     hx-indicator="#spinner"
     autofocus
   >
   <span id="spinner" class="htmx-indicator" style="align-self:center;color:#6c757d;font-size:0.85rem;">searching…</span>
 </div>
 
+{% macro sort_th(label, col, align="left") %}
+{% set next_dir = "asc" if (sort == col and sort_dir == "desc") else "desc" %}
+<th style="text-align:{{ align }};cursor:pointer;white-space:nowrap;user-select:none;"
+    hx-get="/songs"
+    hx-target="#song-tbody"
+    hx-include="[name='q']"
+    hx-vals='{"sort": "{{ col }}", "sort_dir": "{{ next_dir }}"}'
+    hx-indicator="#spinner">
+  {{ label }}{% if sort == col %} {{ '▲' if sort_dir == 'asc' else '▼' }}{% endif %}
+</th>
+{% endmacro %}
+
 <div class="card" style="padding:0;overflow:hidden;">
   <table>
     <thead>
       <tr>
-        <th>Title</th>
-        <th>Words By</th>
-        <th>Music By</th>
-        <th>Arranger</th>
-        <th style="text-align:right">Performances</th>
+        {{ sort_th("Title", "display_title") }}
+        {{ sort_th("Words By", "words_by") }}
+        {{ sort_th("Music By", "music_by") }}
+        {{ sort_th("Arranger", "arranger") }}
+        {{ sort_th("Performances", "performance_count", align="right") }}
       </tr>
     </thead>
     <tbody id="song-tbody">

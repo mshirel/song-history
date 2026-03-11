@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Optional
 
 from worship_catalog.normalize import (
+    _SCRIPTURE_RE,
     canonicalize_title,
     detect_publisher,
     parse_credits,
@@ -294,6 +295,10 @@ def _extract_title_candidates(slide: Slide) -> list[str]:
 
         # Skip very long lines (likely lyrics)
         if len(line) > 120:
+            continue
+
+        # Skip scripture references (e.g., "John 3:16", "1 Peter 1:3-4")
+        if _SCRIPTURE_RE.match(line):
             continue
 
         candidates.append(line)

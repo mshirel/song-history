@@ -366,3 +366,105 @@ class TestServiceDetailPage:
     def test_detail_404_for_missing_service(self, client):
         response = client.get("/services/99999")
         assert response.status_code == 404
+
+
+class TestSongDetailPage:
+    def _get_song_id(self, client):
+        import re
+        response = client.get("/songs")
+        match = re.search(r'/songs/(\d+)', response.text)
+        assert match, "No song detail links found"
+        return int(match.group(1))
+
+    def test_song_title_is_linked(self, client):
+        response = client.get("/songs")
+        assert "/songs/" in response.text
+
+    def test_detail_returns_html(self, client):
+        song_id = self._get_song_id(client)
+        response = client.get(f"/songs/{song_id}")
+        assert response.status_code == 200
+        assert "text/html" in response.headers["content-type"]
+
+    def test_detail_shows_song_title(self, client):
+        song_id = self._get_song_id(client)
+        response = client.get(f"/songs/{song_id}")
+        assert "Amazing Grace" in response.text or "How Great Thou Art" in response.text
+
+    def test_detail_shows_credits(self, client):
+        response = client.get(f"/songs/{self._get_song_id(client)}")
+        assert "John Newton" in response.text or "Stuart K. Hine" in response.text
+
+    def test_detail_shows_service_history(self, client):
+        song_id = self._get_song_id(client)
+        response = client.get(f"/songs/{song_id}")
+        assert "2026-02-15" in response.text
+
+    def test_detail_shows_back_link(self, client):
+        song_id = self._get_song_id(client)
+        response = client.get(f"/songs/{song_id}")
+        assert "/songs" in response.text
+
+    def test_detail_404_for_missing_song(self, client):
+        response = client.get("/songs/99999")
+        assert response.status_code == 404
+
+
+class TestSongsSorting:
+    def test_sort_by_title_asc(self, client):
+        response = client.get("/songs?sort=display_title&sort_dir=asc")
+        assert response.status_code == 200
+
+    def test_sort_by_performance_count(self, client):
+        response = client.get("/songs?sort=performance_count&sort_dir=desc")
+        assert response.status_code == 200
+
+    def test_sort_indicator_shown(self, client):
+        response = client.get("/songs?sort=display_title&sort_dir=asc")
+        assert "▲" in response.text
+
+    def test_invalid_sort_col_falls_back(self, client):
+        response = client.get("/songs?sort=INVALID&sort_dir=asc")
+        assert response.status_code == 200
+
+    def test_htmx_partial_sort(self, client):
+        response = client.get(
+            "/songs?sort=display_title&sort_dir=desc",
+            headers={"HX-Request": "true"},
+        )
+        assert response.status_code == 200
+        assert "<tr>" in response.text
+
+
+class TestServicesFiltering:
+    def test_filter_by_leader(self, client):
+        response = client.get("/services?q_leader=Matt")
+        assert response.status_code == 200
+        assert "Matt" in response.text
+
+    def test_filter_no_match(self, client):
+        response = client.get("/services?q_leader=ZZZNOMATCH")
+        assert response.status_code == 200
+        assert "No services" in response.text
+
+    def test_filter_by_date_range(self, client):
+        response = client.get("/services?start_date=2026-01-01&end_date=2026-12-31")
+        assert response.status_code == 200
+        assert "AM Worship" in response.text
+
+    def test_sort_by_date_asc(self, client):
+        response = client.get("/services?sort=service_date&sort_dir=asc")
+        assert response.status_code == 200
+        assert "▲" in response.text
+
+    def test_htmx_partial_returns_rows(self, client):
+        response = client.get(
+            "/services?q_leader=Matt",
+            headers={"HX-Request": "true"},
+        )
+        assert response.status_code == 200
+        assert "<tr>" in response.text
+
+    def test_invalid_sort_col_falls_back(self, client):
+        response = client.get("/services?sort=INVALID")
+        assert response.status_code == 200

@@ -123,6 +123,14 @@ def select_best_title(candidates: list[str]) -> Optional[str]:
     return min(normalized, key=len)
 
 
+# Scripture reference pattern: "John 3:16", "1 Peter 1:3-4", "2 Corinthians 4:7", "Psalm 23:1-3"
+# Matches: optional numeric book prefix + book name + chapter:verse[-verse]
+_SCRIPTURE_RE = re.compile(
+    r"^(1|2|3)?\s*[A-Za-z][a-z]+(\s[A-Za-z][a-z]+)?\s+\d{1,3}:\d{1,3}(-\d{1,3})?$",
+    re.IGNORECASE,
+)
+
+
 def _is_invalid_line(line: str) -> bool:
     """Check if a line is a footer/copyright/invalid marker."""
     lower = line.lower()
@@ -156,6 +164,10 @@ def _is_invalid_line(line: str) -> bool:
 
     # Very long lines are likely lyrics, not titles
     if len(line) > 120:
+        return True
+
+    # Scripture references (e.g., "John 3:16", "1 Peter 1:3-4", "Psalm 23:1-3")
+    if _SCRIPTURE_RE.match(line.strip()):
         return True
 
     return False

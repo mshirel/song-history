@@ -44,19 +44,28 @@ async def root():
     return RedirectResponse(url="/songs")
 
 
+_SONGS_SORT_COLS = {"display_title", "words_by", "music_by", "arranger", "performance_count"}
+
+
 @app.get("/songs", response_class=HTMLResponse)
-async def songs(request: Request, q: Optional[str] = Query(default=None)):
+async def songs(
+    request: Request,
+    q: Optional[str] = Query(default=None),
+    sort: str = Query(default="performance_count"),
+    sort_dir: str = Query(default="desc"),
+):
+    sort = sort if sort in _SONGS_SORT_COLS else "performance_count"
+    sort_dir = "asc" if sort_dir == "asc" else "desc"
     db = _get_db()
-    rows = _query_songs(db, q)
+    rows = _query_songs(db, q, sort=sort, sort_dir=sort_dir)
     db.close()
 
     if request.headers.get("HX-Request"):
-        # HTMX partial — return just the table body
         return templates.TemplateResponse(
             request, "songs_rows.html", {"songs": rows}
         )
     return templates.TemplateResponse(
-        request, "songs.html", {"songs": rows, "q": q or ""}
+        request, "songs.html", {"songs": rows, "q": q or "", "sort": sort, "sort_dir": sort_dir}
     )
 
 
@@ -178,12 +187,56 @@ async def reports_stats(
     )
 
 
-@app.get("/services", response_class=HTMLResponse)
-async def services_list(request: Request):
+@app.get("/songs/{song_id}", response_class=HTMLResponse)
+async def song_detail(request: Request, song_id: int):
     db = _get_db()
-    services = _query_all_services(db)
+    song = _query_song_by_id(db, song_id)
+    if not song:
+        db.close()
+        _log.warning("Song not found", extra={"song_id": song_id})
+        raise HTTPException(status_code=404, detail="Song not found")
+    editions = _query_song_editions(db, song_id)
+    service_history = _query_song_services(db, song_id)
     db.close()
-    return templates.TemplateResponse(request, "services.html", {"services": services})
+    return templates.TemplateResponse(
+        request,
+        "song_detail.html",
+        {"song": song, "editions": editions, "service_history": service_history},
+    )
+
+
+_SERVICES_SORT_COLS = {"service_date", "service_name", "song_leader", "preacher", "song_count"}
+
+
+@app.get("/services", response_class=HTMLResponse)
+async def services_list(
+    request: Request,
+    sort: str = Query(default="service_date"),
+    sort_dir: str = Query(default="desc"),
+    q_service: str = Query(default=""),
+    q_leader: str = Query(default=""),
+    q_preacher: str = Query(default=""),
+    q_sermon: str = Query(default=""),
+    start_date: str = Query(default=""),
+    end_date: str = Query(default=""),
+):
+    sort = sort if sort in _SERVICES_SORT_COLS else "service_date"
+    sort_dir = "asc" if sort_dir == "asc" else "desc"
+    db = _get_db()
+    services = _query_all_services(
+        db, sort=sort, sort_dir=sort_dir,
+        q_service=q_service, q_leader=q_leader, q_preacher=q_preacher,
+        q_sermon=q_sermon, start_date=start_date, end_date=end_date,
+    )
+    db.close()
+    ctx = {
+        "services": services, "sort": sort, "sort_dir": sort_dir,
+        "q_service": q_service, "q_leader": q_leader, "q_preacher": q_preacher,
+        "q_sermon": q_sermon, "start_date": start_date, "end_date": end_date,
+    }
+    if request.headers.get("HX-Request"):
+        return templates.TemplateResponse(request, "services_rows.html", ctx)
+    return templates.TemplateResponse(request, "services.html", ctx)
 
 
 @app.get("/services/{service_id}", response_class=HTMLResponse)
@@ -205,54 +258,123 @@ async def service_detail(request: Request, service_id: int):
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _query_songs(db: Database, search: Optional[str] = None) -> list[dict]:
-    """Return all songs with performance count, optionally filtered by search term."""
+def _query_songs(
+    db: Database,
+    search: Optional[str] = None,
+    sort: str = "performance_count",
+    sort_dir: str = "desc",
+) -> list[dict]:
+    """Return all songs with performance count, optionally filtered and sorted."""
+    order = f"{sort} {sort_dir.upper()}, s.display_title"
     cursor = db.conn.cursor()
+    base = """
+        SELECT s.id, s.display_title, s.canonical_title,
+               se.words_by, se.music_by, se.arranger,
+               COUNT(DISTINCT ss.service_id) AS performance_count
+        FROM songs s
+        LEFT JOIN song_editions se ON se.song_id = s.id
+        LEFT JOIN service_songs ss ON ss.song_id = s.id
+    """
     if search:
         like = f"%{search}%"
         cursor.execute(
-            """
-            SELECT s.id, s.display_title, s.canonical_title,
-                   se.words_by, se.music_by, se.arranger,
-                   COUNT(DISTINCT ss.service_id) AS performance_count
-            FROM songs s
-            LEFT JOIN song_editions se ON se.song_id = s.id
-            LEFT JOIN service_songs ss ON ss.song_id = s.id
+            base + """
             WHERE LOWER(s.display_title) LIKE LOWER(?)
                OR LOWER(COALESCE(se.words_by, '')) LIKE LOWER(?)
                OR LOWER(COALESCE(se.music_by, '')) LIKE LOWER(?)
             GROUP BY s.id
-            ORDER BY performance_count DESC, s.display_title
-            """,
+            ORDER BY """ + order,
             (like, like, like),
         )
     else:
-        cursor.execute(
-            """
-            SELECT s.id, s.display_title, s.canonical_title,
-                   se.words_by, se.music_by, se.arranger,
-                   COUNT(DISTINCT ss.service_id) AS performance_count
-            FROM songs s
-            LEFT JOIN song_editions se ON se.song_id = s.id
-            LEFT JOIN service_songs ss ON ss.song_id = s.id
-            GROUP BY s.id
-            ORDER BY performance_count DESC, s.display_title
-            """
-        )
+        cursor.execute(base + "GROUP BY s.id ORDER BY " + order)
     return [dict(row) for row in cursor.fetchall()]
 
 
-def _query_all_services(db: Database) -> list[dict]:
-    """Return all services ordered by date descending."""
+def _query_song_by_id(db: Database, song_id: int) -> Optional[dict]:
+    cursor = db.conn.cursor()
+    cursor.execute("SELECT * FROM songs WHERE id = ?", (song_id,))
+    row = cursor.fetchone()
+    return dict(row) if row else None
+
+
+def _query_song_editions(db: Database, song_id: int) -> list[dict]:
+    cursor = db.conn.cursor()
+    cursor.execute(
+        "SELECT * FROM song_editions WHERE song_id = ? ORDER BY id",
+        (song_id,),
+    )
+    return [dict(row) for row in cursor.fetchall()]
+
+
+def _query_song_services(db: Database, song_id: int) -> list[dict]:
+    """Return all services where a song was performed, with position and copy types."""
     cursor = db.conn.cursor()
     cursor.execute(
         """
+        SELECT sv.id AS service_id, sv.service_date, sv.service_name, sv.song_leader,
+               ss.ordinal,
+               GROUP_CONCAT(DISTINCT ce.reproduction_type) AS copy_types
+        FROM services sv
+        JOIN service_songs ss ON ss.service_id = sv.id
+        LEFT JOIN copy_events ce ON ce.service_id = sv.id
+                                 AND ce.song_id = ss.song_id
+                                 AND ce.reportable = 1
+        WHERE ss.song_id = ?
+        GROUP BY sv.id
+        ORDER BY sv.service_date DESC
+        """,
+        (song_id,),
+    )
+    return [dict(row) for row in cursor.fetchall()]
+
+
+def _query_all_services(
+    db: Database,
+    sort: str = "service_date",
+    sort_dir: str = "desc",
+    q_service: str = "",
+    q_leader: str = "",
+    q_preacher: str = "",
+    q_sermon: str = "",
+    start_date: str = "",
+    end_date: str = "",
+) -> list[dict]:
+    """Return services with optional filtering and sorting."""
+    where_clauses = []
+    params: list = []
+    if q_service:
+        where_clauses.append("LOWER(sv.service_name) LIKE LOWER(?)")
+        params.append(f"%{q_service}%")
+    if q_leader:
+        where_clauses.append("LOWER(COALESCE(sv.song_leader,'')) LIKE LOWER(?)")
+        params.append(f"%{q_leader}%")
+    if q_preacher:
+        where_clauses.append("LOWER(COALESCE(sv.preacher,'')) LIKE LOWER(?)")
+        params.append(f"%{q_preacher}%")
+    if q_sermon:
+        where_clauses.append("LOWER(COALESCE(sv.sermon_title,'')) LIKE LOWER(?)")
+        params.append(f"%{q_sermon}%")
+    if start_date:
+        where_clauses.append("sv.service_date >= ?")
+        params.append(start_date)
+    if end_date:
+        where_clauses.append("sv.service_date <= ?")
+        params.append(end_date)
+
+    where_sql = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
+    order = f"{sort} {sort_dir.upper()}, sv.service_name"
+    cursor = db.conn.cursor()
+    cursor.execute(
+        f"""
         SELECT sv.*, COUNT(DISTINCT ss.song_id) AS song_count
         FROM services sv
         LEFT JOIN service_songs ss ON ss.service_id = sv.id
+        {where_sql}
         GROUP BY sv.id
-        ORDER BY sv.service_date DESC, sv.service_name
-        """
+        ORDER BY {order}
+        """,
+        params,
     )
     return [dict(row) for row in cursor.fetchall()]
 

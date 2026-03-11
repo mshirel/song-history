@@ -1,0 +1,17 @@
+{% if not services %}
+<tr><td colspan="7" style="text-align:center;color:#6c757d;padding:1.5rem">No services found.</td></tr>
+{% else %}
+{% for svc in services %}
+<tr>
+  <td style="white-space:nowrap;">{{ svc.service_date }}</td>
+  <td>{{ svc.service_name }}</td>
+  <td>{{ svc.song_leader or '—' }}</td>
+  <td>{{ svc.preacher or '—' }}</td>
+  <td style="font-size:0.85rem;color:#495057;">{{ svc.sermon_title or '' }}</td>
+  <td style="text-align:right;">{{ svc.song_count }}</td>
+  <td style="text-align:right;white-space:nowrap;">
+    <a href="/services/{{ svc.id }}" style="color:#1a1a2e;font-size:0.85rem;">View →</a>
+  </td>
+</tr>
+{% endfor %}
+{% endif %}

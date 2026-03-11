@@ -1,0 +1,98 @@
+{% extends "base.html" %}
+{% block title %}{{ song.display_title }} — Worship Catalog{% endblock %}
+{% block content %}
+
+<div style="margin-bottom:1rem;">
+  <a href="/songs" style="color:#6c757d;font-size:0.85rem;text-decoration:none;">← All Songs</a>
+</div>
+
+<h1 style="margin-bottom:0.25rem;">{{ song.display_title }}</h1>
+{% if song.canonical_title != song.display_title %}
+<p style="color:#6c757d;font-size:0.85rem;margin:0 0 1.25rem;">
+  Canonical: <em>{{ song.canonical_title }}</em>
+</p>
+{% else %}
+<div style="margin-bottom:1.25rem;"></div>
+{% endif %}
+
+<!-- Credits -->
+{% if editions %}
+{% set ed = editions[0] %}
+<div class="card" style="margin-bottom:1.5rem;">
+  <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:0.75rem 1.5rem;">
+    {% if ed.words_by %}
+    <div>
+      <div style="font-size:0.75rem;font-weight:600;color:#6c757d;text-transform:uppercase;letter-spacing:.05em;margin-bottom:0.2rem;">Words By</div>
+      <div>{{ ed.words_by }}</div>
+    </div>
+    {% endif %}
+    {% if ed.music_by %}
+    <div>
+      <div style="font-size:0.75rem;font-weight:600;color:#6c757d;text-transform:uppercase;letter-spacing:.05em;margin-bottom:0.2rem;">Music By</div>
+      <div>{{ ed.music_by }}</div>
+    </div>
+    {% endif %}
+    {% if ed.arranger %}
+    <div>
+      <div style="font-size:0.75rem;font-weight:600;color:#6c757d;text-transform:uppercase;letter-spacing:.05em;margin-bottom:0.2rem;">Arranger</div>
+      <div>{{ ed.arranger }}</div>
+    </div>
+    {% endif %}
+    {% if ed.publisher %}
+    <div>
+      <div style="font-size:0.75rem;font-weight:600;color:#6c757d;text-transform:uppercase;letter-spacing:.05em;margin-bottom:0.2rem;">Publisher</div>
+      <div style="font-size:0.85rem;">{{ ed.publisher }}</div>
+    </div>
+    {% endif %}
+    {% if ed.copyright_notice %}
+    <div style="grid-column:1/-1;">
+      <div style="font-size:0.75rem;font-weight:600;color:#6c757d;text-transform:uppercase;letter-spacing:.05em;margin-bottom:0.2rem;">Copyright</div>
+      <div style="font-size:0.85rem;color:#495057;">{{ ed.copyright_notice }}</div>
+    </div>
+    {% endif %}
+  </div>
+</div>
+{% endif %}
+
+<!-- Performance summary -->
+<h2 style="font-size:1.1rem;margin-bottom:0.75rem;">
+  Service History
+  <span style="font-weight:400;color:#6c757d;font-size:0.9rem;">
+    — sung {{ service_history | length }} time{{ 's' if service_history | length != 1 else '' }}
+  </span>
+</h2>
+
+{% if not service_history %}
+<p style="color:#6c757d;">No services recorded for this song.</p>
+{% else %}
+<div class="card" style="padding:0;overflow:hidden;">
+  <table>
+    <thead>
+      <tr>
+        <th>Date</th>
+        <th>Service</th>
+        <th>Song Leader</th>
+        <th style="text-align:center;">#</th>
+        <th>Reproductions</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for svc in service_history %}
+      <tr>
+        <td style="white-space:nowrap;">
+          <a href="/services/{{ svc.service_id }}" style="color:#1a1a2e;text-decoration:none;font-weight:500;">
+            {{ svc.service_date }}
+          </a>
+        </td>
+        <td>{{ svc.service_name }}</td>
+        <td>{{ svc.song_leader or '—' }}</td>
+        <td style="text-align:center;color:#6c757d;">{{ svc.ordinal }}</td>
+        <td style="font-size:0.85rem;color:#495057;">{{ svc.copy_types or '—' }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+
+{% endblock %}

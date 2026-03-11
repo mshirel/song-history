@@ -18,10 +18,12 @@
       <div>{{ service.song_leader or '—' }}</div>
     </div>
 
+    {% if service.preacher %}
     <div>
       <div style="font-size:0.75rem;font-weight:600;color:#6c757d;text-transform:uppercase;letter-spacing:.05em;margin-bottom:0.2rem;">Preacher</div>
-      <div>{{ service.preacher or '—' }}</div>
+      <div>{{ service.preacher }}</div>
     </div>
+    {% endif %}
 
     {% if service.sermon_title %}
     <div>

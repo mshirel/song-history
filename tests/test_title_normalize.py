@@ -1,7 +1,7 @@
 """Unit tests for title normalization and stripping logic."""
 
 import pytest
-from worship_catalog.normalize import strip_title_prefix
+from worship_catalog.normalize import _is_invalid_line, strip_title_prefix
 
 
 @pytest.mark.unit
@@ -235,3 +235,35 @@ class TestHymnNumberFiltering:
         best = select_best_title(candidates)
         assert best == "Blessed Assurance"
 
+
+@pytest.mark.unit
+class TestScriptureGuard:
+    """Tests that scripture references are flagged as invalid lines."""
+
+    def test_single_chapter_verse(self):
+        assert _is_invalid_line("John 3:16") is True
+
+    def test_verse_range(self):
+        assert _is_invalid_line("1 Peter 1:3-4") is True
+
+    def test_two_word_book(self):
+        assert _is_invalid_line("2 Corinthians 4:7") is True
+
+    def test_psalm(self):
+        assert _is_invalid_line("Psalm 23:1-3") is True
+
+    def test_multi_verse_range(self):
+        assert _is_invalid_line("Romans 8:28") is True
+
+    def test_with_leading_whitespace(self):
+        assert _is_invalid_line("  John 3:16  ") is True
+
+    def test_song_title_not_flagged(self):
+        assert _is_invalid_line("Amazing Grace") is False
+
+    def test_song_title_with_number_not_flagged(self):
+        assert _is_invalid_line("10,000 Reasons") is False
+
+    def test_partial_reference_not_flagged(self):
+        # No chapter:verse pattern → not a scripture ref
+        assert _is_invalid_line("John") is False
