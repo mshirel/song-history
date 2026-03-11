@@ -2,12 +2,17 @@
 
 import importlib.resources
 import json
+import logging
 import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
 import click
+
+from worship_catalog.log_config import setup as _setup_logging
+
+_log = logging.getLogger("worship_catalog.cli")
 
 
 def _resolve_library_index(path_arg: str) -> Path:
@@ -38,7 +43,7 @@ def main():
 
     Extract, organize, and track songs from worship presentation files.
     """
-    pass
+    _setup_logging()
 
 
 @main.command()
@@ -195,6 +200,7 @@ def import_cmd(
             click.echo("No PPTX files found", err=True)
             sys.exit(1)
 
+        _log.info("Starting import", extra={"path": str(path), "files": len(pptx_files)})
         total_songs = 0
         for pptx_file in pptx_files:
             click.echo(f"Processing {pptx_file.name}...", err=False)
@@ -311,6 +317,11 @@ def import_cmd(
                     )
 
                 total_songs += len(result.songs)
+                _log.info(
+                    "File imported",
+                    extra={"file": pptx_file.name, "songs": len(result.songs),
+                           "service_date": result.service_date, "service_name": result.service_name},
+                )
                 click.echo(
                     f"  ✓ Imported {len(result.songs)} songs"
                     + (" (review metadata)" if needs_review else ""),
@@ -318,10 +329,12 @@ def import_cmd(
                 )
 
             except Exception as e:
+                _log.error("File import failed", extra={"file": pptx_file.name, "error": str(e)})
                 click.echo(f"  ✗ Error: {e}", err=True)
                 continue
 
         database.close()
+        _log.info("Import complete", extra={"total_songs": total_songs, "files": len(pptx_files)})
         click.echo(f"\nTotal: {total_songs} songs imported", err=False)
         sys.exit(0)
 
@@ -640,10 +653,12 @@ def repair_credits(db: str, library_index: str, ocr: bool, dry_run: bool) -> Non
         missing = database.query_songs_missing_credits()
 
         if not missing:
+            _log.info("repair-credits: no songs with missing credits")
             click.echo("No songs with missing credits found.")
             database.close()
             sys.exit(0)
 
+        _log.info("repair-credits started", extra={"missing": len(missing), "dry_run": dry_run})
         click.echo(f"Found {len(missing)} song(s) with missing credits.")
 
         # Load library index from JSON (local override or bundled default)
@@ -731,6 +746,10 @@ def repair_credits(db: str, library_index: str, ocr: bool, dry_run: bool) -> Non
 
         database.close()
 
+        _log.info(
+            "repair-credits complete",
+            extra={"updated": updated, "missing": len(missing), "dry_run": dry_run},
+        )
         if dry_run:
             click.echo(f"\nDry run: would update {updated} of {len(missing)} song(s).")
         else:
@@ -738,6 +757,7 @@ def repair_credits(db: str, library_index: str, ocr: bool, dry_run: bool) -> Non
         sys.exit(0)
 
     except Exception as e:
+        _log.exception("repair-credits error", extra={"error": str(e)})
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
 

@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}Services — Worship Catalog{% endblock %}
+{% block content %}
+<h1>Services</h1>
+
+{% if not services %}
+<p style="color:#6c757d;">No services have been imported yet.</p>
+{% else %}
+<div class="card" style="padding:0;overflow:hidden;">
+  <table>
+    <thead>
+      <tr>
+        <th>Date</th>
+        <th>Service</th>
+        <th>Song Leader</th>
+        <th>Preacher</th>
+        <th>Sermon</th>
+        <th style="text-align:right">Songs</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for svc in services %}
+      <tr>
+        <td style="white-space:nowrap;">{{ svc.service_date }}</td>
+        <td>{{ svc.service_name }}</td>
+        <td>{{ svc.song_leader or '—' }}</td>
+        <td>{{ svc.preacher or '—' }}</td>
+        <td style="font-size:0.85rem;color:#495057;">{{ svc.sermon_title or '' }}</td>
+        <td style="text-align:right;">{{ svc.song_count }}</td>
+        <td style="text-align:right;white-space:nowrap;">
+          <a href="/services/{{ svc.id }}" style="color:#1a1a2e;font-size:0.85rem;">View →</a>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+{% endblock %}

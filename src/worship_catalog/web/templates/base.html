@@ -77,6 +77,7 @@
 <nav>
   <span class="brand">Worship Catalog</span>
   <a href="/songs" {% if request.url.path == '/songs' %}class="active"{% endif %}>Songs</a>
+  <a href="/services" {% if request.url.path.startswith('/services') %}class="active"{% endif %}>Services</a>
   <a href="/reports" {% if request.url.path == '/reports' %}class="active"{% endif %}>Reports</a>
 </nav>
 <main>

@@ -1,0 +1,87 @@
+{% extends "base.html" %}
+{% block title %}{{ service.service_date }} {{ service.service_name }} — Worship Catalog{% endblock %}
+{% block content %}
+
+<div style="margin-bottom:1rem;">
+  <a href="/services" style="color:#6c757d;font-size:0.85rem;text-decoration:none;">← All Services</a>
+</div>
+
+<h1 style="margin-bottom:0.25rem;">{{ service.service_name }}</h1>
+<p style="color:#6c757d;margin:0 0 1.5rem;">{{ service.service_date }}</p>
+
+<!-- Service metadata -->
+<div class="card" style="margin-bottom:1.5rem;">
+  <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:0.75rem 1.5rem;">
+
+    <div>
+      <div style="font-size:0.75rem;font-weight:600;color:#6c757d;text-transform:uppercase;letter-spacing:.05em;margin-bottom:0.2rem;">Song Leader</div>
+      <div>{{ service.song_leader or '—' }}</div>
+    </div>
+
+    <div>
+      <div style="font-size:0.75rem;font-weight:600;color:#6c757d;text-transform:uppercase;letter-spacing:.05em;margin-bottom:0.2rem;">Preacher</div>
+      <div>{{ service.preacher or '—' }}</div>
+    </div>
+
+    {% if service.sermon_title %}
+    <div>
+      <div style="font-size:0.75rem;font-weight:600;color:#6c757d;text-transform:uppercase;letter-spacing:.05em;margin-bottom:0.2rem;">Sermon</div>
+      <div>{{ service.sermon_title }}</div>
+    </div>
+    {% endif %}
+
+    <div>
+      <div style="font-size:0.75rem;font-weight:600;color:#6c757d;text-transform:uppercase;letter-spacing:.05em;margin-bottom:0.2rem;">Source File</div>
+      <div style="font-size:0.85rem;color:#495057;word-break:break-all;">{{ service.source_file.replace('\\', '/').split('/')[-1] }}</div>
+    </div>
+
+    <div>
+      <div style="font-size:0.75rem;font-weight:600;color:#6c757d;text-transform:uppercase;letter-spacing:.05em;margin-bottom:0.2rem;">Imported</div>
+      <div style="font-size:0.85rem;color:#495057;">{{ service.imported_at[:16] if service.imported_at else '—' }}</div>
+    </div>
+
+  </div>
+</div>
+
+<!-- Setlist -->
+<h2 style="font-size:1.1rem;margin-bottom:0.75rem;">Setlist</h2>
+
+{% if not songs %}
+<p style="color:#6c757d;">No songs recorded for this service.</p>
+{% else %}
+<div class="card" style="padding:0;overflow:hidden;">
+  <table>
+    <thead>
+      <tr>
+        <th style="width:2.5rem;">#</th>
+        <th>Song</th>
+        <th>Words By</th>
+        <th>Music By</th>
+        <th>Arranger</th>
+        <th>Publisher</th>
+        <th>Reproductions</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for song in songs %}
+      <tr>
+        <td style="color:#6c757d;text-align:center;">{{ song.ordinal }}</td>
+        <td>
+          <strong>{{ song.display_title }}</strong>
+          {% if song.copyright_notice %}
+          <div style="font-size:0.78rem;color:#6c757d;margin-top:0.15rem;">{{ song.copyright_notice }}</div>
+          {% endif %}
+        </td>
+        <td style="font-size:0.85rem;">{{ song.words_by or '' }}</td>
+        <td style="font-size:0.85rem;">{{ song.music_by or '' }}</td>
+        <td style="font-size:0.85rem;">{{ song.arranger or '' }}</td>
+        <td style="font-size:0.85rem;color:#495057;">{{ song.publisher or '' }}</td>
+        <td style="font-size:0.85rem;color:#495057;">{{ song.copy_types or '—' }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+
+{% endblock %}

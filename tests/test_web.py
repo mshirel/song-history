@@ -270,3 +270,99 @@ class TestStatsReport:
         # Both fixture songs should appear under Matt
         assert "Amazing Grace" in response.text
         assert "How Great Thou Art" in response.text
+
+
+class TestServicesListPage:
+    def test_services_page_returns_html(self, client):
+        response = client.get("/services")
+        assert response.status_code == 200
+        assert "text/html" in response.headers["content-type"]
+
+    def test_services_page_lists_services(self, client):
+        response = client.get("/services")
+        assert "AM Worship" in response.text
+        assert "2026-02-15" in response.text
+
+    def test_services_page_shows_leader(self, client):
+        response = client.get("/services")
+        assert "Matt" in response.text
+
+    def test_services_page_shows_song_count(self, client):
+        response = client.get("/services")
+        # Fixture has 2 songs in one service
+        assert "2" in response.text
+
+    def test_services_page_links_to_detail(self, client, db_with_songs):
+        response = client.get("/services")
+        assert "/services/" in response.text
+
+    def test_services_empty_db_shows_message(self, client, tmp_path, monkeypatch):
+        empty_db = tmp_path / "empty.db"
+        db = Database(empty_db)
+        db.connect()
+        db.init_schema()
+        db.close()
+        monkeypatch.setenv("DB_PATH", str(empty_db))
+        import worship_catalog.web.app as app_module
+        from importlib import reload
+        reload(app_module)
+        c = TestClient(app_module.app)
+        response = c.get("/services")
+        assert response.status_code == 200
+        assert "No services" in response.text
+
+    def test_services_nav_link_is_active(self, client):
+        response = client.get("/services")
+        assert 'class="active"' in response.text
+
+
+class TestServiceDetailPage:
+    def _get_service_id(self, client):
+        """Fetch the services list and extract a valid service ID from a link."""
+        response = client.get("/services")
+        import re
+        match = re.search(r'/services/(\d+)', response.text)
+        assert match, "No service detail links found"
+        return int(match.group(1))
+
+    def test_detail_returns_html(self, client):
+        svc_id = self._get_service_id(client)
+        response = client.get(f"/services/{svc_id}")
+        assert response.status_code == 200
+        assert "text/html" in response.headers["content-type"]
+
+    def test_detail_shows_service_name(self, client):
+        svc_id = self._get_service_id(client)
+        response = client.get(f"/services/{svc_id}")
+        assert "AM Worship" in response.text
+
+    def test_detail_shows_service_date(self, client):
+        svc_id = self._get_service_id(client)
+        response = client.get(f"/services/{svc_id}")
+        assert "2026-02-15" in response.text
+
+    def test_detail_shows_song_leader(self, client):
+        svc_id = self._get_service_id(client)
+        response = client.get(f"/services/{svc_id}")
+        assert "Matt" in response.text
+
+    def test_detail_shows_setlist(self, client):
+        svc_id = self._get_service_id(client)
+        response = client.get(f"/services/{svc_id}")
+        assert "Amazing Grace" in response.text
+        assert "How Great Thou Art" in response.text
+
+    def test_detail_shows_credits(self, client):
+        svc_id = self._get_service_id(client)
+        response = client.get(f"/services/{svc_id}")
+        assert "John Newton" in response.text
+        assert "Stuart K. Hine" in response.text
+
+    def test_detail_shows_back_link(self, client):
+        svc_id = self._get_service_id(client)
+        response = client.get(f"/services/{svc_id}")
+        assert "/services" in response.text
+
+    def test_detail_404_for_missing_service(self, client):
+        response = client.get("/services/99999")
+        assert response.status_code == 404
