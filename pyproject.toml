@@ -85,6 +85,10 @@ module = ["pptx", "pptx.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
+module = ["openpyxl", "openpyxl.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
 # Library scraper uses subprocess/OLE; relax return type checking
 module = "worship_catalog.library"
 warn_return_any = false

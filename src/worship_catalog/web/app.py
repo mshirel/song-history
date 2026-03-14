@@ -273,11 +273,11 @@ async def reports_stats_xlsx(
     try:
         import openpyxl
         from openpyxl.styles import Font
-    except ImportError:
+    except ImportError as exc:
         raise HTTPException(
             status_code=501,
             detail="Excel export requires openpyxl. Install with: pip install openpyxl",
-        )
+        ) from exc
 
     db = _get_db()
     data = _compute_stats(db, start_date, end_date, leader, all_songs)
