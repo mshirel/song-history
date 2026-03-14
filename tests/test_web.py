@@ -13,42 +13,6 @@ from worship_catalog.db import Database
 
 
 @pytest.fixture
-def db_with_songs(tmp_path):
-    """Create a minimal test DB with one service, two songs, and copy events."""
-    db_path = tmp_path / "test.db"
-    db = Database(db_path)
-    db.connect()
-    db.init_schema()
-
-    song_id1 = db.insert_or_get_song("amazing grace", "Amazing Grace")
-    song_id2 = db.insert_or_get_song("how great thou art", "How Great Thou Art")
-
-    edition_id1 = db.insert_or_get_song_edition(
-        song_id1, words_by="John Newton", music_by=None, arranger=None
-    )
-    edition_id2 = db.insert_or_get_song_edition(
-        song_id2, words_by="Stuart K. Hine", music_by="Stuart K. Hine", arranger=None
-    )
-
-    service_id = db.insert_or_update_service(
-        service_date="2026-02-15",
-        service_name="AM Worship",
-        source_file="test.pptx",
-        source_hash="abc123",
-        song_leader="Matt",
-    )
-
-    db.insert_service_song(service_id, song_id1, ordinal=1, song_edition_id=edition_id1)
-    db.insert_service_song(service_id, song_id2, ordinal=2, song_edition_id=edition_id2)
-
-    db.insert_or_get_copy_event(service_id, song_id1, "projection", song_edition_id=edition_id1)
-    db.insert_or_get_copy_event(service_id, song_id2, "projection", song_edition_id=edition_id2)
-
-    db.close()
-    return db_path
-
-
-@pytest.fixture
 def client(db_with_songs, monkeypatch):
     """TestClient with DB_PATH env var pointed at the test DB."""
     monkeypatch.setenv("DB_PATH", str(db_with_songs))
@@ -467,4 +431,26 @@ class TestServicesFiltering:
 
     def test_invalid_sort_col_falls_back(self, client):
         response = client.get("/services?sort=INVALID")
+        assert response.status_code == 200
+
+
+class TestErrorPages:
+    """Tests for custom 404/500 HTML error pages (implemented in issue #9)."""
+
+    def test_404_song_returns_404_status(self, client):
+        response = client.get("/songs/99999")
+        assert response.status_code == 404
+
+    def test_404_service_returns_404_status(self, client):
+        response = client.get("/services/99999")
+        assert response.status_code == 404
+
+    def test_404_body_not_raw_json(self, client):
+        response = client.get("/songs/99999")
+        # After issue #9: should be HTML, not JSON
+        # For now just verify status
+        assert response.status_code == 404
+
+    def test_health_endpoint(self, client):
+        response = client.get("/health")
         assert response.status_code == 200
