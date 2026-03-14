@@ -769,6 +769,33 @@ class TestMissingCredits:
 
 
 @pytest.mark.integration
+class TestDatabaseConnect:
+    """Tests for Database.connect() pragma configuration."""
+
+    @pytest.fixture
+    def db(self, tmp_path):
+        db = Database(tmp_path / "pragma_test.db")
+        db.connect()
+        db.init_schema()
+        yield db
+        db.close()
+
+    @pytest.mark.integration
+    def test_wal_mode_enabled(self, db):
+        cursor = db.conn.cursor()
+        cursor.execute("PRAGMA journal_mode")
+        row = cursor.fetchone()
+        assert row[0] == "wal"
+
+    @pytest.mark.integration
+    def test_foreign_keys_enabled(self, db):
+        cursor = db.conn.cursor()
+        cursor.execute("PRAGMA foreign_keys")
+        row = cursor.fetchone()
+        assert row[0] == 1
+
+
+@pytest.mark.integration
 class TestServiceCleanup:
     """Tests for service data cleanup."""
 
