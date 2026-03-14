@@ -31,8 +31,7 @@ tph_library/
 .gitignore
 tests/
 *.md
-spec.md
-GETTING_STARTED.md
+!README.md
 demo.sh
 QUICK_REFERENCE.sh
 ccli_report.csv
