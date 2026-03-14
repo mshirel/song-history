@@ -434,6 +434,66 @@ class TestServicesFiltering:
         assert response.status_code == 200
 
 
+class TestStatsExport:
+    """Tests for stats report CSV and Excel export."""
+
+    def test_stats_csv_returns_csv_content_type(self, client):
+        response = client.post(
+            "/reports/stats/csv",
+            data={"start_date": "2026-01-01", "end_date": "2026-12-31"},
+        )
+        assert response.status_code == 200
+        assert "text/csv" in response.headers["content-type"]
+
+    def test_stats_csv_has_attachment_header(self, client):
+        response = client.post(
+            "/reports/stats/csv",
+            data={"start_date": "2026-01-01", "end_date": "2026-12-31"},
+        )
+        assert "attachment" in response.headers["content-disposition"]
+
+    def test_stats_csv_filename_includes_dates(self, client):
+        response = client.post(
+            "/reports/stats/csv",
+            data={"start_date": "2026-01-01", "end_date": "2026-12-31"},
+        )
+        cd = response.headers["content-disposition"]
+        assert "2026-01-01" in cd
+        assert "2026-12-31" in cd
+
+    def test_stats_csv_has_header_row(self, client):
+        response = client.post(
+            "/reports/stats/csv",
+            data={"start_date": "2026-01-01", "end_date": "2026-12-31"},
+        )
+        first_line = response.text.splitlines()[0]
+        assert "Title" in first_line
+
+    def test_stats_csv_contains_song(self, client):
+        response = client.post(
+            "/reports/stats/csv",
+            data={"start_date": "2026-01-01", "end_date": "2026-12-31"},
+        )
+        assert "Amazing Grace" in response.text or "How Great Thou Art" in response.text
+
+    def test_stats_csv_empty_range_header_only(self, client):
+        response = client.post(
+            "/reports/stats/csv",
+            data={"start_date": "2020-01-01", "end_date": "2020-01-31"},
+        )
+        assert response.status_code == 200
+        non_empty_lines = [l for l in response.text.splitlines() if l.strip()]
+        assert len(non_empty_lines) == 1
+
+    def test_stats_download_buttons_in_result(self, client):
+        """The stats result HTML shows download buttons."""
+        response = client.post(
+            "/reports/stats",
+            data={"start_date": "2026-01-01", "end_date": "2026-12-31"},
+        )
+        assert "/reports/stats/csv" in response.text
+
+
 class TestPagination:
     """Tests for pagination on /songs and /services."""
 
