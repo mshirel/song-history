@@ -769,6 +769,116 @@ class TestMissingCredits:
 
 
 @pytest.mark.integration
+class TestLeaderTopSongs:
+    """Tests for query_leader_top_songs and query_leader_service_count."""
+
+    @pytest.fixture
+    def db_with_leader_data(self, tmp_path):
+        """DB with Matt leading 3 services:
+        - Amazing Grace: 2 services
+        - How Great Thou Art: 1 service
+        """
+        db_path = tmp_path / "leader_test.db"
+        db = Database(db_path)
+        db.connect()
+        db.init_schema()
+
+        song1 = db.insert_or_get_song("amazing grace", "Amazing Grace")
+        song2 = db.insert_or_get_song("how great thou art", "How Great Thou Art")
+
+        for i, (song_id, date) in enumerate([
+            (song1, "2026-01-01"),
+            (song1, "2026-01-08"),
+            (song2, "2026-01-15"),
+        ]):
+            svc_id = db.insert_or_update_service(
+                service_date=date,
+                service_name="AM Worship",
+                source_file=f"file{i}.pptx",
+                source_hash=f"hash{i}",
+                song_leader="Matt",
+            )
+            db.insert_service_song(svc_id, song_id, ordinal=1)
+
+        db.close()
+        return db_path
+
+    def test_top_songs_includes_repeated_song(self, db_with_leader_data):
+        db = Database(db_with_leader_data)
+        db.connect()
+        results = db.query_leader_top_songs("Matt")
+        db.close()
+        titles = [r["display_title"] for r in results]
+        assert "Amazing Grace" in titles
+
+    def test_top_songs_excludes_one_off_song(self, db_with_leader_data):
+        db = Database(db_with_leader_data)
+        db.connect()
+        results = db.query_leader_top_songs("Matt")
+        db.close()
+        titles = [r["display_title"] for r in results]
+        assert "How Great Thou Art" not in titles
+
+    def test_top_songs_min_count_1_includes_all(self, db_with_leader_data):
+        db = Database(db_with_leader_data)
+        db.connect()
+        results = db.query_leader_top_songs("Matt", min_count=1)
+        db.close()
+        titles = [r["display_title"] for r in results]
+        assert "Amazing Grace" in titles
+        assert "How Great Thou Art" in titles
+
+    def test_top_songs_ordered_by_count_desc(self, db_with_leader_data):
+        db = Database(db_with_leader_data)
+        db.connect()
+        results = db.query_leader_top_songs("Matt", min_count=1)
+        db.close()
+        counts = [r["performance_count"] for r in results]
+        assert counts == sorted(counts, reverse=True)
+
+    def test_service_count_correct(self, db_with_leader_data):
+        db = Database(db_with_leader_data)
+        db.connect()
+        count = db.query_leader_service_count("Matt")
+        db.close()
+        assert count == 3
+
+    def test_service_count_zero_for_unknown_leader(self, db_with_leader_data):
+        db = Database(db_with_leader_data)
+        db.connect()
+        count = db.query_leader_service_count("Nobody")
+        db.close()
+        assert count == 0
+
+
+@pytest.mark.integration
+class TestDatabaseConnect:
+    """Tests for Database.connect() pragma configuration."""
+
+    @pytest.fixture
+    def db(self, tmp_path):
+        db = Database(tmp_path / "pragma_test.db")
+        db.connect()
+        db.init_schema()
+        yield db
+        db.close()
+
+    @pytest.mark.integration
+    def test_wal_mode_enabled(self, db):
+        cursor = db.conn.cursor()
+        cursor.execute("PRAGMA journal_mode")
+        row = cursor.fetchone()
+        assert row[0] == "wal"
+
+    @pytest.mark.integration
+    def test_foreign_keys_enabled(self, db):
+        cursor = db.conn.cursor()
+        cursor.execute("PRAGMA foreign_keys")
+        row = cursor.fetchone()
+        assert row[0] == 1
+
+
+@pytest.mark.integration
 class TestServiceCleanup:
     """Tests for service data cleanup."""
 

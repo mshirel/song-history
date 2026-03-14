@@ -3,6 +3,7 @@
 import sqlite3
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 
 class Database:
@@ -18,6 +19,8 @@ class Database:
         """Connect to database."""
         self.conn = sqlite3.connect(self.db_path)
         self.conn.row_factory = sqlite3.Row
+        self.conn.execute("PRAGMA journal_mode=WAL")
+        self.conn.execute("PRAGMA foreign_keys=ON")
         return self.conn
 
     @property
@@ -509,6 +512,56 @@ class Database:
         )
 
         self._conn.commit()
+
+    def query_leader_top_songs(
+        self, leader: str, min_count: int = 2
+    ) -> list[dict[str, Any]]:
+        """Return top songs for a leader with at least min_count services."""
+        cursor = self._conn.cursor()
+        cursor.execute(
+            """
+            SELECT s.id AS song_id, s.display_title, s.canonical_title,
+                   se.words_by, se.music_by, se.arranger,
+                   COUNT(DISTINCT ss.service_id) AS performance_count
+            FROM service_songs ss
+            JOIN services sv ON ss.service_id = sv.id
+            JOIN songs s ON ss.song_id = s.id
+            LEFT JOIN song_editions se ON ss.song_edition_id = se.id
+            WHERE LOWER(COALESCE(sv.song_leader, '')) LIKE LOWER(?)
+            GROUP BY s.id
+            HAVING COUNT(DISTINCT ss.service_id) >= ?
+            ORDER BY performance_count DESC, s.display_title
+            """,
+            (f"%{leader}%", min_count),
+        )
+        return [dict(row) for row in cursor.fetchall()]
+
+    def query_leader_service_count(self, leader: str) -> int:
+        """Return count of services led by the given leader (partial match)."""
+        cursor = self._conn.cursor()
+        cursor.execute(
+            """
+            SELECT COUNT(*) FROM services
+            WHERE LOWER(COALESCE(song_leader, '')) LIKE LOWER(?)
+            """,
+            (f"%{leader}%",),
+        )
+        row = cursor.fetchone()
+        return row[0] if row else 0
+
+    def query_all_leaders(self) -> list[dict[str, Any]]:
+        """Return all distinct leaders with their service counts."""
+        cursor = self._conn.cursor()
+        cursor.execute(
+            """
+            SELECT COALESCE(song_leader, 'Unknown') AS leader,
+                   COUNT(DISTINCT id) AS service_count
+            FROM services
+            GROUP BY LOWER(COALESCE(song_leader, 'Unknown'))
+            ORDER BY service_count DESC
+            """,
+        )
+        return [dict(row) for row in cursor.fetchall()]
 
     def delete_service_data(self, service_id: int) -> None:
         """Delete all data for a service (for idempotent re-import)."""

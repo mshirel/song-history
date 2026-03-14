@@ -21,6 +21,25 @@
   </div>
 </div>
 
+{% if sorted_songs %}
+<div style="display:flex;gap:0.5rem;margin-bottom:1rem;">
+  <form method="post" action="/reports/stats/csv" style="display:inline;">
+    <input type="hidden" name="start_date" value="{{ start_date }}">
+    <input type="hidden" name="end_date" value="{{ end_date }}">
+    <input type="hidden" name="leader" value="{{ leader }}">
+    {% if all_songs %}<input type="hidden" name="all_songs" value="true">{% endif %}
+    <button type="submit">Download CSV</button>
+  </form>
+  <form method="post" action="/reports/stats/xlsx" style="display:inline;">
+    <input type="hidden" name="start_date" value="{{ start_date }}">
+    <input type="hidden" name="end_date" value="{{ end_date }}">
+    <input type="hidden" name="leader" value="{{ leader }}">
+    {% if all_songs %}<input type="hidden" name="all_songs" value="true">{% endif %}
+    <button type="submit">Download Excel</button>
+  </form>
+</div>
+{% endif %}
+
 <h3 style="font-size:1rem;margin:1rem 0 0.5rem;">{% if all_songs %}All Songs{% else %}Top Songs{% endif %}</h3>
 <table>
   <thead>

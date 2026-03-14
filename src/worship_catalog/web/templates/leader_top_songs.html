@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block title %}{{ leader }} — Top Songs — Worship Catalog{% endblock %}
+{% block content %}
+<h1>{{ leader }}</h1>
+<p style="color:#6c757d;">{{ service_count }} service{{ 's' if service_count != 1 else '' }} led</p>
+
+{% if warning_few_services %}
+<div style="background:#fff3cd;border:1px solid #ffc107;border-radius:4px;padding:0.75rem 1rem;margin-bottom:1rem;font-size:0.9rem;">
+  Note: fewer than {{ min_count * 3 }} services found. Trends may not be meaningful yet.
+</div>
+{% endif %}
+
+{% if top_songs %}
+<div style="display:flex;gap:0.5rem;margin-bottom:1rem;">
+  <a href="/leaders/{{ leader | urlencode }}/top-songs/csv" class="btn">Download CSV</a>
+</div>
+
+<div class="card" style="padding:0;overflow:hidden;">
+  <table>
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>Title</th>
+        <th>Credits</th>
+        <th style="text-align:right;">Count</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for song in top_songs %}
+      <tr>
+        <td style="color:#6c757d;">{{ loop.index }}</td>
+        <td><a href="/songs/{{ song.song_id }}">{{ song.display_title }}</a></td>
+        <td style="font-size:0.85rem;color:#495057;">
+          {%- set parts = [] -%}
+          {%- if song.words_by -%}{{ parts.append(song.words_by) or "" }}{%- endif -%}
+          {%- if song.music_by and song.music_by != song.words_by -%}{{ parts.append(song.music_by) or "" }}{%- endif -%}
+          {{ parts | join(" / ") }}
+        </td>
+        <td style="text-align:right;">{{ song.performance_count }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<p style="color:#6c757d;">No songs have been led at {{ min_count }}+ services.</p>
+{% endif %}
+
+<div style="margin-top:1.5rem;">
+  <a href="/leaders">← Back to Leaders</a>
+</div>
+{% endblock %}

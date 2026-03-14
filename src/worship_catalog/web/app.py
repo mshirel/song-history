@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import io
 import logging
+import math
 import os
 from pathlib import Path
 from typing import Any
@@ -12,6 +13,7 @@ from typing import Any
 from fastapi import FastAPI, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from worship_catalog.db import Database
 from worship_catalog.log_config import RequestLoggingMiddleware
@@ -25,6 +27,25 @@ app.add_middleware(RequestLoggingMiddleware)
 
 _TEMPLATES_DIR = Path(__file__).parent / "templates"
 templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
+
+
+@app.exception_handler(StarletteHTTPException)
+async def http_exception_handler(request: Request, exc: StarletteHTTPException) -> HTMLResponse:
+    if exc.status_code == 404:
+        return templates.TemplateResponse(
+            request, "404.html", {"detail": str(exc.detail)}, status_code=404
+        )
+    return templates.TemplateResponse(
+        request, "500.html", {"detail": str(exc.detail)}, status_code=exc.status_code
+    )
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception) -> HTMLResponse:
+    _log.exception("Unhandled exception", extra={"path": str(request.url)})
+    return templates.TemplateResponse(
+        request, "500.html", {"detail": "An unexpected error occurred."}, status_code=500
+    )
 
 
 def _get_db() -> Database:
@@ -59,19 +80,26 @@ async def songs(
     q: str | None = Query(default=None),
     sort: str = Query(default="performance_count"),
     sort_dir: str = Query(default="desc"),
+    page: int = Query(default=1, ge=1),
+    per_page: int = Query(default=50, ge=10, le=500),
 ) -> HTMLResponse:
     sort = sort if sort in _SONGS_SORT_COLS else "performance_count"
     sort_dir = "asc" if sort_dir == "asc" else "desc"
     db = _get_db()
-    rows = _query_songs(db, q, sort=sort, sort_dir=sort_dir)
+    rows, total = _query_songs(db, q, sort=sort, sort_dir=sort_dir, page=page, per_page=per_page)
     db.close()
+
+    total_pages = math.ceil(total / per_page) if total > 0 else 1
 
     if request.headers.get("HX-Request"):
         return templates.TemplateResponse(
             request, "songs_rows.html", {"songs": rows}
         )
     return templates.TemplateResponse(
-        request, "songs.html", {"songs": rows, "q": q or "", "sort": sort, "sort_dir": sort_dir}
+        request, "songs.html", {
+            "songs": rows, "q": q or "", "sort": sort, "sort_dir": sort_dir,
+            "page": page, "per_page": per_page, "total_pages": total_pages, "total": total,
+        }
     )
 
 
@@ -117,21 +145,18 @@ async def reports_ccli(
     )
 
 
-@app.post("/reports/stats", response_class=HTMLResponse)
-async def reports_stats(
-    request: Request,
-    start_date: str = Form(...),
-    end_date: str = Form(...),
-    leader: str = Form(default=""),
-    all_songs: bool = Form(default=False),
-) -> HTMLResponse:
-    db = _get_db()
+def _compute_stats(
+    db: Database,
+    start_date: str,
+    end_date: str,
+    leader: str,
+    all_songs: bool,
+) -> dict[str, Any]:
+    """Compute stats report data, shared by HTML, CSV, and Excel routes."""
     services = db.query_services(start_date, end_date, song_leader=leader or None)
     service_ids = [s["id"] for s in services]
     events = db.query_copy_events(start_date, end_date, service_ids=service_ids or None)
-    db.close()
 
-    # Aggregate song counts
     song_counts: dict[str, int] = {}
     song_credits: dict[str, str] = {}
     for e in events:
@@ -145,7 +170,6 @@ async def reports_stats(
     if not all_songs:
         sorted_songs = sorted_songs[:20]
 
-    # Build per-leader breakdown (only when not already filtered to one leader)
     leader_breakdown: dict[str, list[tuple[str, int]]] = {}
     if not leader:
         service_leader_map = {s["id"]: (s.get("song_leader") or "Unknown") for s in services}
@@ -164,18 +188,41 @@ async def reports_stats(
                 key=lambda kv: -sum(len(v) for v in kv[1].values()),
             )
         }
-    # Build per-leader service count for display
-    leader_service_counts = {
+
+    leader_service_counts: dict[str, int] = {
         s.get("song_leader") or "Unknown": 0 for s in services
     }
     for s in services:
         ldr = s.get("song_leader") or "Unknown"
         leader_service_counts[ldr] = leader_service_counts.get(ldr, 0) + 1
 
+    return {
+        "services": services,
+        "sorted_songs": sorted_songs,
+        "song_credits": song_credits,
+        "total_performances": sum(song_counts.values()),
+        "total_events": len(events),
+        "leader_breakdown": leader_breakdown,
+        "leader_service_counts": leader_service_counts,
+    }
+
+
+@app.post("/reports/stats", response_class=HTMLResponse)
+async def reports_stats(
+    request: Request,
+    start_date: str = Form(...),
+    end_date: str = Form(...),
+    leader: str = Form(default=""),
+    all_songs: bool = Form(default=False),
+) -> HTMLResponse:
+    db = _get_db()
+    data = _compute_stats(db, start_date, end_date, leader, all_songs)
+    db.close()
+
     _log.info(
         "Stats report generated",
         extra={"start_date": start_date, "end_date": end_date, "leader": leader or None,
-               "services": len(services), "unique_songs": len(song_counts)},
+               "services": len(data["services"]), "unique_songs": len(data["sorted_songs"])},
     )
     return templates.TemplateResponse(
         request,
@@ -184,15 +231,85 @@ async def reports_stats(
             "start_date": start_date,
             "end_date": end_date,
             "leader": leader,
-            "services": services,
-            "sorted_songs": sorted_songs,
-            "song_credits": song_credits,
-            "total_performances": sum(song_counts.values()),
-            "total_events": len(events),
             "all_songs": all_songs,
-            "leader_breakdown": leader_breakdown,
-            "leader_service_counts": leader_service_counts,
+            **data,
         },
+    )
+
+
+@app.post("/reports/stats/csv")
+async def reports_stats_csv(
+    start_date: str = Form(...),
+    end_date: str = Form(...),
+    leader: str = Form(default=""),
+    all_songs: bool = Form(default=False),
+) -> StreamingResponse:
+    db = _get_db()
+    data = _compute_stats(db, start_date, end_date, leader, all_songs)
+    db.close()
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["Rank", "Title", "Credits", "Count"])
+    for rank, (title, count) in enumerate(data["sorted_songs"], 1):
+        writer.writerow([rank, title, data["song_credits"].get(title, ""), count])
+
+    output.seek(0)
+    filename = f"stats_{start_date}_{end_date}.csv"
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.post("/reports/stats/xlsx")
+async def reports_stats_xlsx(
+    start_date: str = Form(...),
+    end_date: str = Form(...),
+    leader: str = Form(default=""),
+    all_songs: bool = Form(default=False),
+) -> StreamingResponse:
+    try:
+        import openpyxl
+        from openpyxl.styles import Font
+    except ImportError as exc:
+        raise HTTPException(
+            status_code=501,
+            detail="Excel export requires openpyxl. Install with: pip install openpyxl",
+        ) from exc
+
+    db = _get_db()
+    data = _compute_stats(db, start_date, end_date, leader, all_songs)
+    db.close()
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Top Songs"
+    header = ["Rank", "Title", "Credits", "Count"]
+    ws.append(header)
+    for cell in ws[1]:
+        cell.font = Font(bold=True)
+    for rank, (title, count) in enumerate(data["sorted_songs"], 1):
+        ws.append([rank, title, data["song_credits"].get(title, ""), count])
+
+    if data["leader_breakdown"]:
+        ws2 = wb.create_sheet("By Leader")
+        ws2.append(["Leader", "Song", "Count"])
+        for cell in ws2[1]:
+            cell.font = Font(bold=True)
+        for ldr, songs in data["leader_breakdown"].items():
+            for title, count in songs:
+                ws2.append([ldr, title, count])
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    filename = f"stats_{start_date}_{end_date}.xlsx"
+    return StreamingResponse(
+        iter([buf.getvalue()]),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
 
@@ -228,20 +345,25 @@ async def services_list(
     q_sermon: str = Query(default=""),
     start_date: str = Query(default=""),
     end_date: str = Query(default=""),
+    page: int = Query(default=1, ge=1),
+    per_page: int = Query(default=50, ge=10, le=500),
 ) -> HTMLResponse:
     sort = sort if sort in _SERVICES_SORT_COLS else "service_date"
     sort_dir = "asc" if sort_dir == "asc" else "desc"
     db = _get_db()
-    services = _query_all_services(
+    services, total = _query_all_services(
         db, sort=sort, sort_dir=sort_dir,
         q_service=q_service, q_leader=q_leader, q_preacher=q_preacher,
         q_sermon=q_sermon, start_date=start_date, end_date=end_date,
+        page=page, per_page=per_page,
     )
     db.close()
+    total_pages = math.ceil(total / per_page) if total > 0 else 1
     ctx = {
         "services": services, "sort": sort, "sort_dir": sort_dir,
         "q_service": q_service, "q_leader": q_leader, "q_preacher": q_preacher,
         "q_sermon": q_sermon, "start_date": start_date, "end_date": end_date,
+        "page": page, "per_page": per_page, "total_pages": total_pages, "total": total,
     }
     if request.headers.get("HX-Request"):
         return templates.TemplateResponse(request, "services_rows.html", ctx)
@@ -263,6 +385,61 @@ async def service_detail(request: Request, service_id: int) -> HTMLResponse:
     )
 
 
+_LEADER_MIN_SONG_COUNT = 2
+_MIN_SERVICES_FOR_MEANINGFUL_TRENDS = 5
+
+
+@app.get("/leaders", response_class=HTMLResponse)
+async def leaders_index(request: Request) -> HTMLResponse:
+    db = _get_db()
+    leaders = db.query_all_leaders()
+    db.close()
+    return templates.TemplateResponse(request, "leaders.html", {"leaders": leaders})
+
+
+@app.get("/leaders/{leader_name}/top-songs", response_class=HTMLResponse)
+async def leader_top_songs(request: Request, leader_name: str) -> HTMLResponse:
+    db = _get_db()
+    top_songs = db.query_leader_top_songs(leader_name, min_count=_LEADER_MIN_SONG_COUNT)
+    service_count = db.query_leader_service_count(leader_name)
+    db.close()
+    warning_few_services = service_count < _MIN_SERVICES_FOR_MEANINGFUL_TRENDS
+    return templates.TemplateResponse(
+        request,
+        "leader_top_songs.html",
+        {
+            "leader": leader_name,
+            "top_songs": top_songs,
+            "service_count": service_count,
+            "warning_few_services": warning_few_services,
+            "min_count": _LEADER_MIN_SONG_COUNT,
+        },
+    )
+
+
+@app.get("/leaders/{leader_name}/top-songs/csv")
+async def leader_top_songs_csv(leader_name: str) -> StreamingResponse:
+    db = _get_db()
+    top_songs = db.query_leader_top_songs(leader_name, min_count=_LEADER_MIN_SONG_COUNT)
+    db.close()
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["Rank", "Title", "Credits", "Count"])
+    for rank, song in enumerate(top_songs, 1):
+        parts = [song.get("words_by") or "", song.get("music_by") or ""]
+        credits = " / ".join(p for p in parts if p)
+        writer.writerow([rank, song["display_title"], credits, song["performance_count"]])
+
+    output.seek(0)
+    filename = f"leader_songs_{leader_name}.csv"
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -272,8 +449,10 @@ def _query_songs(
     search: str | None = None,
     sort: str = "performance_count",
     sort_dir: str = "desc",
-) -> list[dict[str, Any]]:
-    """Return all songs with performance count, optionally filtered and sorted."""
+    page: int = 1,
+    per_page: int = 50,
+) -> tuple[list[dict[str, Any]], int]:
+    """Return songs with performance count, optionally filtered and sorted, with pagination."""
     order = f"{sort} {sort_dir.upper()}, s.display_title"
     cursor = db.cursor()
     base = """
@@ -284,20 +463,32 @@ def _query_songs(
         LEFT JOIN song_editions se ON se.song_id = s.id
         LEFT JOIN service_songs ss ON ss.song_id = s.id
     """
+    count_base = """
+        SELECT COUNT(DISTINCT s.id)
+        FROM songs s
+        LEFT JOIN song_editions se ON se.song_id = s.id
+        LEFT JOIN service_songs ss ON ss.song_id = s.id
+    """
+    offset = (page - 1) * per_page
     if search:
         like = f"%{search}%"
-        cursor.execute(
-            base + """
+        where = """
             WHERE LOWER(s.display_title) LIKE LOWER(?)
                OR LOWER(COALESCE(se.words_by, '')) LIKE LOWER(?)
                OR LOWER(COALESCE(se.music_by, '')) LIKE LOWER(?)
-            GROUP BY s.id
-            ORDER BY """ + order,
-            (like, like, like),
+        """
+        cursor.execute(count_base + where, (like, like, like))
+        total = cursor.fetchone()[0]
+        cursor.execute(
+            base + where + "GROUP BY s.id ORDER BY " + order + " LIMIT ? OFFSET ?",
+            (like, like, like, per_page, offset),
         )
     else:
-        cursor.execute(base + "GROUP BY s.id ORDER BY " + order)
-    return [dict(row) for row in cursor.fetchall()]
+        cursor.execute(count_base)
+        total = cursor.fetchone()[0]
+        cursor.execute(base + "GROUP BY s.id ORDER BY " + order + " LIMIT ? OFFSET ?",
+                       (per_page, offset))
+    return [dict(row) for row in cursor.fetchall()], total
 
 
 def _query_song_by_id(db: Database, song_id: int) -> dict[str, Any] | None:
@@ -348,8 +539,10 @@ def _query_all_services(
     q_sermon: str = "",
     start_date: str = "",
     end_date: str = "",
-) -> list[dict[str, Any]]:
-    """Return services with optional filtering and sorting."""
+    page: int = 1,
+    per_page: int = 50,
+) -> tuple[list[dict[str, Any]], int]:
+    """Return services with optional filtering, sorting, and pagination."""
     where_clauses = []
     params: list[Any] = []
     if q_service:
@@ -373,7 +566,14 @@ def _query_all_services(
 
     where_sql = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
     order = f"{sort} {sort_dir.upper()}, sv.service_name"
+    offset = (page - 1) * per_page
     cursor = db.cursor()
+    # Count query
+    cursor.execute(
+        f"SELECT COUNT(DISTINCT sv.id) FROM services sv {where_sql}",
+        params,
+    )
+    total = cursor.fetchone()[0]
     cursor.execute(
         f"""
         SELECT sv.*, COUNT(DISTINCT ss.song_id) AS song_count
@@ -382,10 +582,11 @@ def _query_all_services(
         {where_sql}
         GROUP BY sv.id
         ORDER BY {order}
+        LIMIT ? OFFSET ?
         """,
-        params,
+        params + [per_page, offset],
     )
-    return [dict(row) for row in cursor.fetchall()]
+    return [dict(row) for row in cursor.fetchall()], total
 
 
 def _query_service_by_id(db: Database, service_id: int) -> dict[str, Any] | None:

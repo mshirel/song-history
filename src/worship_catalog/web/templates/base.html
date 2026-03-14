@@ -71,6 +71,7 @@
     .htmx-request .htmx-indicator { opacity: 1; }
 
     .badge-missing { color: #dc3545; font-size: 0.8rem; }
+    .pagination { display:flex; gap:1rem; align-items:center; justify-content:center; padding:1rem 0; }
   </style>
 </head>
 <body>
@@ -79,6 +80,7 @@
   <a href="/songs" {% if request.url.path.startswith('/songs') %}class="active"{% endif %}>Songs</a>
   <a href="/services" {% if request.url.path.startswith('/services') %}class="active"{% endif %}>Services</a>
   <a href="/reports" {% if request.url.path == '/reports' %}class="active"{% endif %}>Reports</a>
+  <a href="/leaders" {% if request.url.path.startswith('/leaders') %}class="active"{% endif %}>Leaders</a>
 </nav>
 <main>
   {% block content %}{% endblock %}

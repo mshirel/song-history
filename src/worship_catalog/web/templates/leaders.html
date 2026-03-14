@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}Song Leaders — Worship Catalog{% endblock %}
+{% block content %}
+<h1>Song Leaders</h1>
+
+{% if leaders %}
+<div class="card" style="padding:0;overflow:hidden;">
+  <table>
+    <thead>
+      <tr>
+        <th>Leader</th>
+        <th style="text-align:right;">Services</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for ldr in leaders %}
+      <tr>
+        <td>{{ ldr.leader }}</td>
+        <td style="text-align:right;">{{ ldr.service_count }}</td>
+        <td style="text-align:right;">
+          <a href="/leaders/{{ ldr.leader | urlencode }}/top-songs">Top Songs →</a>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<p style="color:#6c757d;">No leaders found. Import some services first.</p>
+{% endif %}
+{% endblock %}

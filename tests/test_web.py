@@ -13,42 +13,6 @@ from worship_catalog.db import Database
 
 
 @pytest.fixture
-def db_with_songs(tmp_path):
-    """Create a minimal test DB with one service, two songs, and copy events."""
-    db_path = tmp_path / "test.db"
-    db = Database(db_path)
-    db.connect()
-    db.init_schema()
-
-    song_id1 = db.insert_or_get_song("amazing grace", "Amazing Grace")
-    song_id2 = db.insert_or_get_song("how great thou art", "How Great Thou Art")
-
-    edition_id1 = db.insert_or_get_song_edition(
-        song_id1, words_by="John Newton", music_by=None, arranger=None
-    )
-    edition_id2 = db.insert_or_get_song_edition(
-        song_id2, words_by="Stuart K. Hine", music_by="Stuart K. Hine", arranger=None
-    )
-
-    service_id = db.insert_or_update_service(
-        service_date="2026-02-15",
-        service_name="AM Worship",
-        source_file="test.pptx",
-        source_hash="abc123",
-        song_leader="Matt",
-    )
-
-    db.insert_service_song(service_id, song_id1, ordinal=1, song_edition_id=edition_id1)
-    db.insert_service_song(service_id, song_id2, ordinal=2, song_edition_id=edition_id2)
-
-    db.insert_or_get_copy_event(service_id, song_id1, "projection", song_edition_id=edition_id1)
-    db.insert_or_get_copy_event(service_id, song_id2, "projection", song_edition_id=edition_id2)
-
-    db.close()
-    return db_path
-
-
-@pytest.fixture
 def client(db_with_songs, monkeypatch):
     """TestClient with DB_PATH env var pointed at the test DB."""
     monkeypatch.setenv("DB_PATH", str(db_with_songs))
@@ -467,4 +431,209 @@ class TestServicesFiltering:
 
     def test_invalid_sort_col_falls_back(self, client):
         response = client.get("/services?sort=INVALID")
+        assert response.status_code == 200
+
+
+class TestLeaderRoutes:
+    """Tests for /leaders and /leaders/{name}/top-songs routes."""
+
+    def test_leaders_index_returns_html(self, client):
+        response = client.get("/leaders")
+        assert response.status_code == 200
+        assert "text/html" in response.headers["content-type"]
+
+    def test_leaders_index_lists_leader(self, client):
+        response = client.get("/leaders")
+        assert "Matt" in response.text
+
+    def test_leader_top_songs_returns_html(self, client):
+        response = client.get("/leaders/Matt/top-songs")
+        assert response.status_code == 200
+        assert "text/html" in response.headers["content-type"]
+
+    def test_leader_top_songs_shows_leader_name(self, client):
+        response = client.get("/leaders/Matt/top-songs")
+        assert "Matt" in response.text
+
+    def test_leader_top_songs_empty_state_for_no_repeats(self, client):
+        """Fixture has only 1 service for Matt, so no songs repeat 2+ times."""
+        response = client.get("/leaders/Matt/top-songs")
+        assert response.status_code == 200
+        # Should show "no songs" message or warning since nothing repeated
+        assert "No songs" in response.text or "more than once" in response.text.lower()
+
+    def test_leader_top_songs_csv_download(self, client):
+        response = client.get("/leaders/Matt/top-songs/csv")
+        assert response.status_code == 200
+        assert "text/csv" in response.headers["content-type"]
+
+    def test_leader_top_songs_csv_has_header(self, client):
+        response = client.get("/leaders/Matt/top-songs/csv")
+        first_line = response.text.splitlines()[0]
+        assert "Title" in first_line
+
+    def test_unknown_leader_shows_message(self, client):
+        response = client.get("/leaders/NoSuchLeader/top-songs")
+        assert response.status_code == 200
+        # Should show empty state, not 404
+        assert "No songs" in response.text or "more than once" in response.text.lower()
+
+
+class TestStatsExport:
+    """Tests for stats report CSV and Excel export."""
+
+    def test_stats_csv_returns_csv_content_type(self, client):
+        response = client.post(
+            "/reports/stats/csv",
+            data={"start_date": "2026-01-01", "end_date": "2026-12-31"},
+        )
+        assert response.status_code == 200
+        assert "text/csv" in response.headers["content-type"]
+
+    def test_stats_csv_has_attachment_header(self, client):
+        response = client.post(
+            "/reports/stats/csv",
+            data={"start_date": "2026-01-01", "end_date": "2026-12-31"},
+        )
+        assert "attachment" in response.headers["content-disposition"]
+
+    def test_stats_csv_filename_includes_dates(self, client):
+        response = client.post(
+            "/reports/stats/csv",
+            data={"start_date": "2026-01-01", "end_date": "2026-12-31"},
+        )
+        cd = response.headers["content-disposition"]
+        assert "2026-01-01" in cd
+        assert "2026-12-31" in cd
+
+    def test_stats_csv_has_header_row(self, client):
+        response = client.post(
+            "/reports/stats/csv",
+            data={"start_date": "2026-01-01", "end_date": "2026-12-31"},
+        )
+        first_line = response.text.splitlines()[0]
+        assert "Title" in first_line
+
+    def test_stats_csv_contains_song(self, client):
+        response = client.post(
+            "/reports/stats/csv",
+            data={"start_date": "2026-01-01", "end_date": "2026-12-31"},
+        )
+        assert "Amazing Grace" in response.text or "How Great Thou Art" in response.text
+
+    def test_stats_csv_empty_range_header_only(self, client):
+        response = client.post(
+            "/reports/stats/csv",
+            data={"start_date": "2020-01-01", "end_date": "2020-01-31"},
+        )
+        assert response.status_code == 200
+        non_empty_lines = [l for l in response.text.splitlines() if l.strip()]
+        assert len(non_empty_lines) == 1
+
+    def test_stats_download_buttons_in_result(self, client):
+        """The stats result HTML shows download buttons."""
+        response = client.post(
+            "/reports/stats",
+            data={"start_date": "2026-01-01", "end_date": "2026-12-31"},
+        )
+        assert "/reports/stats/csv" in response.text
+
+
+class TestPagination:
+    """Tests for pagination on /songs and /services."""
+
+    @pytest.fixture
+    def db_with_many_songs(self, tmp_path):
+        """DB with 55 songs across 55 services to test multi-page results."""
+        db_path = tmp_path / "paginated.db"
+        db = Database(db_path)
+        db.connect()
+        db.init_schema()
+
+        for i in range(55):
+            title = f"Song Number {i:03d}"
+            canonical = title.lower()
+            song_id = db.insert_or_get_song(canonical, title)
+            db.insert_or_get_song_edition(song_id, words_by=f"Author {i}")
+
+            svc_id = db.insert_or_update_service(
+                service_date=f"2026-{(i % 12) + 1:02d}-{(i % 28) + 1:02d}",
+                service_name=f"Service {i}",
+                source_file=f"file{i}.pptx",
+                source_hash=f"hash{i}",
+            )
+            db.insert_service_song(svc_id, song_id, ordinal=1)
+
+        db.close()
+        return db_path
+
+    @pytest.fixture
+    def paginated_client(self, db_with_many_songs, monkeypatch):
+        monkeypatch.setenv("DB_PATH", str(db_with_many_songs))
+        import worship_catalog.web.app as app_module
+        from importlib import reload
+        reload(app_module)
+        return TestClient(app_module.app)
+
+    def test_songs_default_returns_50_rows(self, paginated_client):
+        response = paginated_client.get("/songs")
+        assert response.status_code == 200
+        # Count <tr> rows; includes 1 header row so total rows = data rows + 1
+        row_count = response.text.count("<tr>")
+        assert row_count <= 51  # 50 data rows + 1 header row
+
+    def test_songs_page2_accessible(self, paginated_client):
+        response = paginated_client.get("/songs?page=2&per_page=50")
+        assert response.status_code == 200
+
+    def test_songs_pagination_links_shown(self, paginated_client):
+        """With 55 songs and per_page=50, page 1 should show a Next link."""
+        response = paginated_client.get("/songs?page=1&per_page=50")
+        assert response.status_code == 200
+        assert "page=2" in response.text or "Next" in response.text
+
+    def test_songs_page1_no_prev_link(self, paginated_client):
+        response = paginated_client.get("/songs?page=1&per_page=50")
+        # Page 1 should not show a "Previous" link
+        assert "page=0" not in response.text
+
+    def test_services_pagination_accessible(self, paginated_client):
+        response = paginated_client.get("/services?page=1&per_page=50")
+        assert response.status_code == 200
+
+    def test_per_page_respected(self, paginated_client):
+        response = paginated_client.get("/songs?page=1&per_page=10")
+        assert response.status_code == 200
+        row_count = response.text.count("<tr>")
+        assert row_count <= 11  # 10 data rows + 1 header row
+
+
+class TestErrorPages:
+    """Tests for custom 404/500 HTML error pages."""
+
+    def test_404_song_returns_404_status(self, client):
+        response = client.get("/songs/99999")
+        assert response.status_code == 404
+
+    def test_404_service_returns_404_status(self, client):
+        response = client.get("/services/99999")
+        assert response.status_code == 404
+
+    def test_404_response_is_html_not_json(self, client):
+        response = client.get("/songs/99999")
+        assert response.status_code == 404
+        assert "text/html" in response.headers["content-type"]
+        # Should NOT start with a JSON brace
+        assert not response.text.strip().startswith("{")
+
+    def test_404_body_contains_useful_text(self, client):
+        response = client.get("/songs/99999")
+        assert "404" in response.text or "not found" in response.text.lower()
+
+    def test_404_body_contains_back_link(self, client):
+        response = client.get("/songs/99999")
+        assert "/songs" in response.text
+
+    def test_health_endpoint(self, client):
+        response = client.get("/health")
         assert response.status_code == 200
