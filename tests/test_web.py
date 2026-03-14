@@ -434,6 +434,75 @@ class TestServicesFiltering:
         assert response.status_code == 200
 
 
+class TestPagination:
+    """Tests for pagination on /songs and /services."""
+
+    @pytest.fixture
+    def db_with_many_songs(self, tmp_path):
+        """DB with 55 songs across 55 services to test multi-page results."""
+        db_path = tmp_path / "paginated.db"
+        db = Database(db_path)
+        db.connect()
+        db.init_schema()
+
+        for i in range(55):
+            title = f"Song Number {i:03d}"
+            canonical = title.lower()
+            song_id = db.insert_or_get_song(canonical, title)
+            db.insert_or_get_song_edition(song_id, words_by=f"Author {i}")
+
+            svc_id = db.insert_or_update_service(
+                service_date=f"2026-{(i % 12) + 1:02d}-{(i % 28) + 1:02d}",
+                service_name=f"Service {i}",
+                source_file=f"file{i}.pptx",
+                source_hash=f"hash{i}",
+            )
+            db.insert_service_song(svc_id, song_id, ordinal=1)
+
+        db.close()
+        return db_path
+
+    @pytest.fixture
+    def paginated_client(self, db_with_many_songs, monkeypatch):
+        monkeypatch.setenv("DB_PATH", str(db_with_many_songs))
+        import worship_catalog.web.app as app_module
+        from importlib import reload
+        reload(app_module)
+        return TestClient(app_module.app)
+
+    def test_songs_default_returns_50_rows(self, paginated_client):
+        response = paginated_client.get("/songs")
+        assert response.status_code == 200
+        # Count <tr> rows; includes 1 header row so total rows = data rows + 1
+        row_count = response.text.count("<tr>")
+        assert row_count <= 51  # 50 data rows + 1 header row
+
+    def test_songs_page2_accessible(self, paginated_client):
+        response = paginated_client.get("/songs?page=2&per_page=50")
+        assert response.status_code == 200
+
+    def test_songs_pagination_links_shown(self, paginated_client):
+        """With 55 songs and per_page=50, page 1 should show a Next link."""
+        response = paginated_client.get("/songs?page=1&per_page=50")
+        assert response.status_code == 200
+        assert "page=2" in response.text or "Next" in response.text
+
+    def test_songs_page1_no_prev_link(self, paginated_client):
+        response = paginated_client.get("/songs?page=1&per_page=50")
+        # Page 1 should not show a "Previous" link
+        assert "page=0" not in response.text
+
+    def test_services_pagination_accessible(self, paginated_client):
+        response = paginated_client.get("/services?page=1&per_page=50")
+        assert response.status_code == 200
+
+    def test_per_page_respected(self, paginated_client):
+        response = paginated_client.get("/songs?page=1&per_page=10")
+        assert response.status_code == 200
+        row_count = response.text.count("<tr>")
+        assert row_count <= 11  # 10 data rows + 1 header row
+
+
 class TestErrorPages:
     """Tests for custom 404/500 HTML error pages."""
 

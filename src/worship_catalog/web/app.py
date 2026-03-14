@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import io
 import logging
+import math
 import os
 from pathlib import Path
 from typing import Any
@@ -79,19 +80,26 @@ async def songs(
     q: str | None = Query(default=None),
     sort: str = Query(default="performance_count"),
     sort_dir: str = Query(default="desc"),
+    page: int = Query(default=1, ge=1),
+    per_page: int = Query(default=50, ge=10, le=500),
 ) -> HTMLResponse:
     sort = sort if sort in _SONGS_SORT_COLS else "performance_count"
     sort_dir = "asc" if sort_dir == "asc" else "desc"
     db = _get_db()
-    rows = _query_songs(db, q, sort=sort, sort_dir=sort_dir)
+    rows, total = _query_songs(db, q, sort=sort, sort_dir=sort_dir, page=page, per_page=per_page)
     db.close()
+
+    total_pages = math.ceil(total / per_page) if total > 0 else 1
 
     if request.headers.get("HX-Request"):
         return templates.TemplateResponse(
             request, "songs_rows.html", {"songs": rows}
         )
     return templates.TemplateResponse(
-        request, "songs.html", {"songs": rows, "q": q or "", "sort": sort, "sort_dir": sort_dir}
+        request, "songs.html", {
+            "songs": rows, "q": q or "", "sort": sort, "sort_dir": sort_dir,
+            "page": page, "per_page": per_page, "total_pages": total_pages, "total": total,
+        }
     )
 
 
@@ -248,20 +256,25 @@ async def services_list(
     q_sermon: str = Query(default=""),
     start_date: str = Query(default=""),
     end_date: str = Query(default=""),
+    page: int = Query(default=1, ge=1),
+    per_page: int = Query(default=50, ge=10, le=500),
 ) -> HTMLResponse:
     sort = sort if sort in _SERVICES_SORT_COLS else "service_date"
     sort_dir = "asc" if sort_dir == "asc" else "desc"
     db = _get_db()
-    services = _query_all_services(
+    services, total = _query_all_services(
         db, sort=sort, sort_dir=sort_dir,
         q_service=q_service, q_leader=q_leader, q_preacher=q_preacher,
         q_sermon=q_sermon, start_date=start_date, end_date=end_date,
+        page=page, per_page=per_page,
     )
     db.close()
+    total_pages = math.ceil(total / per_page) if total > 0 else 1
     ctx = {
         "services": services, "sort": sort, "sort_dir": sort_dir,
         "q_service": q_service, "q_leader": q_leader, "q_preacher": q_preacher,
         "q_sermon": q_sermon, "start_date": start_date, "end_date": end_date,
+        "page": page, "per_page": per_page, "total_pages": total_pages, "total": total,
     }
     if request.headers.get("HX-Request"):
         return templates.TemplateResponse(request, "services_rows.html", ctx)
@@ -292,8 +305,10 @@ def _query_songs(
     search: str | None = None,
     sort: str = "performance_count",
     sort_dir: str = "desc",
-) -> list[dict[str, Any]]:
-    """Return all songs with performance count, optionally filtered and sorted."""
+    page: int = 1,
+    per_page: int = 50,
+) -> tuple[list[dict[str, Any]], int]:
+    """Return songs with performance count, optionally filtered and sorted, with pagination."""
     order = f"{sort} {sort_dir.upper()}, s.display_title"
     cursor = db.cursor()
     base = """
@@ -304,20 +319,32 @@ def _query_songs(
         LEFT JOIN song_editions se ON se.song_id = s.id
         LEFT JOIN service_songs ss ON ss.song_id = s.id
     """
+    count_base = """
+        SELECT COUNT(DISTINCT s.id)
+        FROM songs s
+        LEFT JOIN song_editions se ON se.song_id = s.id
+        LEFT JOIN service_songs ss ON ss.song_id = s.id
+    """
+    offset = (page - 1) * per_page
     if search:
         like = f"%{search}%"
-        cursor.execute(
-            base + """
+        where = """
             WHERE LOWER(s.display_title) LIKE LOWER(?)
                OR LOWER(COALESCE(se.words_by, '')) LIKE LOWER(?)
                OR LOWER(COALESCE(se.music_by, '')) LIKE LOWER(?)
-            GROUP BY s.id
-            ORDER BY """ + order,
-            (like, like, like),
+        """
+        cursor.execute(count_base + where, (like, like, like))
+        total = cursor.fetchone()[0]
+        cursor.execute(
+            base + where + "GROUP BY s.id ORDER BY " + order + " LIMIT ? OFFSET ?",
+            (like, like, like, per_page, offset),
         )
     else:
-        cursor.execute(base + "GROUP BY s.id ORDER BY " + order)
-    return [dict(row) for row in cursor.fetchall()]
+        cursor.execute(count_base)
+        total = cursor.fetchone()[0]
+        cursor.execute(base + "GROUP BY s.id ORDER BY " + order + " LIMIT ? OFFSET ?",
+                       (per_page, offset))
+    return [dict(row) for row in cursor.fetchall()], total
 
 
 def _query_song_by_id(db: Database, song_id: int) -> dict[str, Any] | None:
@@ -368,8 +395,10 @@ def _query_all_services(
     q_sermon: str = "",
     start_date: str = "",
     end_date: str = "",
-) -> list[dict[str, Any]]:
-    """Return services with optional filtering and sorting."""
+    page: int = 1,
+    per_page: int = 50,
+) -> tuple[list[dict[str, Any]], int]:
+    """Return services with optional filtering, sorting, and pagination."""
     where_clauses = []
     params: list[Any] = []
     if q_service:
@@ -393,7 +422,14 @@ def _query_all_services(
 
     where_sql = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
     order = f"{sort} {sort_dir.upper()}, sv.service_name"
+    offset = (page - 1) * per_page
     cursor = db.cursor()
+    # Count query
+    cursor.execute(
+        f"SELECT COUNT(DISTINCT sv.id) FROM services sv {where_sql}",
+        params,
+    )
+    total = cursor.fetchone()[0]
     cursor.execute(
         f"""
         SELECT sv.*, COUNT(DISTINCT ss.song_id) AS song_count
@@ -402,10 +438,11 @@ def _query_all_services(
         {where_sql}
         GROUP BY sv.id
         ORDER BY {order}
+        LIMIT ? OFFSET ?
         """,
-        params,
+        params + [per_page, offset],
     )
-    return [dict(row) for row in cursor.fetchall()]
+    return [dict(row) for row in cursor.fetchall()], total
 
 
 def _query_service_by_id(db: Database, service_id: int) -> dict[str, Any] | None:
