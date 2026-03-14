@@ -1,6 +1,23 @@
 services:
 
   # ---------------------------------------------------------------------------
+  # IMAGE SOURCE
+  #
+  # By default all services pull the published image from GitHub Container
+  # Registry.  To build and run a local image instead (e.g. while developing
+  # or testing changes before pushing), comment out the `image:` line and
+  # uncomment the `build:` line in each service below, then run:
+  #
+  #   docker compose build          # rebuild from local Dockerfile
+  #   docker compose up -d web      # start with the newly built image
+  #
+  # To go back to the published image:
+  #
+  #   docker compose pull           # fetch latest from GHCR
+  #   docker compose up -d web      # start with the pulled image
+  # ---------------------------------------------------------------------------
+
+  # ---------------------------------------------------------------------------
   # cli — run any worship-catalog command ad-hoc
   #
   # Examples:
@@ -9,7 +26,8 @@ services:
   #   docker compose run --rm cli repair-credits
   # ---------------------------------------------------------------------------
   cli:
-    build: .
+    image: ghcr.io/mshirel/song-history:latest
+    # build: .                        # ← uncomment for local development
     volumes:
       - ./data:/data
       - ./inbox:/inbox
@@ -25,7 +43,8 @@ services:
   # Logs:   docker compose logs -f watcher
   # ---------------------------------------------------------------------------
   watcher:
-    build: .
+    image: ghcr.io/mshirel/song-history:latest
+    # build: .                        # ← uncomment for local development
     entrypoint: /bin/sh
     command: >
       -c "while true;
@@ -48,7 +67,8 @@ services:
   # Open:   http://localhost:8000
   # ---------------------------------------------------------------------------
   web:
-    build: .
+    image: ghcr.io/mshirel/song-history:latest
+    # build: .                        # ← uncomment for local development
     entrypoint: uvicorn
     command: worship_catalog.web.app:app --host 0.0.0.0 --port 8000
     ports:
