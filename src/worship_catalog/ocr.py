@@ -26,7 +26,7 @@ def extract_credits_via_vision(image_bytes: bytes) -> str | None:
         )
 
     try:
-        import anthropic  # type: ignore[import-not-found]
+        import anthropic
     except ImportError as err:
         raise ImportError(
             "The 'anthropic' package is required for OCR. "
