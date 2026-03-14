@@ -12,6 +12,7 @@ from typing import Any
 from fastapi import FastAPI, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from worship_catalog.db import Database
 from worship_catalog.log_config import RequestLoggingMiddleware
@@ -25,6 +26,25 @@ app.add_middleware(RequestLoggingMiddleware)
 
 _TEMPLATES_DIR = Path(__file__).parent / "templates"
 templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
+
+
+@app.exception_handler(StarletteHTTPException)
+async def http_exception_handler(request: Request, exc: StarletteHTTPException) -> HTMLResponse:
+    if exc.status_code == 404:
+        return templates.TemplateResponse(
+            request, "404.html", {"detail": str(exc.detail)}, status_code=404
+        )
+    return templates.TemplateResponse(
+        request, "500.html", {"detail": str(exc.detail)}, status_code=exc.status_code
+    )
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception) -> HTMLResponse:
+    _log.exception("Unhandled exception", extra={"path": str(request.url)})
+    return templates.TemplateResponse(
+        request, "500.html", {"detail": "An unexpected error occurred."}, status_code=500
+    )
 
 
 def _get_db() -> Database:

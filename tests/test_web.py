@@ -435,7 +435,7 @@ class TestServicesFiltering:
 
 
 class TestErrorPages:
-    """Tests for custom 404/500 HTML error pages (implemented in issue #9)."""
+    """Tests for custom 404/500 HTML error pages."""
 
     def test_404_song_returns_404_status(self, client):
         response = client.get("/songs/99999")
@@ -445,11 +445,20 @@ class TestErrorPages:
         response = client.get("/services/99999")
         assert response.status_code == 404
 
-    def test_404_body_not_raw_json(self, client):
+    def test_404_response_is_html_not_json(self, client):
         response = client.get("/songs/99999")
-        # After issue #9: should be HTML, not JSON
-        # For now just verify status
         assert response.status_code == 404
+        assert "text/html" in response.headers["content-type"]
+        # Should NOT start with a JSON brace
+        assert not response.text.strip().startswith("{")
+
+    def test_404_body_contains_useful_text(self, client):
+        response = client.get("/songs/99999")
+        assert "404" in response.text or "not found" in response.text.lower()
+
+    def test_404_body_contains_back_link(self, client):
+        response = client.get("/songs/99999")
+        assert "/songs" in response.text
 
     def test_health_endpoint(self, client):
         response = client.get("/health")
