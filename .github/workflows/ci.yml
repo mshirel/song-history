@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -e ".[dev,web,ocr]"
+
+      - name: Lint (ruff)
+        run: python3 -m ruff check src/
+
+      - name: Type check (mypy)
+        run: python3 -m mypy src/
+
+      - name: Test
+        run: python3 -m pytest
+
+  security:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # gitleaks needs full history to scan all commits
+
+      # --- Secrets scanning ------------------------------------------------
+      - name: Secrets scan (gitleaks)
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # --- Supply chain / dependency vulnerabilities -----------------------
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -e ".[dev,web,ocr]"
+
+      - name: Dependency audit (pip-audit)
+        run: python3 -m pip_audit --skip-editable
+
+      # --- Static security analysis ----------------------------------------
+      - name: Static security scan (bandit)
+        run: python3 -m bandit -r src/ -ll -c pyproject.toml

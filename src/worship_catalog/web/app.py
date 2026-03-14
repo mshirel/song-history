@@ -7,14 +7,15 @@ import io
 import logging
 import os
 from pathlib import Path
-from typing import Optional
+from typing import Any
 
 from fastapi import FastAPI, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 
 from worship_catalog.db import Database
-from worship_catalog.log_config import RequestLoggingMiddleware, setup as _setup_logging
+from worship_catalog.log_config import RequestLoggingMiddleware
+from worship_catalog.log_config import setup as _setup_logging
 
 _setup_logging()
 _log = logging.getLogger("worship_catalog.web")
@@ -39,8 +40,13 @@ def _get_db() -> Database:
 # ---------------------------------------------------------------------------
 
 
+@app.get("/health")
+async def health() -> dict[str, str]:
+    return {"status": "ok"}
+
+
 @app.get("/", response_class=RedirectResponse)
-async def root():
+async def root() -> RedirectResponse:
     return RedirectResponse(url="/songs")
 
 
@@ -50,10 +56,10 @@ _SONGS_SORT_COLS = {"display_title", "words_by", "music_by", "arranger", "perfor
 @app.get("/songs", response_class=HTMLResponse)
 async def songs(
     request: Request,
-    q: Optional[str] = Query(default=None),
+    q: str | None = Query(default=None),
     sort: str = Query(default="performance_count"),
     sort_dir: str = Query(default="desc"),
-):
+) -> HTMLResponse:
     sort = sort if sort in _SONGS_SORT_COLS else "performance_count"
     sort_dir = "asc" if sort_dir == "asc" else "desc"
     db = _get_db()
@@ -70,7 +76,7 @@ async def songs(
 
 
 @app.get("/reports", response_class=HTMLResponse)
-async def reports_page(request: Request):
+async def reports_page(request: Request) -> HTMLResponse:
     return templates.TemplateResponse(request, "reports.html")
 
 
@@ -78,7 +84,7 @@ async def reports_page(request: Request):
 async def reports_ccli(
     start_date: str = Form(...),
     end_date: str = Form(...),
-):
+) -> StreamingResponse:
     db = _get_db()
     events = db.query_copy_events(start_date, end_date)
     db.close()
@@ -115,7 +121,7 @@ async def reports_stats(
     end_date: str = Form(...),
     leader: str = Form(default=""),
     all_songs: bool = Form(default=False),
-):
+) -> HTMLResponse:
     db = _get_db()
     services = db.query_services(start_date, end_date, song_leader=leader or None)
     service_ids = [s["id"] for s in services]
@@ -140,7 +146,7 @@ async def reports_stats(
     leader_breakdown: dict[str, list[tuple[str, int]]] = {}
     if not leader:
         service_leader_map = {s["id"]: (s.get("song_leader") or "Unknown") for s in services}
-        ldr_song_services: dict[str, dict[str, set]] = {}
+        ldr_song_services: dict[str, dict[str, set[int]]] = {}
         for e in events:
             ldr = service_leader_map.get(e["service_id"], "Unknown")
             title = e["display_title"]
@@ -188,7 +194,7 @@ async def reports_stats(
 
 
 @app.get("/songs/{song_id}", response_class=HTMLResponse)
-async def song_detail(request: Request, song_id: int):
+async def song_detail(request: Request, song_id: int) -> HTMLResponse:
     db = _get_db()
     song = _query_song_by_id(db, song_id)
     if not song:
@@ -219,7 +225,7 @@ async def services_list(
     q_sermon: str = Query(default=""),
     start_date: str = Query(default=""),
     end_date: str = Query(default=""),
-):
+) -> HTMLResponse:
     sort = sort if sort in _SERVICES_SORT_COLS else "service_date"
     sort_dir = "asc" if sort_dir == "asc" else "desc"
     db = _get_db()
@@ -240,7 +246,7 @@ async def services_list(
 
 
 @app.get("/services/{service_id}", response_class=HTMLResponse)
-async def service_detail(request: Request, service_id: int):
+async def service_detail(request: Request, service_id: int) -> HTMLResponse:
     db = _get_db()
     service = _query_service_by_id(db, service_id)
     if not service:
@@ -260,13 +266,13 @@ async def service_detail(request: Request, service_id: int):
 
 def _query_songs(
     db: Database,
-    search: Optional[str] = None,
+    search: str | None = None,
     sort: str = "performance_count",
     sort_dir: str = "desc",
-) -> list[dict]:
+) -> list[dict[str, Any]]:
     """Return all songs with performance count, optionally filtered and sorted."""
     order = f"{sort} {sort_dir.upper()}, s.display_title"
-    cursor = db.conn.cursor()
+    cursor = db.cursor()
     base = """
         SELECT s.id, s.display_title, s.canonical_title,
                se.words_by, se.music_by, se.arranger,
@@ -291,15 +297,15 @@ def _query_songs(
     return [dict(row) for row in cursor.fetchall()]
 
 
-def _query_song_by_id(db: Database, song_id: int) -> Optional[dict]:
-    cursor = db.conn.cursor()
+def _query_song_by_id(db: Database, song_id: int) -> dict[str, Any] | None:
+    cursor = db.cursor()
     cursor.execute("SELECT * FROM songs WHERE id = ?", (song_id,))
     row = cursor.fetchone()
     return dict(row) if row else None
 
 
-def _query_song_editions(db: Database, song_id: int) -> list[dict]:
-    cursor = db.conn.cursor()
+def _query_song_editions(db: Database, song_id: int) -> list[dict[str, Any]]:
+    cursor = db.cursor()
     cursor.execute(
         "SELECT * FROM song_editions WHERE song_id = ? ORDER BY id",
         (song_id,),
@@ -307,9 +313,9 @@ def _query_song_editions(db: Database, song_id: int) -> list[dict]:
     return [dict(row) for row in cursor.fetchall()]
 
 
-def _query_song_services(db: Database, song_id: int) -> list[dict]:
+def _query_song_services(db: Database, song_id: int) -> list[dict[str, Any]]:
     """Return all services where a song was performed, with position and copy types."""
-    cursor = db.conn.cursor()
+    cursor = db.cursor()
     cursor.execute(
         """
         SELECT sv.id AS service_id, sv.service_date, sv.service_name, sv.song_leader,
@@ -339,10 +345,10 @@ def _query_all_services(
     q_sermon: str = "",
     start_date: str = "",
     end_date: str = "",
-) -> list[dict]:
+) -> list[dict[str, Any]]:
     """Return services with optional filtering and sorting."""
     where_clauses = []
-    params: list = []
+    params: list[Any] = []
     if q_service:
         where_clauses.append("LOWER(sv.service_name) LIKE LOWER(?)")
         params.append(f"%{q_service}%")
@@ -364,7 +370,7 @@ def _query_all_services(
 
     where_sql = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
     order = f"{sort} {sort_dir.upper()}, sv.service_name"
-    cursor = db.conn.cursor()
+    cursor = db.cursor()
     cursor.execute(
         f"""
         SELECT sv.*, COUNT(DISTINCT ss.song_id) AS song_count
@@ -379,17 +385,17 @@ def _query_all_services(
     return [dict(row) for row in cursor.fetchall()]
 
 
-def _query_service_by_id(db: Database, service_id: int) -> Optional[dict]:
+def _query_service_by_id(db: Database, service_id: int) -> dict[str, Any] | None:
     """Return a single service row or None."""
-    cursor = db.conn.cursor()
+    cursor = db.cursor()
     cursor.execute("SELECT * FROM services WHERE id = ?", (service_id,))
     row = cursor.fetchone()
     return dict(row) if row else None
 
 
-def _query_service_songs(db: Database, service_id: int) -> list[dict]:
+def _query_service_songs(db: Database, service_id: int) -> list[dict[str, Any]]:
     """Return songs for a service in setlist order, with full credits."""
-    cursor = db.conn.cursor()
+    cursor = db.cursor()
     cursor.execute(
         """
         SELECT ss.ordinal, ss.occurrences,

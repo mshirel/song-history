@@ -2,10 +2,9 @@
 
 import base64
 import os
-from typing import Optional
 
 
-def extract_credits_via_vision(image_bytes: bytes) -> Optional[str]:
+def extract_credits_via_vision(image_bytes: bytes) -> str | None:
     """
     Use Claude Vision API to extract the credits line from a slide image.
 
@@ -21,18 +20,18 @@ def extract_credits_via_vision(image_bytes: bytes) -> Optional[str]:
     """
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
-        raise EnvironmentError(
+        raise OSError(
             "ANTHROPIC_API_KEY is not set. "
             "Export it before using --ocr: export ANTHROPIC_API_KEY=sk-ant-..."
         )
 
     try:
-        import anthropic
-    except ImportError:
+        import anthropic  # type: ignore[import-not-found]
+    except ImportError as err:
         raise ImportError(
             "The 'anthropic' package is required for OCR. "
             "Install it with: pip install anthropic"
-        )
+        ) from err
 
     image_b64 = base64.standard_b64encode(image_bytes).decode("utf-8")
 

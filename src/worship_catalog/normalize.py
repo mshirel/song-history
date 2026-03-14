@@ -1,7 +1,6 @@
 """Title normalization, candidate selection, and credit parsing."""
 
 import re
-from typing import Optional
 
 
 def strip_title_prefix(line: str) -> str:
@@ -71,7 +70,7 @@ def _normalize_whitespace(text: str) -> str:
     return ' '.join(text.split()).strip()
 
 
-def select_best_title(candidates: list[str]) -> Optional[str]:
+def select_best_title(candidates: list[str]) -> str | None:
     """
     Select the best title candidate from a list of lines.
 
@@ -200,7 +199,7 @@ def canonicalize_title(title: str) -> str:
     return title
 
 
-def parse_credits(text: str) -> dict[str, Optional[str]]:
+def parse_credits(text: str) -> dict[str, str | None]:
     """
     Parse credit fields (Words/Music/Arranger) from slide text.
 
@@ -215,7 +214,7 @@ def parse_credits(text: str) -> dict[str, Optional[str]]:
     Returns:
         Dict with keys: words_by, music_by, arranger, other_credits
     """
-    result: dict[str, Optional[str]] = {
+    result: dict[str, str | None] = {
         "words_by": None,
         "music_by": None,
         "arranger": None,
@@ -270,9 +269,10 @@ def parse_credits(text: str) -> dict[str, Optional[str]]:
     # Capture remaining credit text
     remaining = text
     for key in ['words_by', 'music_by', 'arranger']:
-        if result[key]:
+        val = result[key]
+        if val:
             # Remove this credit from remaining text
-            value = re.escape(result[key])
+            value = re.escape(val)
             pattern = (
                 r'(?i)(words\s+(?:and|&)\s+music|words\s+by|music\s+by|'
                 r'arr(?:angement)?\s+by).*?' + value
@@ -286,7 +286,7 @@ def parse_credits(text: str) -> dict[str, Optional[str]]:
     return result
 
 
-def detect_publisher(text: str) -> Optional[str]:
+def detect_publisher(text: str) -> str | None:
     """
     Detect publisher from slide text.
 

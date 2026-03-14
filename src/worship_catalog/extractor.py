@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Any
 
 from worship_catalog.normalize import (
     _SCRIPTURE_RE,
@@ -12,13 +12,13 @@ from worship_catalog.normalize import (
     select_best_title,
     strip_title_prefix,
 )
+from worship_catalog.ocr import extract_credits_via_vision
 from worship_catalog.pptx_reader import (
     Slide,
     extract_service_metadata,
     load_pptx,
     parse_all_slides,
 )
-from worship_catalog.ocr import extract_credits_via_vision
 
 
 @dataclass
@@ -31,17 +31,17 @@ class SongOccurrence:
     """Normalized lowercase title."""
     display_title: str
     """Original casing as first seen."""
-    publisher: Optional[str] = None
+    publisher: str | None = None
     """Publisher (Paperless Hymnal, Taylor Publications, etc.)."""
-    words_by: Optional[str] = None
+    words_by: str | None = None
     """Composer(s) of lyrics."""
-    music_by: Optional[str] = None
+    music_by: str | None = None
     """Composer(s) of music."""
-    arranger: Optional[str] = None
+    arranger: str | None = None
     """Arranger name."""
-    first_slide_index: Optional[int] = None
+    first_slide_index: int | None = None
     """Index of first slide containing this song."""
-    last_slide_index: Optional[int] = None
+    last_slide_index: int | None = None
     """Index of last slide containing this song."""
     slide_count: int = 0
     """Number of slides containing this song."""
@@ -53,13 +53,13 @@ class ExtractionResult:
 
     filename: str
     file_hash: str
-    service_date: Optional[str]
-    service_name: Optional[str]
-    song_leader: Optional[str]
-    preacher: Optional[str]
-    sermon_title: Optional[str]
+    service_date: str | None
+    service_name: str | None
+    song_leader: str | None
+    preacher: str | None
+    sermon_title: str | None
     songs: list[SongOccurrence] = field(default_factory=list)
-    anomalies: list[dict] = field(default_factory=list)
+    anomalies: list[dict[str, Any]] = field(default_factory=list)
     """List of extraction anomalies and low-confidence items."""
 
 
@@ -129,8 +129,8 @@ def _group_song_slides(slides: list[Slide]) -> list[tuple[str, list[Slide]]]:
         return []
 
     groups = []
-    current_canonical = None
-    current_group = []
+    current_canonical: str | None = None
+    current_group: list[Slide] = []
     no_text_streak = 0  # Track consecutive slides with no text
 
     for slide in slides:
@@ -193,8 +193,6 @@ def _group_song_slides(slides: list[Slide]) -> list[tuple[str, list[Slide]]]:
             ]
         ):
             continue
-
-        stripped = strip_title_prefix(best_title)
 
         # Check if this starts a new song or continues current
         if canonical != current_canonical:
@@ -361,7 +359,7 @@ def _create_song_occurrence(
     )
 
 
-def _try_ocr_credits(slides: list[Slide]) -> Optional[str]:
+def _try_ocr_credits(slides: list[Slide]) -> str | None:
     """
     Attempt to extract credits text from the first image on the first slide
     using Claude Vision API.

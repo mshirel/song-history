@@ -3,9 +3,6 @@
 import sqlite3
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
-
-from worship_catalog.pptx_reader import compute_file_hash
 
 
 class Database:
@@ -15,13 +12,23 @@ class Database:
         """Initialize database connection."""
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self.conn: Optional[sqlite3.Connection] = None
+        self.conn: sqlite3.Connection | None = None
 
     def connect(self) -> sqlite3.Connection:
         """Connect to database."""
         self.conn = sqlite3.connect(self.db_path)
         self.conn.row_factory = sqlite3.Row
         return self.conn
+
+    @property
+    def _conn(self) -> sqlite3.Connection:
+        """Return the open connection, asserting it is not None."""
+        assert self.conn is not None, "Database not connected — call connect() first"
+        return self.conn
+
+    def cursor(self) -> sqlite3.Cursor:
+        """Return a cursor for the open connection."""
+        return self._conn.cursor()
 
     def close(self) -> None:
         """Close database connection."""
@@ -33,7 +40,7 @@ class Database:
         if not self.conn:
             self.connect()
 
-        cursor = self.conn.cursor()
+        cursor = self._conn.cursor()
 
         # Services table
         cursor.execute(
@@ -124,13 +131,13 @@ class Database:
             """
         )
 
-        self.conn.commit()
+        self._conn.commit()
 
     def insert_or_get_song(
         self, canonical_title: str, display_title: str
     ) -> int:
         """Insert or get song by canonical title. Returns song_id."""
-        cursor = self.conn.cursor()
+        cursor = self._conn.cursor()
 
         # Try to get existing
         cursor.execute(
@@ -145,20 +152,20 @@ class Database:
             "INSERT INTO songs (canonical_title, display_title) VALUES (?, ?)",
             (canonical_title, display_title),
         )
-        self.conn.commit()
+        self._conn.commit()
         return cursor.lastrowid
 
     def insert_or_get_song_edition(
         self,
         song_id: int,
-        publisher: Optional[str] = None,
-        words_by: Optional[str] = None,
-        music_by: Optional[str] = None,
-        arranger: Optional[str] = None,
-        copyright_notice: Optional[str] = None,
+        publisher: str | None = None,
+        words_by: str | None = None,
+        music_by: str | None = None,
+        arranger: str | None = None,
+        copyright_notice: str | None = None,
     ) -> int:
         """Insert or get song edition. Returns edition_id."""
-        cursor = self.conn.cursor()
+        cursor = self._conn.cursor()
 
         # Try to get existing - handle NULL comparisons explicitly
         cursor.execute(
@@ -195,7 +202,7 @@ class Database:
             """,
             (song_id, publisher, words_by, music_by, arranger, copyright_notice),
         )
-        self.conn.commit()
+        self._conn.commit()
         return cursor.lastrowid
 
     def insert_or_update_service(
@@ -204,12 +211,12 @@ class Database:
         service_name: str,
         source_file: str,
         source_hash: str,
-        song_leader: Optional[str] = None,
-        preacher: Optional[str] = None,
-        sermon_title: Optional[str] = None,
+        song_leader: str | None = None,
+        preacher: str | None = None,
+        sermon_title: str | None = None,
     ) -> int:
         """Insert or update service. Returns service_id."""
-        cursor = self.conn.cursor()
+        cursor = self._conn.cursor()
 
         # Check if exists
         cursor.execute(
@@ -255,7 +262,7 @@ class Database:
             )
             service_id = cursor.lastrowid
 
-        self.conn.commit()
+        self._conn.commit()
         return service_id
 
     def insert_service_song(
@@ -263,13 +270,13 @@ class Database:
         service_id: int,
         song_id: int,
         ordinal: int,
-        song_edition_id: Optional[int] = None,
-        first_slide_index: Optional[int] = None,
-        last_slide_index: Optional[int] = None,
+        song_edition_id: int | None = None,
+        first_slide_index: int | None = None,
+        last_slide_index: int | None = None,
         occurrences: int = 1,
     ) -> int:
         """Insert service song. Returns service_song_id."""
-        cursor = self.conn.cursor()
+        cursor = self._conn.cursor()
 
         cursor.execute(
             """
@@ -287,7 +294,7 @@ class Database:
                 occurrences,
             ),
         )
-        self.conn.commit()
+        self._conn.commit()
         return cursor.lastrowid
 
     def insert_copy_event(
@@ -297,10 +304,10 @@ class Database:
         reproduction_type: str,
         count: int = 1,
         reportable: bool = True,
-        song_edition_id: Optional[int] = None,
+        song_edition_id: int | None = None,
     ) -> int:
         """Insert copy event. Returns event_id."""
-        cursor = self.conn.cursor()
+        cursor = self._conn.cursor()
 
         cursor.execute(
             """
@@ -310,7 +317,7 @@ class Database:
             """,
             (service_id, song_id, song_edition_id, reproduction_type, count, int(reportable)),
         )
-        self.conn.commit()
+        self._conn.commit()
         return cursor.lastrowid
 
     def insert_or_get_copy_event(
@@ -320,10 +327,10 @@ class Database:
         reproduction_type: str,
         count: int = 1,
         reportable: bool = True,
-        song_edition_id: Optional[int] = None,
+        song_edition_id: int | None = None,
     ) -> int:
         """Insert or get copy event. Returns event_id."""
-        cursor = self.conn.cursor()
+        cursor = self._conn.cursor()
 
         # Try to get existing - handle NULL comparisons explicitly
         cursor.execute(
@@ -347,14 +354,14 @@ class Database:
             """,
             (service_id, song_id, song_edition_id, reproduction_type, count, int(reportable)),
         )
-        self.conn.commit()
+        self._conn.commit()
         return cursor.lastrowid
 
     def query_services(
-        self, start_date: str, end_date: str, song_leader: Optional[str] = None
+        self, start_date: str, end_date: str, song_leader: str | None = None
     ) -> list[dict]:
         """Query services by date range, with optional case-insensitive song leader filter."""
-        cursor = self.conn.cursor()
+        cursor = self._conn.cursor()
         if song_leader:
             cursor.execute(
                 """
@@ -377,10 +384,10 @@ class Database:
         return [dict(row) for row in cursor.fetchall()]
 
     def query_copy_events(
-        self, start_date: str, end_date: str, service_ids: Optional[list[int]] = None
+        self, start_date: str, end_date: str, service_ids: list[int] | None = None
     ) -> list[dict]:
         """Query copy events for date range, optionally restricted to given service IDs."""
-        cursor = self.conn.cursor()
+        cursor = self._conn.cursor()
         if service_ids is not None:
             placeholders = ",".join("?" * len(service_ids))
             cursor.execute(
@@ -421,7 +428,7 @@ class Database:
         Includes the source_file from the most recent service where the song appeared,
         so the repair command can re-open the PPTX.
         """
-        cursor = self.conn.cursor()
+        cursor = self._conn.cursor()
         cursor.execute(
             """
             SELECT DISTINCT s.id AS song_id, s.canonical_title, s.display_title,
@@ -441,9 +448,9 @@ class Database:
     def update_song_edition_credits(
         self,
         song_id: int,
-        words_by: Optional[str] = None,
-        music_by: Optional[str] = None,
-        arranger: Optional[str] = None,
+        words_by: str | None = None,
+        music_by: str | None = None,
+        arranger: str | None = None,
     ) -> None:
         """
         Update or insert credits on a song's edition row, then backfill
@@ -452,7 +459,7 @@ class Database:
         If a NULL-credit edition row exists, updates it in place.
         If no edition row exists, inserts one.
         """
-        cursor = self.conn.cursor()
+        cursor = self._conn.cursor()
 
         # Check for an existing edition with no credits
         cursor.execute(
@@ -497,11 +504,11 @@ class Database:
             (edition_id, song_id),
         )
 
-        self.conn.commit()
+        self._conn.commit()
 
     def delete_service_data(self, service_id: int) -> None:
         """Delete all data for a service (for idempotent re-import)."""
-        cursor = self.conn.cursor()
+        cursor = self._conn.cursor()
 
         # Delete copy events
         cursor.execute("DELETE FROM copy_events WHERE service_id = ?", (service_id,))
@@ -512,4 +519,4 @@ class Database:
         # Delete service
         cursor.execute("DELETE FROM services WHERE id = ?", (service_id,))
 
-        self.conn.commit()
+        self._conn.commit()

@@ -3,10 +3,8 @@
 import hashlib
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 from pptx import Presentation
-from pptx.util import Inches
 
 
 @dataclass
@@ -21,7 +19,7 @@ class SlideImage:
     """Image/picture information."""
     shape_id: int
     """Unique identifier for the shape."""
-    blob: Optional[bytes] = None
+    blob: bytes | None = None
     """Raw image bytes, if extracted."""
 
 
@@ -41,15 +39,15 @@ class Slide:
 @dataclass
 class ServiceMetadata:
     """Service metadata from presentation."""
-    date: Optional[str]
+    date: str | None
     """ISO format date (YYYY-MM-DD)."""
-    service_name: Optional[str]
+    service_name: str | None
     """Service name (e.g., 'Morning Worship')."""
-    song_leader: Optional[str]
+    song_leader: str | None
     """Song leader name."""
-    preacher: Optional[str]
+    preacher: str | None
     """Preacher name."""
-    sermon_title: Optional[str]
+    sermon_title: str | None
     """Sermon title."""
 
 

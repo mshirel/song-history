@@ -4,12 +4,11 @@ import json
 import re
 import subprocess
 from pathlib import Path
-from typing import Optional
 
 from worship_catalog.normalize import canonicalize_title
 
 # Serialized index schema: {canonical_title: {words_by, music_by, arranger, display_title}}
-LibraryIndex = dict[str, dict[str, Optional[str]]]
+LibraryIndex = dict[str, dict[str, str | None]]
 
 # Suffixes to strip when deriving a song title from a library filename.
 # Order matters — strip longest/most specific first.
@@ -40,7 +39,7 @@ def scrape_library(library_path: Path) -> LibraryIndex:
     Prefers -PH-HD variants over -HD over plain _16x9.
     """
     # First pass: collect best file path per canonical title
-    file_candidates: dict[str, list[tuple[int, Path]]] = {}
+    file_candidates: dict[str, list[tuple[int, Path, str]]] = {}
 
     for ppt_file in library_path.rglob("*.ppt"):
         if ppt_file.name.startswith("~"):
@@ -118,7 +117,7 @@ def _file_priority(stem: str) -> int:
     return 3
 
 
-def read_ppt_author(ppt_path: Path) -> Optional[str]:
+def read_ppt_author(ppt_path: Path) -> str | None:
     """
     Extract the Author field from a .ppt file's OLE2 metadata using `file`.
 
@@ -144,7 +143,7 @@ def read_ppt_author(ppt_path: Path) -> Optional[str]:
     return None
 
 
-def parse_author_credits(author: str) -> dict[str, Optional[str]]:
+def parse_author_credits(author: str) -> dict[str, str | None]:
     """
     Parse the OLE Author field into words_by / music_by / arranger.
 
@@ -155,7 +154,7 @@ def parse_author_credits(author: str) -> dict[str, Optional[str]]:
     - "Reuben Morgan, Ben Fielding, Arr. Ryan C."  → words_by / arranger
     - "Gilbert / Gilbert / F"                      → words_by / music_by (drop lone letter)
     """
-    result: dict[str, Optional[str]] = {
+    result: dict[str, str | None] = {
         "words_by": None,
         "music_by": None,
         "arranger": None,
@@ -196,7 +195,7 @@ def parse_author_credits(author: str) -> dict[str, Optional[str]]:
 def lookup_song_credits(
     canonical_title: str,
     library_index: LibraryIndex,
-) -> Optional[dict[str, Optional[str]]]:
+) -> dict[str, str | None] | None:
     """
     Look up credits for a song by canonical title using the library index.
 

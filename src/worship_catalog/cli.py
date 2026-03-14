@@ -4,9 +4,7 @@ import importlib.resources
 import json
 import logging
 import sys
-from datetime import datetime
 from pathlib import Path
-from typing import Optional
 
 import click
 
@@ -38,7 +36,7 @@ from worship_catalog.extractor import extract_songs
 
 @click.group()
 @click.version_option()
-def main():
+def main() -> None:
     """Worship Slide Deck Song Catalog.
 
     Extract, organize, and track songs from worship presentation files.
@@ -220,7 +218,7 @@ def import_cmd(
                         needs_review = True
                     else:
                         click.echo(
-                            f"  Skipping due to missing metadata",
+                            "  Skipping due to missing metadata",
                             err=True,
                         )
                         continue
@@ -231,7 +229,7 @@ def import_cmd(
                 service_hash = compute_file_hash(pptx_file)
 
                 # Check if this service already exists (idempotency check)
-                cursor = database.conn.cursor()
+                cursor = database.cursor()
                 cursor.execute(
                     """
                     SELECT id FROM services
@@ -344,7 +342,7 @@ def import_cmd(
 
 
 @main.group()
-def report():
+def report() -> None:
     """Generate reports from database."""
     pass
 
@@ -471,7 +469,7 @@ def ccli(start_date: str, end_date: str, out: str, db: str) -> None:
     default=None,
     help="Filter to services led by this song leader (partial match, case-insensitive)",
 )
-def stats(start_date: str, end_date: str, out: str, db: str, all_songs: bool, leader: Optional[str]) -> None:
+def stats(start_date: str, end_date: str, out: str, db: str, all_songs: bool, leader: str | None) -> None:
     """Generate statistics report for date range.
 
     Output markdown with frequency tables and trends.
@@ -503,7 +501,7 @@ def stats(start_date: str, end_date: str, out: str, db: str, all_songs: bool, le
 
         # Build statistics: count distinct services per song (not copy events,
         # which are doubled by projection + recording). Also collect credits.
-        song_services: dict[str, set] = {}
+        song_services: dict[str, set[int]] = {}
         song_credits: dict[str, str] = {}
         for event in events:
             title = event["display_title"]
@@ -527,7 +525,7 @@ def stats(start_date: str, end_date: str, out: str, db: str, all_songs: bool, le
         leader_breakdown: dict[str, list[tuple[str, int]]] = {}
         if not leader:
             service_leader_map = {s["id"]: (s.get("song_leader") or "Unknown") for s in services}
-            ldr_song_services: dict[str, dict[str, set]] = {}
+            ldr_song_services: dict[str, dict[str, set[int]]] = {}
             for event in events:
                 ldr = service_leader_map.get(event["service_id"], "Unknown")
                 title = event["display_title"]
@@ -552,12 +550,12 @@ def stats(start_date: str, end_date: str, out: str, db: str, all_songs: bool, le
         # Write markdown
         output_path = Path(out)
         with open(output_path, "w") as f:
-            f.write(f"# Song Statistics Report\n\n")
+            f.write("# Song Statistics Report\n\n")
             f.write(f"**Period:** {report_start} to {report_end}\n\n")
             if leader:
                 f.write(f"**Song Leader:** {leader}\n\n")
 
-            f.write(f"## Summary\n\n")
+            f.write("## Summary\n\n")
             f.write(f"- Services: {len(services)}\n")
             f.write(f"- Unique Songs: {len(sorted_songs)}\n")
             f.write(f"- Total Song Performances: {sum(song_counts.values())}\n")
@@ -566,26 +564,26 @@ def stats(start_date: str, end_date: str, out: str, db: str, all_songs: bool, le
             heading = "All Songs" if all_songs else "Most Frequent Songs"
             songs_to_show = sorted_songs if all_songs else sorted_songs[:20]
             f.write(f"## {heading}\n\n")
-            f.write(f"| Song | Credits | Count |\n")
-            f.write(f"|------|---------|-------|\n")
+            f.write("| Song | Credits | Count |\n")
+            f.write("|------|---------|-------|\n")
             for song, count in songs_to_show:
                 credits = song_credits.get(song, "")
                 f.write(f"| {song} | {credits} | {count} |\n")
 
             if leader_breakdown:
-                f.write(f"\n## By Song Leader\n\n")
+                f.write("\n## By Song Leader\n\n")
                 for ldr_name, ldr_songs in leader_breakdown.items():
                     service_count = sum(1 for s in services if (s.get("song_leader") or "Unknown") == ldr_name)
                     f.write(f"### {ldr_name} ({service_count} service{'s' if service_count != 1 else ''})\n\n")
-                    f.write(f"| Song | Count |\n")
-                    f.write(f"|------|-------|\n")
+                    f.write("| Song | Count |\n")
+                    f.write("|------|-------|\n")
                     for song_title, count in ldr_songs:
                         f.write(f"| {song_title} | {count} |\n")
-                    f.write(f"\n")
+                    f.write("\n")
 
-            f.write(f"\n## Services\n\n")
-            f.write(f"| Date | Service | Song Leader | Songs |\n")
-            f.write(f"|------|---------|-------------|-------|\n")
+            f.write("\n## Services\n\n")
+            f.write("| Date | Service | Song Leader | Songs |\n")
+            f.write("|------|---------|-------------|-------|\n")
             for service in services:
                 service_songs = [e for e in events if e["service_id"] == service["id"]]
                 unique_songs = len(set(e["song_id"] for e in service_songs))
@@ -685,10 +683,10 @@ def repair_credits(db: str, library_index: str, ocr: bool, dry_run: bool) -> Non
             if lib_index:
                 credits = lookup_song_credits(canonical, lib_index)
                 if credits and any(credits.values()):
-                    click.echo(f"    [library] found")
+                    click.echo("    [library] found")
                 else:
                     credits = None
-                    click.echo(f"    [library] not found", err=True)
+                    click.echo("    [library] not found", err=True)
 
             # Strategy 2: Vision OCR fallback
             if credits is None and ocr:
@@ -706,18 +704,18 @@ def repair_credits(db: str, library_index: str, ocr: bool, dry_run: bool) -> Non
                             raw = parse_credits(ocr_text)
                             if any(raw.values()):
                                 credits = raw
-                                click.echo(f"    [ocr] found")
+                                click.echo("    [ocr] found")
                             else:
                                 click.echo(f"    [ocr] no parseable credits: {ocr_text!r}", err=True)
                         else:
-                            click.echo(f"    [ocr] no text returned", err=True)
+                            click.echo("    [ocr] no text returned", err=True)
                     except Exception as e:
                         click.echo(f"    [ocr] error: {e}", err=True)
                 else:
-                    click.echo(f"    [ocr] source file not found", err=True)
+                    click.echo("    [ocr] source file not found", err=True)
 
             if credits is None or not any(credits.values()):
-                click.echo(f"    ✗ No credits found — skipping", err=True)
+                click.echo("    ✗ No credits found — skipping", err=True)
                 continue
 
             words_by = credits.get("words_by")

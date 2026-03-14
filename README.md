@@ -306,6 +306,7 @@ Open `http://localhost:8000`.
 | Services | `/services` | Filterable, sortable list of all imported services |
 | Service Detail | `/services/{id}` | Complete setlist and metadata for a single service |
 | Reports | `/reports` | Generate CCLI CSV download or view stats report in browser |
+| Health | `/health` | Returns `{"status": "ok"}` — used by Docker healthcheck |
 
 **Songs page:** search filters live as you type; click any column header to sort.
 **Services page:** filter by date range, service name, song leader, preacher, or sermon title; click headers to sort.
@@ -345,10 +346,27 @@ Default location: `data/worship.db`
 
 ## Development
 
+### Setup
+
+Install all development dependencies (includes web, OCR, linting, type checking, and security tools):
+
+```bash
+python -m venv venv
+source venv/bin/activate
+pip install -e ".[dev,web,ocr]"
+```
+
+Install pre-commit hooks to enforce linting on every commit:
+
+```bash
+pip install pre-commit
+pre-commit install
+```
+
 ### Running Tests
 
 ```bash
-pytest                           # Run all tests
+pytest                           # Run all tests with coverage
 pytest tests/test_cli.py -v     # CLI tests
 pytest tests/test_web.py -v     # Web UI tests
 pytest tests/test_library.py    # Library/credits parsing tests
@@ -357,7 +375,7 @@ pytest -k "missing_credits"     # Run tests matching keyword
 
 ### Test Coverage
 
-The project maintains 80%+ test coverage including:
+The project maintains 85%+ test coverage including:
 - CLI commands: validate, import, report ccli/stats, repair-credits, library index
 - Bundled library index resolution (`_resolve_library_index`)
 - PPTX parsing and song extraction
@@ -368,6 +386,36 @@ The project maintains 80%+ test coverage including:
 - Song leader filtering in stats reports
 - Missing-credits repair with FK backfill
 - Web UI: songs browser, HTMX search, CCLI CSV download, stats report
+
+### Code Quality
+
+```bash
+python -m ruff check src/        # Lint
+python -m mypy src/              # Type check
+```
+
+### Security Checks
+
+Run all security checks locally before pushing:
+
+```bash
+# Static security analysis (medium+ severity only)
+python -m bandit -r src/ -ll -c pyproject.toml
+
+# Dependency vulnerability audit
+python -m pip_audit --skip-editable
+```
+
+### CI/CD
+
+Every push and pull request to `main` runs two parallel jobs via GitHub Actions:
+
+| Job | Steps |
+|-----|-------|
+| `test` | ruff lint → mypy type check → pytest |
+| `security` | gitleaks secrets scan → pip-audit dependency audit → bandit static analysis |
+
+The security job scans the full git history for accidentally committed secrets (API keys, tokens, passwords), checks all dependencies against the OSV/PyPI advisory database for known CVEs, and runs Bandit at medium+ severity for insecure Python patterns.
 
 ---
 
