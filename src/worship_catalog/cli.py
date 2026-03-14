@@ -159,6 +159,18 @@ def validate(pptx: str, format: str) -> None:
         " (requires ANTHROPIC_API_KEY)"
     ),
 )
+@click.option(
+    "--max-ocr-calls",
+    type=int,
+    default=25,
+    show_default=True,
+    help="Maximum Vision API calls across this run (ignored without --ocr)",
+)
+@click.option(
+    "--unlimited-ocr",
+    is_flag=True,
+    help="Remove the OCR call cap (overrides --max-ocr-calls)",
+)
 def import_cmd(
     pptx_or_folder: str,
     db: str,
@@ -166,6 +178,8 @@ def import_cmd(
     non_interactive: bool,
     library_index: str,
     ocr: bool,
+    max_ocr_calls: int,
+    unlimited_ocr: bool,
 ) -> None:
     """Import PPTX file(s) to database.
 
@@ -200,13 +214,22 @@ def import_cmd(
             click.echo("No PPTX files found", err=True)
             sys.exit(1)
 
+        # Build shared OCR budget (shared across all files in this run)
+        if ocr:
+            from worship_catalog.extractor import OcrBudget
+            ocr_budget: OcrBudget | None = OcrBudget(
+                max_calls=None if unlimited_ocr else max_ocr_calls
+            )
+        else:
+            ocr_budget = None
+
         _log.info("Starting import", extra={"path": str(path), "files": len(pptx_files)})
         total_songs = 0
         for pptx_file in pptx_files:
             click.echo(f"Processing {pptx_file.name}...", err=False)
 
             try:
-                result = extract_songs(pptx_file, use_ocr=ocr)
+                result = extract_songs(pptx_file, use_ocr=ocr, ocr_budget=ocr_budget)
 
                 # Check for missing metadata
                 needs_review = False
@@ -636,11 +659,30 @@ def stats(
     ),
 )
 @click.option(
+    "--max-ocr-calls",
+    type=int,
+    default=25,
+    show_default=True,
+    help="Maximum Vision API calls for this run (ignored without --ocr)",
+)
+@click.option(
+    "--unlimited-ocr",
+    is_flag=True,
+    help="Remove the OCR call cap (overrides --max-ocr-calls)",
+)
+@click.option(
     "--dry-run",
     is_flag=True,
     help="Show which songs would be updated without writing to DB",
 )
-def repair_credits(db: str, library_index: str, ocr: bool, dry_run: bool) -> None:
+def repair_credits(
+    db: str,
+    library_index: str,
+    ocr: bool,
+    max_ocr_calls: int,
+    unlimited_ocr: bool,
+    dry_run: bool,
+) -> None:
     """Repair missing credits for songs in the database.
 
     Uses the pre-scraped library index JSON by default. Two strategies:
@@ -685,6 +727,25 @@ def repair_credits(db: str, library_index: str, ocr: bool, dry_run: bool) -> Non
                 err=True,
             )
 
+        # Pre-flight: count songs that will need OCR (not found in library)
+        ocr_budget = None
+        if ocr:
+            from worship_catalog.extractor import OcrBudget
+            ocr_needed = sum(
+                1 for row in missing
+                if not (
+                    lib_index
+                    and lookup_song_credits(row["canonical_title"], lib_index)
+                    and any(lookup_song_credits(row["canonical_title"], lib_index).values())
+                )
+            )
+            cap = "unlimited" if unlimited_ocr else str(max_ocr_calls)
+            click.echo(
+                f"{ocr_needed} song(s) will need OCR (~$0.003 each est.). "
+                f"Processing up to {cap}."
+            )
+            ocr_budget = OcrBudget(max_calls=None if unlimited_ocr else max_ocr_calls)
+
         updated = 0
         for row in missing:
             title = row["display_title"]
@@ -704,32 +765,40 @@ def repair_credits(db: str, library_index: str, ocr: bool, dry_run: bool) -> Non
 
             # Strategy 2: Vision OCR fallback
             if credits is None and ocr:
-                source_file = row.get("source_file")
-                if source_file and Path(source_file).exists():
-                    try:
-                        prs = load_pptx(source_file)
-                        all_slides = parse_all_slides(prs)
-                        song_slides = [
-                            s for s in all_slides[1:]
-                            if any(canonical in line.lower() for line in s.text.text_lines)
-                        ]
-                        ocr_text = _try_ocr_credits(song_slides) if song_slides else None
-                        if ocr_text:
-                            raw = parse_credits(ocr_text)
-                            if any(raw.values()):
-                                credits = raw
-                                click.echo("    [ocr] found")
-                            else:
-                                click.echo(
-                                    f"    [ocr] no parseable credits: {ocr_text!r}",
-                                    err=True,
-                                )
-                        else:
-                            click.echo("    [ocr] no text returned", err=True)
-                    except Exception as e:
-                        click.echo(f"    [ocr] error: {e}", err=True)
+                if ocr_budget is not None and ocr_budget.is_capped:
+                    click.echo(
+                        f"    [ocr] skipped — call limit reached ({ocr_budget.max_calls})",
+                        err=True,
+                    )
                 else:
-                    click.echo("    [ocr] source file not found", err=True)
+                    source_file = row.get("source_file")
+                    if source_file and Path(source_file).exists():
+                        try:
+                            if ocr_budget is not None:
+                                ocr_budget.consume()
+                            prs = load_pptx(source_file)
+                            all_slides = parse_all_slides(prs)
+                            song_slides = [
+                                s for s in all_slides[1:]
+                                if any(canonical in line.lower() for line in s.text.text_lines)
+                            ]
+                            ocr_text = _try_ocr_credits(song_slides) if song_slides else None
+                            if ocr_text:
+                                raw = parse_credits(ocr_text)
+                                if any(raw.values()):
+                                    credits = raw
+                                    click.echo("    [ocr] found")
+                                else:
+                                    click.echo(
+                                        f"    [ocr] no parseable credits: {ocr_text!r}",
+                                        err=True,
+                                    )
+                            else:
+                                click.echo("    [ocr] no text returned", err=True)
+                        except Exception as e:
+                            click.echo(f"    [ocr] error: {e}", err=True)
+                    else:
+                        click.echo("    [ocr] source file not found", err=True)
 
             if credits is None or not any(credits.values()):
                 click.echo("    ✗ No credits found — skipping", err=True)

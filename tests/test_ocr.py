@@ -5,7 +5,62 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from worship_catalog.extractor import OcrBudget
 from worship_catalog.ocr import _detect_media_type, extract_credits_via_vision
+
+
+class TestOcrBudget:
+    """Tests for the OcrBudget call-cap class."""
+
+    def test_unlimited_budget_always_allows(self):
+        budget = OcrBudget(max_calls=None)
+        for _ in range(1000):
+            assert budget.consume() is True
+
+    def test_zero_budget_never_allows(self):
+        budget = OcrBudget(max_calls=0)
+        assert budget.consume() is False
+
+    def test_budget_allows_up_to_max(self):
+        budget = OcrBudget(max_calls=3)
+        assert budget.consume() is True
+        assert budget.consume() is True
+        assert budget.consume() is True
+        assert budget.consume() is False
+
+    def test_calls_made_increments_on_success(self):
+        budget = OcrBudget(max_calls=5)
+        budget.consume()
+        budget.consume()
+        assert budget.calls_made == 2
+
+    def test_calls_made_does_not_increment_when_capped(self):
+        budget = OcrBudget(max_calls=1)
+        budget.consume()  # uses the 1 allowed call
+        budget.consume()  # capped — should not increment
+        assert budget.calls_made == 1
+
+    def test_is_capped_false_when_unlimited(self):
+        budget = OcrBudget(max_calls=None)
+        budget.consume()
+        assert budget.is_capped is False
+
+    def test_is_capped_true_when_limit_reached(self):
+        budget = OcrBudget(max_calls=2)
+        budget.consume()
+        assert budget.is_capped is False
+        budget.consume()
+        assert budget.is_capped is True
+
+    def test_remaining_none_when_unlimited(self):
+        budget = OcrBudget(max_calls=None)
+        assert budget.remaining is None
+
+    def test_remaining_decrements(self):
+        budget = OcrBudget(max_calls=5)
+        assert budget.remaining == 5
+        budget.consume()
+        assert budget.remaining == 4
 
 
 class TestDetectMediaType:

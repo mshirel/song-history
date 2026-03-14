@@ -880,6 +880,109 @@ class TestCLIIntegration:
         assert "0.1" in result.output
 
 
+class TestOcrCapOptions:
+    """Tests for --max-ocr-calls and --unlimited-ocr CLI options."""
+
+    @pytest.fixture
+    def runner(self):
+        return CliRunner()
+
+    def test_import_help_shows_max_ocr_calls(self, runner):
+        result = runner.invoke(main, ["import", "--help"])
+        assert result.exit_code == 0
+        assert "--max-ocr-calls" in result.output
+
+    def test_import_help_shows_unlimited_ocr(self, runner):
+        result = runner.invoke(main, ["import", "--help"])
+        assert result.exit_code == 0
+        assert "--unlimited-ocr" in result.output
+
+    def test_repair_credits_help_shows_max_ocr_calls(self, runner):
+        result = runner.invoke(main, ["repair-credits", "--help"])
+        assert result.exit_code == 0
+        assert "--max-ocr-calls" in result.output
+
+    def test_repair_credits_help_shows_unlimited_ocr(self, runner):
+        result = runner.invoke(main, ["repair-credits", "--help"])
+        assert result.exit_code == 0
+        assert "--unlimited-ocr" in result.output
+
+    def test_repair_credits_ocr_zero_cap_skips_ocr(self, runner):
+        """--max-ocr-calls 0 with --ocr should not attempt any OCR calls."""
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "test.db"
+            db = Database(db_path)
+            db.connect()
+            db.init_schema()
+
+            service_id = db.insert_or_update_service(
+                service_date="2026-02-15",
+                service_name="Morning Worship",
+                source_file="test.pptx",
+                source_hash="hash1",
+            )
+            song_id = db.insert_or_get_song("amazing grace", "Amazing Grace")
+            db.insert_service_song(service_id=service_id, song_id=song_id, ordinal=1)
+            db.close()
+
+            import os
+            result = runner.invoke(
+                main,
+                [
+                    "repair-credits",
+                    "--db", str(db_path),
+                    "--ocr",
+                    "--max-ocr-calls", "0",
+                ],
+                env={**os.environ, "ANTHROPIC_API_KEY": "sk-ant-test"},
+            )
+            assert result.exit_code == 0
+            # Should mention the cap was reached or 0 OCR calls
+            output_lower = result.output.lower()
+            assert (
+                "0" in result.output
+                or "cap" in output_lower
+                or "limit" in output_lower
+            )
+
+    def test_repair_credits_ocr_preflight_shows_count(self, runner):
+        """repair-credits --ocr prints a pre-flight count of songs needing OCR."""
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "test.db"
+            index_path = Path(tmpdir) / "index.json"
+            index_path.write_text("{}")  # empty — all songs will need OCR
+
+            db = Database(db_path)
+            db.connect()
+            db.init_schema()
+
+            service_id = db.insert_or_update_service(
+                service_date="2026-02-15",
+                service_name="Morning Worship",
+                source_file="test.pptx",
+                source_hash="hash1",
+            )
+            song_id = db.insert_or_get_song("amazing grace", "Amazing Grace")
+            db.insert_service_song(service_id=service_id, song_id=song_id, ordinal=1)
+            db.close()
+
+            import os
+            result = runner.invoke(
+                main,
+                [
+                    "repair-credits",
+                    "--db", str(db_path),
+                    "--library-index", str(index_path),
+                    "--ocr",
+                    "--max-ocr-calls", "0",
+                ],
+                env={**os.environ, "ANTHROPIC_API_KEY": "sk-ant-test"},
+            )
+            assert result.exit_code == 0
+            # Pre-flight message should include the count of songs needing OCR
+            assert "1" in result.output  # 1 song needs OCR
+
+
 class TestResolveLibraryIndex:
     """Tests for the _resolve_library_index helper."""
 

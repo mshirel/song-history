@@ -22,6 +22,41 @@ from worship_catalog.pptx_reader import (
 
 
 @dataclass
+class OcrBudget:
+    """Call cap for the Claude Vision API during a single extraction run.
+
+    Pass an instance to :func:`extract_songs` so that the number of
+    Vision API calls is bounded.  ``max_calls=None`` means unlimited.
+    """
+
+    max_calls: int | None
+    calls_made: int = 0
+
+    def consume(self) -> bool:
+        """Attempt to use one OCR call.
+
+        Returns True if the call is allowed (and increments the counter),
+        False if the budget is already exhausted.
+        """
+        if self.max_calls is not None and self.calls_made >= self.max_calls:
+            return False
+        self.calls_made += 1
+        return True
+
+    @property
+    def is_capped(self) -> bool:
+        """True if the budget has been exhausted."""
+        return self.max_calls is not None and self.calls_made >= self.max_calls
+
+    @property
+    def remaining(self) -> int | None:
+        """Remaining calls allowed, or None if unlimited."""
+        if self.max_calls is None:
+            return None
+        return max(0, self.max_calls - self.calls_made)
+
+
+@dataclass
 class SongOccurrence:
     """A song occurrence within a service."""
 
@@ -63,7 +98,11 @@ class ExtractionResult:
     """List of extraction anomalies and low-confidence items."""
 
 
-def extract_songs(file_path: Path | str, use_ocr: bool = False) -> ExtractionResult:
+def extract_songs(
+    file_path: Path | str,
+    use_ocr: bool = False,
+    ocr_budget: OcrBudget | None = None,
+) -> ExtractionResult:
     """
     Extract songs from a PPTX file.
 
@@ -78,6 +117,7 @@ def extract_songs(file_path: Path | str, use_ocr: bool = False) -> ExtractionRes
     Args:
         file_path: Path to the PPTX file
         use_ocr: If True, use Claude Vision API to extract credits from image-only slides
+        ocr_budget: Optional call cap; if None and use_ocr is True, calls are unlimited
     """
     file_path = Path(file_path)
 
@@ -97,7 +137,9 @@ def extract_songs(file_path: Path | str, use_ocr: bool = False) -> ExtractionRes
     # Step 4: Convert groups to song occurrences
     songs = []
     for ordinal, (canonical, group) in enumerate(song_groups, 1):
-        song = _create_song_occurrence(ordinal, canonical, group, use_ocr=use_ocr)
+        song = _create_song_occurrence(
+            ordinal, canonical, group, use_ocr=use_ocr, ocr_budget=ocr_budget
+        )
         songs.append(song)
 
     # Create result
@@ -305,14 +347,18 @@ def _extract_title_candidates(slide: Slide) -> list[str]:
 
 
 def _create_song_occurrence(
-    ordinal: int, canonical_title: str, slides: list[Slide], use_ocr: bool = False
+    ordinal: int,
+    canonical_title: str,
+    slides: list[Slide],
+    use_ocr: bool = False,
+    ocr_budget: OcrBudget | None = None,
 ) -> SongOccurrence:
     """
     Create a song occurrence from grouped slides.
 
     Extracts credits and metadata from all slides in group.
     If use_ocr is True and no credits are found via text, falls back to
-    Claude Vision API on the first slide's image.
+    Claude Vision API on the first slide's image, subject to ocr_budget.
     """
     # Extract display title from first slide with text
     display_title = ""
@@ -336,9 +382,10 @@ def _create_song_occurrence(
     if use_ocr and not any([
         credits.get("words_by"), credits.get("music_by"), credits.get("arranger"),
     ]):
-        ocr_text = _try_ocr_credits(slides)
-        if ocr_text:
-            credits = parse_credits(ocr_text)
+        if ocr_budget is None or ocr_budget.consume():
+            ocr_text = _try_ocr_credits(slides)
+            if ocr_text:
+                credits = parse_credits(ocr_text)
 
     # Detect publisher
     publisher = detect_publisher(all_text)
