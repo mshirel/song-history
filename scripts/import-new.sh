@@ -109,16 +109,22 @@ for filepath in "${pptx_files[@]}"; do
 
     log "Importing: $filename"
 
-    if worship-catalog import "$filepath" \
+    # Capture stdout+stderr so we can log it regardless of success/failure,
+    # while still correctly capturing the exit code of worship-catalog itself.
+    # The previous pipe pattern (cmd | while ...) swallowed the exit code even
+    # with pipefail in some edge cases; this pattern is unambiguous.
+    import_output=""
+    if import_output=$(worship-catalog import "$filepath" \
         --db "$DB_PATH" \
-        --non-interactive \
-        2>&1 | while IFS= read -r line; do log "  $line"; done; then
-        # Success
+        --non-interactive 2>&1); then
+        # Success — log output then archive
+        while IFS= read -r line; do log "  $line"; done <<< "$import_output"
         mv "$filepath" "${ARCHIVE_DIR}/${filename}"
         clear_failure_record "$filename"
         log "  OK — moved to archive."
     else
-        # Failure
+        # Failure — log output then track and potentially quarantine
+        while IFS= read -r line; do log "  $line"; done <<< "$import_output"
         count=$(get_failure_count "$filename")
         count=$((count + 1))
 

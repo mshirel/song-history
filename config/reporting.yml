@@ -1,5 +1,10 @@
 # CCLI Reproduction Count Defaults
 # These values define how many times each song is counted for copyright reporting
+#
+# NOTE: This file is NOT yet loaded by the application.
+# The import command currently hardcodes projection=1 and recording=1,
+# which matches the defaults below. Wiring this file up is tracked in issue #6.
+# Until then, edit src/worship_catalog/cli.py to change copy event behavior.
 
 reproduction_counts:
   # Lyrics projected on screen during service

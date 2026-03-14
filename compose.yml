@@ -28,6 +28,9 @@ services:
   cli:
     image: ghcr.io/mshirel/song-history:latest
     # build: .                        # ← uncomment for local development
+    env_file:
+      - path: .env
+        required: false
     volumes:
       - ./data:/data
       - ./inbox:/inbox
@@ -35,6 +38,11 @@ services:
     environment:
       - DB_PATH=/data/worship.db
       - INBOX_DIR=/inbox
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '1.0'
 
   # ---------------------------------------------------------------------------
   # watcher — poll the inbox folder every 5 minutes and import new PPTX files
@@ -51,6 +59,9 @@ services:
             do /app/scripts/import-new.sh;
             sleep 300;
           done"
+    env_file:
+      - path: .env
+        required: false
     volumes:
       - ./data:/data
       - ./inbox:/inbox
@@ -59,6 +70,12 @@ services:
       - DB_PATH=/data/worship.db
       - INBOX_DIR=/inbox
     restart: unless-stopped
+    stop_grace_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.5'
 
   # ---------------------------------------------------------------------------
   # web — FastAPI + HTMX reporting & song browser UI
@@ -71,17 +88,60 @@ services:
     # build: .                        # ← uncomment for local development
     entrypoint: uvicorn
     command: worship_catalog.web.app:app --host 0.0.0.0 --port 8000
+    env_file:
+      - path: .env
+        required: false
     ports:
-      - "8000:8000"
+      - "${WEB_PORT:-8000}:8000"
     volumes:
       - ./data:/data
       - ./config:/config
     environment:
       - DB_PATH=/data/worship.db
     restart: unless-stopped
+    stop_grace_period: 15s
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
       interval: 30s
       timeout: 5s
       retries: 3
       start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '1.0'
+        reservations:
+          memory: 128M
+
+  # ---------------------------------------------------------------------------
+  # backup — nightly SQLite dump with 30-day retention
+  #
+  # Runs daily at midnight, writes compressed SQL dumps to ./backups/.
+  # To restore:
+  #   gunzip -c backups/worship-YYYYMMDD-HHMMSS.sql.gz | sqlite3 data/worship.db
+  #
+  # Start:  docker compose up -d backup
+  # ---------------------------------------------------------------------------
+  backup:
+    image: alpine
+    entrypoint: /bin/sh
+    command: >
+      -c "apk add --no-cache sqlite > /dev/null 2>&1;
+          while true; do
+            STAMP=$$(date +%Y%m%d-%H%M%S);
+            sqlite3 /data/worship.db '.dump' | gzip > /backup/worship-$$STAMP.sql.gz
+            && echo \"[$$STAMP] Backup written: worship-$$STAMP.sql.gz\"
+            || echo \"[$$STAMP] Backup FAILED\";
+            find /backup -name 'worship-*.sql.gz' -mtime +30 -delete;
+            sleep 86400;
+          done"
+    volumes:
+      - ./data:/data:ro
+      - ./backups:/backup
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 64M
+          cpus: '0.25'

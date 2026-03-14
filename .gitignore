@@ -4,7 +4,12 @@ stats_report.md
 data/*.pptx
 data/*.db
 data/*.db-journal
+data/*.db-wal
+data/*.db-shm
 data/library_index.json
+
+# Backups (created by the backup service in compose.yml)
+backups/
 
 # Inbox (PPTX files and runtime artifacts; .gitkeep files are tracked)
 inbox/*.pptx
