@@ -385,6 +385,61 @@ async def service_detail(request: Request, service_id: int) -> HTMLResponse:
     )
 
 
+_LEADER_MIN_SONG_COUNT = 2
+_MIN_SERVICES_FOR_MEANINGFUL_TRENDS = 5
+
+
+@app.get("/leaders", response_class=HTMLResponse)
+async def leaders_index(request: Request) -> HTMLResponse:
+    db = _get_db()
+    leaders = db.query_all_leaders()
+    db.close()
+    return templates.TemplateResponse(request, "leaders.html", {"leaders": leaders})
+
+
+@app.get("/leaders/{leader_name}/top-songs", response_class=HTMLResponse)
+async def leader_top_songs(request: Request, leader_name: str) -> HTMLResponse:
+    db = _get_db()
+    top_songs = db.query_leader_top_songs(leader_name, min_count=_LEADER_MIN_SONG_COUNT)
+    service_count = db.query_leader_service_count(leader_name)
+    db.close()
+    warning_few_services = service_count < _MIN_SERVICES_FOR_MEANINGFUL_TRENDS
+    return templates.TemplateResponse(
+        request,
+        "leader_top_songs.html",
+        {
+            "leader": leader_name,
+            "top_songs": top_songs,
+            "service_count": service_count,
+            "warning_few_services": warning_few_services,
+            "min_count": _LEADER_MIN_SONG_COUNT,
+        },
+    )
+
+
+@app.get("/leaders/{leader_name}/top-songs/csv")
+async def leader_top_songs_csv(leader_name: str) -> StreamingResponse:
+    db = _get_db()
+    top_songs = db.query_leader_top_songs(leader_name, min_count=_LEADER_MIN_SONG_COUNT)
+    db.close()
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["Rank", "Title", "Credits", "Count"])
+    for rank, song in enumerate(top_songs, 1):
+        parts = [song.get("words_by") or "", song.get("music_by") or ""]
+        credits = " / ".join(p for p in parts if p)
+        writer.writerow([rank, song["display_title"], credits, song["performance_count"]])
+
+    output.seek(0)
+    filename = f"leader_songs_{leader_name}.csv"
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

@@ -434,6 +434,51 @@ class TestServicesFiltering:
         assert response.status_code == 200
 
 
+class TestLeaderRoutes:
+    """Tests for /leaders and /leaders/{name}/top-songs routes."""
+
+    def test_leaders_index_returns_html(self, client):
+        response = client.get("/leaders")
+        assert response.status_code == 200
+        assert "text/html" in response.headers["content-type"]
+
+    def test_leaders_index_lists_leader(self, client):
+        response = client.get("/leaders")
+        assert "Matt" in response.text
+
+    def test_leader_top_songs_returns_html(self, client):
+        response = client.get("/leaders/Matt/top-songs")
+        assert response.status_code == 200
+        assert "text/html" in response.headers["content-type"]
+
+    def test_leader_top_songs_shows_leader_name(self, client):
+        response = client.get("/leaders/Matt/top-songs")
+        assert "Matt" in response.text
+
+    def test_leader_top_songs_empty_state_for_no_repeats(self, client):
+        """Fixture has only 1 service for Matt, so no songs repeat 2+ times."""
+        response = client.get("/leaders/Matt/top-songs")
+        assert response.status_code == 200
+        # Should show "no songs" message or warning since nothing repeated
+        assert "No songs" in response.text or "more than once" in response.text.lower()
+
+    def test_leader_top_songs_csv_download(self, client):
+        response = client.get("/leaders/Matt/top-songs/csv")
+        assert response.status_code == 200
+        assert "text/csv" in response.headers["content-type"]
+
+    def test_leader_top_songs_csv_has_header(self, client):
+        response = client.get("/leaders/Matt/top-songs/csv")
+        first_line = response.text.splitlines()[0]
+        assert "Title" in first_line
+
+    def test_unknown_leader_shows_message(self, client):
+        response = client.get("/leaders/NoSuchLeader/top-songs")
+        assert response.status_code == 200
+        # Should show empty state, not 404
+        assert "No songs" in response.text or "more than once" in response.text.lower()
+
+
 class TestStatsExport:
     """Tests for stats report CSV and Excel export."""
 
