@@ -104,7 +104,10 @@ async def reports_ccli(
             e["count"],
         ])
 
-    _log.info("CCLI report generated", extra={"start_date": start_date, "end_date": end_date, "rows": len(events)})
+    _log.info(
+        "CCLI report generated",
+        extra={"start_date": start_date, "end_date": end_date, "rows": len(events)},
+    )
     output.seek(0)
     filename = f"ccli_report_{start_date}_{end_date}.csv"
     return StreamingResponse(

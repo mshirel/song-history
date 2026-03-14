@@ -179,7 +179,10 @@ def parse_author_credits(author: str) -> dict[str, str | None]:
     parts = [p.strip() for p in re.split(r"\s*/\s*", author)]
     parts = [p for p in parts if len(p) > 1 or p.isalpha() is False]
     # Filter out lone key letter like "F", "G", "A" (key signatures stored as Keywords)
-    parts = [p for p in parts if not re.fullmatch(r"[A-G](?:\s*(?:Flat|Sharp|#|b))?", p, re.IGNORECASE)]
+    parts = [
+        p for p in parts
+        if not re.fullmatch(r"[A-G](?:\s*(?:Flat|Sharp|#|b))?", p, re.IGNORECASE)
+    ]
 
     if not parts:
         return result

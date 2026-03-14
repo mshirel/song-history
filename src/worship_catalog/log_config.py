@@ -124,5 +124,8 @@ class RequestLoggingMiddleware:
             log_fn = self._log.warning if status >= 400 else self._log.info
             log_fn(
                 f"{method} {full_path} → {status}",
-                extra={"method": method, "path": full_path, "status": status, "duration_ms": duration_ms},
+                extra={
+                    "method": method, "path": full_path,
+                    "status": status, "duration_ms": duration_ms,
+                },
             )

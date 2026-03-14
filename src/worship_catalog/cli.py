@@ -8,6 +8,8 @@ from pathlib import Path
 
 import click
 
+from worship_catalog.db import Database
+from worship_catalog.extractor import extract_songs
 from worship_catalog.log_config import setup as _setup_logging
 
 _log = logging.getLogger("worship_catalog.cli")
@@ -29,9 +31,6 @@ def _resolve_library_index(path_arg: str) -> Path:
     if bundled.exists():
         return bundled
     return p  # return original (callers check .exists())
-
-from worship_catalog.db import Database
-from worship_catalog.extractor import extract_songs
 
 
 @click.group()
@@ -155,7 +154,10 @@ def validate(pptx: str, format: str) -> None:
 @click.option(
     "--ocr",
     is_flag=True,
-    help="Fall back to Claude Vision API for credits not found in library (requires ANTHROPIC_API_KEY)",
+    help=(
+        "Fall back to Claude Vision API for credits not found in library"
+        " (requires ANTHROPIC_API_KEY)"
+    ),
 )
 def import_cmd(
     pptx_or_folder: str,
@@ -317,8 +319,12 @@ def import_cmd(
                 total_songs += len(result.songs)
                 _log.info(
                     "File imported",
-                    extra={"file": pptx_file.name, "songs": len(result.songs),
-                           "service_date": result.service_date, "service_name": result.service_name},
+                    extra={
+                        "file": pptx_file.name,
+                        "songs": len(result.songs),
+                        "service_date": result.service_date,
+                        "service_name": result.service_name,
+                    },
                 )
                 click.echo(
                     f"  ✓ Imported {len(result.songs)} songs"
@@ -469,7 +475,9 @@ def ccli(start_date: str, end_date: str, out: str, db: str) -> None:
     default=None,
     help="Filter to services led by this song leader (partial match, case-insensitive)",
 )
-def stats(start_date: str, end_date: str, out: str, db: str, all_songs: bool, leader: str | None) -> None:
+def stats(
+    start_date: str, end_date: str, out: str, db: str, all_songs: bool, leader: str | None
+) -> None:
     """Generate statistics report for date range.
 
     Output markdown with frequency tables and trends.
@@ -573,8 +581,11 @@ def stats(start_date: str, end_date: str, out: str, db: str, all_songs: bool, le
             if leader_breakdown:
                 f.write("\n## By Song Leader\n\n")
                 for ldr_name, ldr_songs in leader_breakdown.items():
-                    service_count = sum(1 for s in services if (s.get("song_leader") or "Unknown") == ldr_name)
-                    f.write(f"### {ldr_name} ({service_count} service{'s' if service_count != 1 else ''})\n\n")
+                    service_count = sum(
+                        1 for s in services if (s.get("song_leader") or "Unknown") == ldr_name
+                    )
+                    plural = "s" if service_count != 1 else ""
+                    f.write(f"### {ldr_name} ({service_count} service{plural})\n\n")
                     f.write("| Song | Count |\n")
                     f.write("|------|-------|\n")
                     for song_title, count in ldr_songs:
@@ -619,7 +630,10 @@ def stats(start_date: str, end_date: str, out: str, db: str, all_songs: bool, le
 @click.option(
     "--ocr",
     is_flag=True,
-    help="Fall back to Claude Vision API for any songs not in the library index (requires ANTHROPIC_API_KEY)",
+    help=(
+        "Fall back to Claude Vision API for any songs not in the library index"
+        " (requires ANTHROPIC_API_KEY)"
+    ),
 )
 @click.option(
     "--dry-run",
@@ -706,7 +720,10 @@ def repair_credits(db: str, library_index: str, ocr: bool, dry_run: bool) -> Non
                                 credits = raw
                                 click.echo("    [ocr] found")
                             else:
-                                click.echo(f"    [ocr] no parseable credits: {ocr_text!r}", err=True)
+                                click.echo(
+                                    f"    [ocr] no parseable credits: {ocr_text!r}",
+                                    err=True,
+                                )
                         else:
                             click.echo("    [ocr] no text returned", err=True)
                     except Exception as e:

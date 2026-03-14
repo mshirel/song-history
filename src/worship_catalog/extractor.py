@@ -333,7 +333,9 @@ def _create_song_occurrence(
     credits = parse_credits(all_text)
 
     # OCR fallback: if no credits found and first slide has an image, try Vision API
-    if use_ocr and not any([credits.get("words_by"), credits.get("music_by"), credits.get("arranger")]):
+    if use_ocr and not any([
+        credits.get("words_by"), credits.get("music_by"), credits.get("arranger"),
+    ]):
         ocr_text = _try_ocr_credits(slides)
         if ocr_text:
             credits = parse_credits(ocr_text)

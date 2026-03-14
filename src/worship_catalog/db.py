@@ -246,7 +246,8 @@ class Database:
             cursor.execute(
                 """
                 INSERT INTO services
-                (service_date, service_name, source_file, source_hash, song_leader, preacher, sermon_title, imported_at)
+                (service_date, service_name, source_file, source_hash,
+                 song_leader, preacher, sermon_title, imported_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
@@ -281,7 +282,8 @@ class Database:
         cursor.execute(
             """
             INSERT INTO service_songs
-            (service_id, song_id, song_edition_id, ordinal, first_slide_index, last_slide_index, occurrences)
+            (service_id, song_id, song_edition_id, ordinal,
+             first_slide_index, last_slide_index, occurrences)
             VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (
@@ -496,11 +498,13 @@ class Database:
 
         # Backfill NULL edition links in copy_events and service_songs
         cursor.execute(
-            "UPDATE copy_events SET song_edition_id = ? WHERE song_id = ? AND song_edition_id IS NULL",
+            "UPDATE copy_events SET song_edition_id = ?"
+            " WHERE song_id = ? AND song_edition_id IS NULL",
             (edition_id, song_id),
         )
         cursor.execute(
-            "UPDATE service_songs SET song_edition_id = ? WHERE song_id = ? AND song_edition_id IS NULL",
+            "UPDATE service_songs SET song_edition_id = ?"
+            " WHERE song_id = ? AND song_edition_id IS NULL",
             (edition_id, song_id),
         )
 
