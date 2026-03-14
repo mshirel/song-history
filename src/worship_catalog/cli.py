@@ -731,13 +731,14 @@ def repair_credits(
         ocr_budget = None
         if ocr:
             from worship_catalog.extractor import OcrBudget
+
+            def _has_library_credits(canonical: str) -> bool:
+                result = lookup_song_credits(canonical, lib_index) if lib_index else None
+                return bool(result and any(result.values()))
+
             ocr_needed = sum(
-                1 for row in missing
-                if not (
-                    lib_index
-                    and lookup_song_credits(row["canonical_title"], lib_index)
-                    and any(lookup_song_credits(row["canonical_title"], lib_index).values())
-                )
+                0 if _has_library_credits(row["canonical_title"]) else 1
+                for row in missing
             )
             cap = "unlimited" if unlimited_ocr else str(max_ocr_calls)
             click.echo(
