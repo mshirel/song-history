@@ -251,7 +251,20 @@ Add to cron (example: every 5 minutes):
 The app ships with a `Dockerfile` and `compose.yml` for portable deployment.
 The bundled library index is baked into the image — no separate volume needed.
 
-### Build
+Pre-built images are published to GitHub Container Registry on every push to `main`
+(when source files change) and weekly to pick up base image security patches:
+
+```bash
+docker pull ghcr.io/mshirel/song-history:latest
+```
+
+Or pin to a specific commit:
+
+```bash
+docker pull ghcr.io/mshirel/song-history:sha-<commit>
+```
+
+### Build locally
 
 ```bash
 docker build -t worship-catalog .
@@ -410,12 +423,15 @@ python -m pip_audit --skip-editable
 
 Every push and pull request to `main` runs two parallel jobs via GitHub Actions:
 
-| Job | Steps |
-|-----|-------|
-| `test` | ruff lint → mypy type check → pytest |
-| `security` | gitleaks secrets scan → pip-audit dependency audit → bandit static analysis |
+| Job | Trigger | Steps |
+|-----|---------|-------|
+| `test` | every push/PR | ruff lint → mypy type check → pytest |
+| `security` | every push/PR | gitleaks secrets scan → pip-audit dependency audit → bandit static analysis |
+| `publish` | push to main (src changes) or weekly schedule | build → push to `ghcr.io/mshirel/song-history` |
 
 The security job scans the full git history for accidentally committed secrets (API keys, tokens, passwords), checks all dependencies against the OSV/PyPI advisory database for known CVEs, and runs Bandit at medium+ severity for insecure Python patterns.
+
+The publish job only fires when `Dockerfile`, `pyproject.toml`, `src/`, `config/`, or `scripts/` change — a docs-only push won't trigger a rebuild. The weekly scheduled run always rebuilds regardless of code changes, so the image stays current with base image (`python:3.12-slim`) OS-level security patches.
 
 ---
 
