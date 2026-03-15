@@ -1405,6 +1405,32 @@ class TestTimestampConsistency:
             f"imported_at '{rows[0]['imported_at']}' must be timezone-aware"
         )
 
+    def test_timestamps_round_trip_correctly(self, temp_db: Database) -> None:
+        """Timestamps stored in SQLite round-trip back as the same timezone-aware value — issue #98."""
+        from datetime import datetime, timezone
+
+        job_id = "ts-roundtrip-001"
+        before = datetime.now(timezone.utc)
+        temp_db.create_import_job(job_id, filename="roundtrip.pptx")
+        temp_db.update_import_job(job_id, status="complete")
+        row = temp_db.get_import_job(job_id)
+        after = datetime.now(timezone.utc)
+        temp_db.close()
+
+        assert row is not None
+        started = datetime.fromisoformat(row["started_at"])
+        completed = datetime.fromisoformat(row["completed_at"])
+
+        # Both must be timezone-aware and fall within the test window
+        assert started.tzinfo is not None
+        assert completed.tzinfo is not None
+        assert before <= started <= after, (
+            f"started_at {started} not within [{before}, {after}]"
+        )
+        assert before <= completed <= after, (
+            f"completed_at {completed} not within [{before}, {after}]"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Issue #56 — insert_copy_event() must emit DeprecationWarning.
@@ -1468,3 +1494,192 @@ class TestInsertCopyEventDeprecation:
         temp_db.close()
 
         assert event_id > 0
+
+
+# ---------------------------------------------------------------------------
+# Issue #133 — Database.close() must null self.conn
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+class TestDatabaseCloseNullsConn:
+    """After close(), self.conn must be None and subsequent calls must raise — issue #133."""
+
+    @pytest.fixture
+    def temp_db(self, tmp_path: Path) -> Database:
+        db = Database(tmp_path / "close_test.db")
+        db.connect()
+        db.init_schema()
+        return db
+
+    def test_conn_is_none_after_close(self, temp_db: Database) -> None:
+        """After close(), self.conn must be None."""
+        temp_db.close()
+        assert temp_db.conn is None, (
+            f"Expected conn=None after close(), got {temp_db.conn!r}"
+        )
+
+    def test_query_after_close_raises(self, temp_db: Database) -> None:
+        """Attempting a query after close() must raise (not silently operate on closed conn)."""
+        temp_db.close()
+        with pytest.raises((AssertionError, Exception)):
+            temp_db.cursor()
+
+    def test_close_is_idempotent(self, temp_db: Database) -> None:
+        """Calling close() twice must not raise any error."""
+        temp_db.close()
+        # Second close should be safe
+        temp_db.close()  # Must not raise
+
+    def test_close_then_connect_works(self, temp_db: Database, tmp_path: Path) -> None:
+        """After close(), a fresh connect() works (conn becomes non-None again)."""
+        db_path = temp_db.db_path
+        temp_db.close()
+        assert temp_db.conn is None
+        temp_db.connect()
+        assert temp_db.conn is not None
+        temp_db.close()
+
+
+# ---------------------------------------------------------------------------
+# Issue #143 — purge_old_import_jobs() untested
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+class TestPurgeOldImportJobs:
+    """purge_old_import_jobs() correctness tests — issue #143."""
+
+    @pytest.fixture
+    def temp_db(self, tmp_path: Path) -> Database:
+        db = Database(tmp_path / "purge_test.db")
+        db.connect()
+        db.init_schema()
+        return db
+
+    def _insert_jobs(self, db: Database, count: int) -> list[str]:
+        """Insert *count* jobs with sequentially older started_at timestamps."""
+        from datetime import datetime, timezone, timedelta
+        ids = []
+        for i in range(count):
+            job_id = f"purge-job-{i:04d}"
+            # Oldest jobs have largest i (furthest in the past)
+            started_at = (
+                datetime.now(timezone.utc) - timedelta(days=count - i)
+            ).isoformat()
+            db.create_import_job(job_id, filename=f"job{i}.pptx", started_at=started_at)
+            ids.append(job_id)
+        return ids
+
+    def test_purge_keeps_correct_number_of_jobs(self, temp_db: Database) -> None:
+        """After purge_old_import_jobs(keep=10), exactly 10 jobs remain."""
+        self._insert_jobs(temp_db, 15)
+        temp_db.purge_old_import_jobs(keep=10)
+        remaining = temp_db.list_import_jobs()
+        temp_db.close()
+        assert len(remaining) == 10, (
+            f"Expected 10 jobs after purge(keep=10), got {len(remaining)}"
+        )
+
+    def test_purge_keeps_newest_jobs(self, temp_db: Database) -> None:
+        """purge_old_import_jobs(keep=10) must keep the 10 NEWEST jobs."""
+        ids = self._insert_jobs(temp_db, 15)
+        # ids[0..4] are oldest (most days ago), ids[10..14] are newest
+        temp_db.purge_old_import_jobs(keep=10)
+        remaining = temp_db.list_import_jobs()
+        remaining_ids = {r["job_id"] for r in remaining}
+        temp_db.close()
+        # The 5 oldest must be gone
+        for old_id in ids[:5]:
+            assert old_id not in remaining_ids, (
+                f"Oldest job {old_id!r} should have been deleted but was kept"
+            )
+        # The 10 newest must survive
+        for new_id in ids[5:]:
+            assert new_id in remaining_ids, (
+                f"Newest job {new_id!r} should be kept but was deleted"
+            )
+
+    def test_purge_keep_zero_deletes_all(self, temp_db: Database) -> None:
+        """purge_old_import_jobs(keep=0) must delete ALL jobs."""
+        self._insert_jobs(temp_db, 5)
+        temp_db.purge_old_import_jobs(keep=0)
+        remaining = temp_db.list_import_jobs()
+        temp_db.close()
+        assert remaining == [], f"Expected no jobs after purge(keep=0), got {remaining}"
+
+    def test_purge_on_empty_table_does_not_error(self, temp_db: Database) -> None:
+        """purge_old_import_jobs on an empty table must not raise."""
+        temp_db.purge_old_import_jobs(keep=10)  # Must not raise
+        remaining = temp_db.list_import_jobs()
+        temp_db.close()
+        assert remaining == []
+
+
+# ---------------------------------------------------------------------------
+# Issue #144 — SchemaVersionError guard tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+class TestSchemaVersionErrorGuard:
+    """SchemaVersionError guard comprehensive tests — issue #144."""
+
+    def test_correct_schema_version_no_error(self, tmp_path: Path) -> None:
+        """Opening a DB with the correct schema version raises no error."""
+        from worship_catalog.db import _SCHEMA_VERSION
+        db = Database(tmp_path / "correct_version.db")
+        db.connect()
+        db.init_schema()
+        # Re-open with correct version — must not raise
+        db.close()
+        db2 = Database(tmp_path / "correct_version.db")
+        db2.connect()  # Must not raise
+        db2.close()
+
+    def test_wrong_version_raises_schema_version_error(self, tmp_path: Path) -> None:
+        """Opening a DB with a NEWER schema version raises SchemaVersionError."""
+        import sqlite3
+        from worship_catalog.db import SchemaVersionError, _SCHEMA_VERSION
+        db_path = tmp_path / "wrong_version.db"
+        conn = sqlite3.connect(db_path)
+        conn.execute(f"PRAGMA user_version = {_SCHEMA_VERSION + 5}")
+        conn.close()
+        db = Database(db_path)
+        with pytest.raises(SchemaVersionError):
+            db.connect()
+
+    def test_schema_version_error_message_contains_versions(self, tmp_path: Path) -> None:
+        """SchemaVersionError message must include both expected and actual versions."""
+        import sqlite3
+        from worship_catalog.db import SchemaVersionError, _SCHEMA_VERSION
+        db_path = tmp_path / "msg_test.db"
+        newer_version = _SCHEMA_VERSION + 3
+        conn = sqlite3.connect(db_path)
+        conn.execute(f"PRAGMA user_version = {newer_version}")
+        conn.close()
+        db = Database(db_path)
+        with pytest.raises(SchemaVersionError) as exc_info:
+            db.connect()
+        msg = str(exc_info.value)
+        assert str(newer_version) in msg, (
+            f"Error message must contain actual version {newer_version}, got: {msg!r}"
+        )
+        assert str(_SCHEMA_VERSION) in msg, (
+            f"Error message must contain expected version {_SCHEMA_VERSION}, got: {msg!r}"
+        )
+
+    def test_old_schema_version_does_not_raise(self, tmp_path: Path) -> None:
+        """A DB with a LOWER schema version than current code opens without error.
+        (The guard only blocks NEWER versions — older ones are upgraded or accepted.)
+        """
+        import sqlite3
+        from worship_catalog.db import _SCHEMA_VERSION
+        db_path = tmp_path / "old_version.db"
+        # Version 0 (unset) is older — should be fine
+        conn = sqlite3.connect(db_path)
+        conn.execute("PRAGMA user_version = 0")
+        conn.close()
+        db = Database(db_path)
+        db.connect()  # Must not raise
+        db.close()

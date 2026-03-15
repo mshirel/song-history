@@ -85,9 +85,10 @@ class Database:
         return self._conn.cursor()
 
     def close(self) -> None:
-        """Close database connection."""
+        """Close database connection and null self.conn."""
         if self.conn:
             self.conn.close()
+            self.conn = None
 
     @contextmanager
     def transaction(self) -> Generator[None, None, None]:
@@ -820,11 +821,39 @@ class Database:
         cursor.execute("SELECT * FROM import_jobs ORDER BY started_at DESC")
         return [dict(row) for row in cursor.fetchall()]
 
-    def purge_old_import_jobs(self, days: int = 90) -> None:
-        """Delete import job records whose started_at date is older than *days* days."""
-        threshold = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d")
-        self._conn.execute(
-            "DELETE FROM import_jobs WHERE date(started_at) < ?",
-            (threshold,),
-        )
+    def purge_old_import_jobs(self, days: int = 90, keep: int | None = None) -> None:
+        """Delete old import job records.
+
+        Two modes (mutually usable; *keep* takes priority when provided):
+
+        * ``keep=N`` — retain the N most-recent jobs by ``started_at`` and
+          delete everything else.  ``keep=0`` deletes all records.
+        * ``days=N`` (original behaviour, default 90) — delete records whose
+          ``started_at`` date is strictly older than *days* days ago.
+
+        Args:
+            days: Used only when *keep* is None.  Delete jobs older than this
+                  many days.
+            keep: If specified, keep only this many jobs (newest first).
+        """
+        if keep is not None:
+            # Delete all jobs except the *keep* newest by started_at.
+            # Use a sub-select to identify the IDs to keep, then delete the rest.
+            self._conn.execute(
+                """
+                DELETE FROM import_jobs
+                WHERE job_id NOT IN (
+                    SELECT job_id FROM import_jobs
+                    ORDER BY started_at DESC
+                    LIMIT ?
+                )
+                """,
+                (keep,),
+            )
+        else:
+            threshold = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d")
+            self._conn.execute(
+                "DELETE FROM import_jobs WHERE date(started_at) < ?",
+                (threshold,),
+            )
         self._maybe_commit()

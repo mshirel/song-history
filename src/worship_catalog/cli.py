@@ -1,5 +1,6 @@
 """CLI interface for worship catalog."""
 
+import csv
 import importlib.resources
 import json
 import logging
@@ -455,11 +456,10 @@ def ccli(start_date: str, end_date: str, out: str, db: str) -> None:
 
         # Write CSV
         output_path = Path(out)
-        with open(output_path, "w") as f:
+        with open(output_path, "w", newline="") as f:
+            writer = csv.writer(f)
             # Header
-            f.write(
-                "Date,Service,Title,CCLI#,Reproduction Type,Count\n"
-            )
+            writer.writerow(["Date", "Service", "Title", "CCLI#", "Reproduction Type", "Count"])
 
             # Group events for cleaner output
             current_date = None
@@ -468,14 +468,14 @@ def ccli(start_date: str, end_date: str, out: str, db: str) -> None:
                     current_date = event["service_date"]
                     f.write(f"\n# {event['service_date']} - {event['service_name']}\n")
 
-                f.write(
-                    f"{event['service_date']},"
-                    f"{event['service_name']},"
-                    f"{event['display_title']},"
-                    f"{event.get('ccli_number', '')},"
-                    f"{event['reproduction_type']},"
-                    f"{event['count']}\n"
-                )
+                writer.writerow([
+                    event["service_date"],
+                    event["service_name"],
+                    event["display_title"],
+                    event.get("ccli_number", ""),
+                    event["reproduction_type"],
+                    event["count"],
+                ])
 
         database.close()
         click.echo(f"Report written to {output_path}")
