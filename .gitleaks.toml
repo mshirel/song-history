@@ -6,8 +6,10 @@ useDefault = true
 
 [[rules]]
 id = "worship-catalog-db-path"
-description = "Hardcoded database path that might indicate a real deployment path"
-regex = '''DB_PATH\s*=\s*["\']\/(?!data\/worship\.db)[^"\']+\.db["\']'''
+description = "Hardcoded system path assigned to DB_PATH (outside expected /data/ or /tmp/)"
+# RE2 does not support lookaheads — match only paths rooted at common system dirs
+# (/home, /etc, /var, /opt, /root, /srv, /usr) which would indicate a real host path.
+regex = '''DB_PATH\s*=\s*["\']/(?:home|etc|var|opt|root|srv|usr)/[^"\']+\.db["\']'''
 tags = ["config", "path"]
 
 [[rules]]
