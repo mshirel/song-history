@@ -480,16 +480,24 @@ def _get_inbox_dir() -> Path:
 
 
 def _run_import_in_background(job_id: str, pptx_path: Path) -> None:
-    """Import a PPTX file and update the job record when done.  Runs in a thread."""
+    """Import a PPTX file and update the job record when done.  Runs in a thread.
+
+    All song/service DB writes are wrapped in a single transaction so that a
+    mid-flight failure rolls back any partial inserts atomically.  The job
+    status update is intentionally outside the transaction so it always commits
+    even after a rollback.
+    """
     db = _get_db()
     try:
         from worship_catalog.extractor import extract_songs
 
-        result = extract_songs(pptx_path)
-        db.update_import_job(
-            job_id, status="complete", songs_imported=len(result.songs)
-        )
+        with db.transaction():
+            result = extract_songs(pptx_path)
+            db.update_import_job(
+                job_id, status="complete", songs_imported=len(result.songs)
+            )
     except Exception as exc:  # noqa: BLE001
+        # update_import_job runs outside the transaction block — commits even on rollback
         db.update_import_job(
             job_id, status="failed", error_message=str(exc)[:500]
         )

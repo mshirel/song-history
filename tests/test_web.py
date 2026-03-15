@@ -1000,3 +1000,79 @@ class TestUploadStructuredLogs:
             db.update_import_job(job_id, status="complete", songs_imported=3)
         messages = [r.message for r in caplog.records]
         assert any("complete" in m for m in messages)
+
+
+# ---------------------------------------------------------------------------
+# Background import transaction safety (#51)
+# ---------------------------------------------------------------------------
+
+class TestBackgroundImportTransaction:
+    def test_failed_import_marks_job_failed_and_does_not_silently_skip(
+        self, tmp_path, monkeypatch
+    ):
+        """If extract_songs raises, the job must be marked failed (not left as pending)."""
+        from worship_catalog.db import Database
+
+        db_path = tmp_path / "tx_test.db"
+        _db = Database(db_path)
+        _db.connect()
+        _db.init_schema()
+        job_id = str(_uuid_mod.uuid4())
+        _db.create_import_job(job_id, filename="bad.pptx")
+        _db.close()
+
+        monkeypatch.setenv("DB_PATH", str(db_path))
+
+        import worship_catalog.web.app as app_module
+        from importlib import reload
+        reload(app_module)
+
+        pptx_path = tmp_path / "bad.pptx"
+        pptx_path.write_bytes(b"not a real pptx")
+        app_module._run_import_in_background(job_id, pptx_path)
+
+        _db2 = Database(db_path)
+        _db2.connect()
+        row = _db2.get_import_job(job_id)
+        _db2.close()
+        assert row["status"] == "failed"
+        assert row["error_message"] is not None
+
+    def test_successful_import_marks_job_complete_with_song_count(
+        self, tmp_path, monkeypatch
+    ):
+        """If extract_songs succeeds, job must be complete with songs_imported set."""
+        from unittest.mock import MagicMock
+        from worship_catalog.db import Database
+
+        db_path = tmp_path / "tx_ok.db"
+        _db = Database(db_path)
+        _db.connect()
+        _db.init_schema()
+        job_id = str(_uuid_mod.uuid4())
+        _db.create_import_job(job_id, filename="ok.pptx")
+        _db.close()
+
+        monkeypatch.setenv("DB_PATH", str(db_path))
+
+        fake_result = MagicMock()
+        fake_result.songs = ["song1", "song2", "song3"]
+        monkeypatch.setattr(
+            "worship_catalog.extractor.extract_songs",
+            lambda p: fake_result,
+        )
+
+        import worship_catalog.web.app as app_module
+        from importlib import reload
+        reload(app_module)
+
+        pptx_path = tmp_path / "ok.pptx"
+        pptx_path.write_bytes(b"fake")
+        app_module._run_import_in_background(job_id, pptx_path)
+
+        _db2 = Database(db_path)
+        _db2.connect()
+        row = _db2.get_import_job(job_id)
+        _db2.close()
+        assert row["status"] == "complete"
+        assert row["songs_imported"] == 3
