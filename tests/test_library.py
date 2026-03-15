@@ -3,6 +3,7 @@
 import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -12,6 +13,7 @@ from worship_catalog.library import (
     load_library_index,
     lookup_song_credits,
     parse_author_credits,
+    read_ppt_author,
     save_library_index,
 )
 
@@ -197,3 +199,71 @@ class TestSaveLoadLibraryIndex:
             path = Path(tmpdir) / "subdir" / "deep" / "index.json"
             save_library_index(index, path)
             assert path.exists()
+
+
+class TestReadPptAuthor:
+    """Tests for read_ppt_author() — olefile-based OLE metadata reading (#24)."""
+
+    def test_returns_author_from_ole_metadata(self, tmp_path):
+        """Returns the Author field from OLE SummaryInformation via olefile."""
+        dummy_ppt = tmp_path / "Amazing Grace-PH-HD.ppt"
+        dummy_ppt.write_bytes(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1")  # OLE magic
+
+        mock_meta = MagicMock()
+        mock_meta.author = b"John Newton/William Walker"
+        mock_ole = MagicMock()
+        mock_ole.get_metadata.return_value = mock_meta
+
+        with patch("worship_catalog.library.olefile") as mock_olefile_mod:
+            mock_olefile_mod.OleFileIO.return_value.__enter__ = lambda s: mock_ole
+            mock_olefile_mod.OleFileIO.return_value.__exit__ = MagicMock(return_value=False)
+            result = read_ppt_author(dummy_ppt)
+
+        assert result == "John Newton/William Walker"
+
+    def test_returns_none_when_author_is_none(self, tmp_path):
+        """Returns None when the Author field is absent."""
+        dummy_ppt = tmp_path / "song.ppt"
+        dummy_ppt.write_bytes(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1")
+
+        mock_meta = MagicMock()
+        mock_meta.author = None
+        mock_ole = MagicMock()
+        mock_ole.get_metadata.return_value = mock_meta
+
+        with patch("worship_catalog.library.olefile") as mock_olefile_mod:
+            mock_olefile_mod.OleFileIO.return_value.__enter__ = lambda s: mock_ole
+            mock_olefile_mod.OleFileIO.return_value.__exit__ = MagicMock(return_value=False)
+            result = read_ppt_author(dummy_ppt)
+
+        assert result is None
+
+    def test_returns_none_on_invalid_file(self, tmp_path):
+        """Returns None when olefile raises an exception (not a valid OLE file)."""
+        dummy_ppt = tmp_path / "not_an_ole.ppt"
+        dummy_ppt.write_bytes(b"not ole content")
+
+        with patch("worship_catalog.library.olefile") as mock_olefile_mod:
+            mock_olefile_mod.OleFileIO.side_effect = OSError("not a valid OLE file")
+            result = read_ppt_author(dummy_ppt)
+
+        assert result is None
+
+    def test_does_not_call_subprocess(self, tmp_path):
+        """The olefile implementation must not fall back to subprocess.run."""
+        import subprocess
+        dummy_ppt = tmp_path / "song.ppt"
+        dummy_ppt.write_bytes(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1")
+
+        mock_meta = MagicMock()
+        mock_meta.author = b"Test Author"
+        mock_ole = MagicMock()
+        mock_ole.get_metadata.return_value = mock_meta
+
+        with patch("worship_catalog.library.olefile") as mock_olefile_mod:
+            mock_olefile_mod.OleFileIO.return_value.__enter__ = lambda s: mock_ole
+            mock_olefile_mod.OleFileIO.return_value.__exit__ = MagicMock(return_value=False)
+            with patch.object(subprocess, "run") as mock_subprocess:
+                read_ppt_author(dummy_ppt)
+
+        mock_subprocess.assert_not_called()

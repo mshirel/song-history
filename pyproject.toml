@@ -34,6 +34,9 @@ web = [
 excel = [
     "openpyxl>=3.1",
 ]
+library = [
+    "olefile>=0.47",
+]
 dev = [
     "pytest>=7.0",
     "pytest-cov>=4.0",
@@ -45,6 +48,7 @@ dev = [
     "starlette>=0.36",
     "bandit>=1.7",
     "pip-audit>=2.7",
+    "olefile>=0.47",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -87,6 +91,10 @@ ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 module = ["openpyxl", "openpyxl.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["olefile", "olefile.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]

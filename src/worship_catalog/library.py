@@ -2,8 +2,12 @@
 
 import json
 import re
-import subprocess
 from pathlib import Path
+
+try:
+    import olefile
+except ImportError:  # pragma: no cover
+    olefile = None
 
 from worship_catalog.normalize import canonicalize_title
 
@@ -119,28 +123,28 @@ def _file_priority(stem: str) -> int:
 
 def read_ppt_author(ppt_path: Path) -> str | None:
     """
-    Extract the Author field from a .ppt file's OLE2 metadata using `file`.
+    Extract the Author field from a .ppt file's OLE2 SummaryInformation stream
+    using the olefile library.
 
-    Returns the raw author string, or None if not found.
+    Returns the raw author string, or None if not found or not a valid OLE file.
     """
+    if olefile is None:
+        raise ImportError(
+            "The 'olefile' package is required for library scraping. "
+            "Install it with: pip install olefile"
+        )
     try:
-        result = subprocess.run(
-            ["file", str(ppt_path)],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        output = result.stdout
-        # Pattern: "Author: <value>, <next_field>:"
-        match = re.search(
-            r"Author:\s*(.+?)(?:,\s*(?:Last Saved|Keywords|Revision|Name of Creating))",
-            output,
-        )
-        if match:
-            return match.group(1).strip()
-    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
-        pass
-    return None
+        with olefile.OleFileIO(ppt_path) as ole:
+            meta = ole.get_metadata()
+            raw = meta.author
+            if raw is None:
+                return None
+            # OLE metadata is stored as bytes; decode to str
+            if isinstance(raw, bytes):
+                return raw.decode("utf-8", errors="replace").strip()
+            return str(raw).strip() or None
+    except Exception:
+        return None
 
 
 def parse_author_credits(author: str) -> dict[str, str | None]:
