@@ -205,6 +205,8 @@ class Database:
         self._conn.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
         self._maybe_commit()
 
+    # --- Songs ---
+
     def insert_or_get_song(
         self, canonical_title: str, display_title: str
     ) -> int:
@@ -277,6 +279,8 @@ class Database:
         self._maybe_commit()
         return cursor.lastrowid
 
+    # --- Services ---
+
     def insert_or_update_service(
         self,
         service_date: str,
@@ -338,6 +342,8 @@ class Database:
         self._maybe_commit()
         return service_id
 
+    # --- Service Songs ---
+
     def insert_service_song(
         self,
         service_id: int,
@@ -370,6 +376,8 @@ class Database:
         )
         self._maybe_commit()
         return cursor.lastrowid
+
+    # --- Copy Events ---
 
     def insert_copy_event(
         self,
@@ -430,6 +438,8 @@ class Database:
         )
         self._maybe_commit()
         return cursor.lastrowid
+
+    # --- Queries ---
 
     def query_services(
         self, start_date: str, end_date: str, song_leader: str | None = None
@@ -677,6 +687,8 @@ class Database:
             """,
         )
         return [dict(row) for row in cursor.fetchall()]
+
+    # --- Deletions ---
 
     def delete_service_data(self, service_id: int) -> None:
         """Delete all data for a service (for idempotent re-import)."""

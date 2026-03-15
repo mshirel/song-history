@@ -1227,3 +1227,33 @@ class TestStatsReportCountsUniqueServiceSongPairs:
         assert song_counts.get("Song Two") == 1, (
             f"Song Two expected count=1 but got {song_counts.get('Song Two')}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Database connection lifecycle (#95)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+class TestDatabaseConnectionLifecycle:
+    """Connection management edge cases (#95)."""
+
+    def test_double_connect_is_safe(self, tmp_path: Path) -> None:
+        """Calling connect() twice must not raise."""
+        db_path = tmp_path / "lifecycle.db"
+        db = Database(db_path)
+        db.connect()
+        db.connect()  # second call — must not raise
+        db.close()
+
+    def test_operations_after_close_raise(self, tmp_path: Path) -> None:
+        """Calling a query method on a closed db must raise a clear error."""
+        db_path = tmp_path / "lifecycle2.db"
+        db = Database(db_path)
+        db.connect()
+        db.init_schema()
+        db.close()
+        # After close, conn is still set but the underlying sqlite connection is
+        # closed, so any cursor() call must raise (not silently fail).
+        with pytest.raises(Exception):
+            db.insert_or_get_song("test title", "Test Title")
