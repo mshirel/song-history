@@ -1054,6 +1054,114 @@ class TestResolveLibraryIndex:
         assert isinstance(result, Path)
 
 
+class TestBareExceptLogging:
+    """Bare except blocks must log errors, not swallow them silently (#99)."""
+
+    @pytest.fixture
+    def runner(self):
+        return CliRunner()
+
+    def test_validate_logs_exception_on_corrupt_pptx(self, tmp_path, caplog):
+        """validate command must log exceptions, not swallow them silently."""
+        import logging
+
+        runner = CliRunner()
+        corrupt_pptx = tmp_path / "bad.pptx"
+        corrupt_pptx.write_bytes(b"not a real pptx")
+
+        with caplog.at_level(logging.ERROR, logger="worship_catalog"):
+            result = runner.invoke(main, ["validate", str(corrupt_pptx)])
+
+        # Must fail non-zero AND log the error
+        assert result.exit_code != 0 or "error" in result.output.lower()
+        # After fix: logger must have emitted an error record
+        logged_errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
+        assert logged_errors, (
+            "validate must log exceptions via logger.exception() or logger.error(), "
+            "not just print to stderr without a log record"
+        )
+
+    def test_import_outer_exception_is_logged(self, tmp_path, caplog):
+        """The outer except in import_cmd must log the exception (#99).
+
+        When the database directory does not exist, import_cmd raises before
+        even processing files. This outer handler must log, not just print.
+        """
+        import logging
+
+        runner = CliRunner()
+        # Use a valid-looking pptx path that exists so Click accepts it
+        pptx = tmp_path / "test.pptx"
+        pptx.write_bytes(b"PK")  # minimal bytes — will fail on extraction
+        nonexistent_db = str(tmp_path / "no_dir" / "worship.db")
+
+        with caplog.at_level(logging.ERROR, logger="worship_catalog"):
+            result = runner.invoke(main, ["import", str(pptx), "--db", nonexistent_db])
+
+        assert result.exit_code != 0
+        logged_errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
+        assert logged_errors, (
+            "import outer except must call logger.exception() or logger.error()"
+        )
+
+    def test_ccli_report_logs_exception_on_bad_db(self, tmp_path, caplog):
+        """ccli report command must log exceptions (#99)."""
+        import logging
+
+        runner = CliRunner()
+        bad_db = str(tmp_path / "no_dir" / "worship.db")
+
+        with caplog.at_level(logging.ERROR, logger="worship_catalog"):
+            result = runner.invoke(main, ["report", "ccli", "--db", bad_db])
+
+        assert result.exit_code != 0
+        logged_errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
+        assert logged_errors, (
+            "ccli report outer except must call logger.exception() or logger.error()"
+        )
+
+    def test_stats_report_logs_exception_on_bad_db(self, tmp_path, caplog):
+        """stats report command must log exceptions (#99)."""
+        import logging
+
+        runner = CliRunner()
+        bad_db = str(tmp_path / "no_dir" / "worship.db")
+
+        with caplog.at_level(logging.ERROR, logger="worship_catalog"):
+            result = runner.invoke(main, ["report", "stats", "--db", bad_db])
+
+        assert result.exit_code != 0
+        logged_errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
+        assert logged_errors, (
+            "stats report outer except must call logger.exception() or logger.error()"
+        )
+
+    def test_library_index_logs_exception_on_error(self, tmp_path, caplog):
+        """library index command must log exceptions (#99)."""
+        import logging
+
+        runner = CliRunner()
+        # Pass a real dir so Click accepts --path, but scrape_library will error
+        # because there are no .ppt files (exit is 0 in that case) — we need a
+        # path that causes an actual exception.  Patch save_library_index to raise.
+        import unittest.mock
+
+        with unittest.mock.patch(
+            "worship_catalog.library.scrape_library",
+            side_effect=RuntimeError("simulated scrape failure"),
+        ):
+            with caplog.at_level(logging.ERROR, logger="worship_catalog"):
+                result = runner.invoke(
+                    main, ["library", "index", "--path", str(tmp_path)]
+                )
+
+        assert result.exit_code != 0
+        logged_errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
+        assert logged_errors, (
+            "library index outer except must call logger.exception() or logger.error()"
+        )
+
+
 class TestCliNamedConstants:
     """Named constants replace magic numbers in cli.py (#22)."""
 
