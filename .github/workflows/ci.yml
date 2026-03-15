@@ -68,7 +68,6 @@ jobs:
     permissions:
       contents: read
       packages: write         # required to push to ghcr.io
-      security-events: write  # required to upload Trivy SARIF results (#32)
 
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
@@ -140,8 +139,5 @@ jobs:
           ignore-unfixed: true   # only fail on CVEs that have an available fix (actionable)
           exit-code: 1
 
-      - name: Upload Trivy results to GitHub Security tab
-        if: (steps.changes.outputs.app == 'true' || github.event_name == 'schedule') && always()
-        uses: github/codeql-action/upload-sarif@ae9ef3a1d2e3413523c3741725c30064970cc0d4  # v3.32.5
-        with:
-          sarif_file: trivy-results.sarif
+      # NOTE: upload-sarif to GitHub Security tab requires GitHub Advanced Security
+      # (public repo or paid org plan). Removed — results are visible in CI logs.
