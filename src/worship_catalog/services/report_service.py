@@ -29,14 +29,18 @@ def compute_stats_data(
     service_ids = [s["id"] for s in services]
     events = db.query_copy_events(start_date, end_date, service_ids=service_ids or None)
 
-    song_counts: dict[str, int] = {}
+    # Count distinct services per song title (not raw copy-event rows).
+    # A song with multiple copy events in one service (e.g., projection + recording)
+    # must contribute exactly 1 to its count, not N (#97).
+    song_service_ids: dict[str, set[int]] = {}
     song_credits: dict[str, str] = {}
     for e in events:
         title = e["display_title"]
-        song_counts[title] = song_counts.get(title, 0) + 1
+        song_service_ids.setdefault(title, set()).add(e["service_id"])
         if title not in song_credits:
             parts = [e.get("words_by") or "", e.get("music_by") or ""]
             song_credits[title] = " / ".join(p for p in parts if p)
+    song_counts: dict[str, int] = {t: len(sids) for t, sids in song_service_ids.items()}
 
     sorted_songs = sorted(song_counts.items(), key=lambda x: -x[1])
     if not all_songs:

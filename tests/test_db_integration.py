@@ -1097,3 +1097,133 @@ class TestStreamCopyEvents:
     def test_iter_copy_events_empty_db_yields_nothing(self, temp_db):
         result = list(temp_db.iter_copy_events("0000-01-01", "9999-12-31"))
         assert result == []
+
+
+# ---------------------------------------------------------------------------
+# #111: Stats report must count unique (service_id, song_id) appearances,
+#       not raw copy_event rows  (issue #97)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+class TestStatsReportCountsUniqueServiceSongPairs:
+    """Issue #97 — stats report double-counts songs when a song has multiple
+    copy events per service (e.g., bulletin + projection).
+
+    The report should count how many distinct services a song was sung in,
+    not the number of copy_event rows associated with that song.
+    """
+
+    @pytest.fixture
+    def temp_db(self):
+        with TemporaryDirectory() as tmpdir:
+            db = Database(Path(tmpdir) / "stats_test.db")
+            db.connect()
+            db.init_schema()
+            yield db
+            db.close()
+
+    def test_song_with_two_copy_events_counts_as_one(self, temp_db):
+        """A song performed once (one service) but with TWO copy events must appear
+        with count=1, not count=2."""
+        from worship_catalog.services.report_service import compute_stats_data
+
+        song_id = temp_db.insert_or_get_song("amazing grace", "Amazing Grace")
+        edition_id = temp_db.insert_or_get_song_edition(song_id, words_by="John Newton")
+
+        service_id = temp_db.insert_or_update_service(
+            service_date="2026-01-04",
+            service_name="AM Worship",
+            source_file="test.pptx",
+            source_hash="abc999",
+            song_leader="Alice",
+        )
+        temp_db.insert_service_song(service_id, song_id, ordinal=1, song_edition_id=edition_id)
+
+        # Two copy events for the same song in the same service
+        temp_db.insert_or_get_copy_event(
+            service_id, song_id, "projection", song_edition_id=edition_id
+        )
+        temp_db.insert_or_get_copy_event(
+            service_id, song_id, "bulletin", song_edition_id=edition_id
+        )
+
+        data = compute_stats_data(
+            temp_db, "2026-01-01", "2026-12-31", leader=None, all_songs=True
+        )
+
+        song_counts = dict(data["sorted_songs"])
+        assert "Amazing Grace" in song_counts, (
+            "Amazing Grace should appear in the stats report"
+        )
+        assert song_counts["Amazing Grace"] == 1, (
+            f"Expected count=1 (one service) but got {song_counts['Amazing Grace']}; "
+            "stats report is double-counting copy events instead of counting distinct services"
+        )
+
+    def test_song_sung_in_two_services_counts_as_two(self, temp_db):
+        """A song performed in two different services must still count as 2."""
+        from worship_catalog.services.report_service import compute_stats_data
+
+        song_id = temp_db.insert_or_get_song("how great thou art", "How Great Thou Art")
+        edition_id = temp_db.insert_or_get_song_edition(song_id, words_by="Stuart K. Hine")
+
+        for i, (date, name, hash_) in enumerate([
+            ("2026-01-04", "AM Worship", "h1"),
+            ("2026-01-11", "AM Worship", "h2"),
+        ]):
+            svc_id = temp_db.insert_or_update_service(
+                service_date=date,
+                service_name=name,
+                source_file=f"f{i}.pptx",
+                source_hash=hash_,
+                song_leader="Alice",
+            )
+            temp_db.insert_service_song(svc_id, song_id, ordinal=1, song_edition_id=edition_id)
+            # Each service has two copy events
+            temp_db.insert_or_get_copy_event(svc_id, song_id, "projection", song_edition_id=edition_id)
+            temp_db.insert_or_get_copy_event(svc_id, song_id, "bulletin", song_edition_id=edition_id)
+
+        data = compute_stats_data(
+            temp_db, "2026-01-01", "2026-12-31", leader=None, all_songs=True
+        )
+
+        song_counts = dict(data["sorted_songs"])
+        assert song_counts.get("How Great Thou Art") == 2, (
+            f"Expected count=2 (two services) but got {song_counts.get('How Great Thou Art')}; "
+            "each service should count once regardless of copy event count"
+        )
+
+    def test_two_songs_each_with_two_copy_events_counts_each_as_one(self, temp_db):
+        """Two different songs, each with two copy events in one service, both count=1."""
+        from worship_catalog.services.report_service import compute_stats_data
+
+        song1_id = temp_db.insert_or_get_song("song one", "Song One")
+        song2_id = temp_db.insert_or_get_song("song two", "Song Two")
+        ed1 = temp_db.insert_or_get_song_edition(song1_id, words_by="Author A")
+        ed2 = temp_db.insert_or_get_song_edition(song2_id, words_by="Author B")
+
+        service_id = temp_db.insert_or_update_service(
+            service_date="2026-01-04",
+            service_name="AM Worship",
+            source_file="test.pptx",
+            source_hash="xyz123",
+            song_leader="Bob",
+        )
+        temp_db.insert_service_song(service_id, song1_id, ordinal=1, song_edition_id=ed1)
+        temp_db.insert_service_song(service_id, song2_id, ordinal=2, song_edition_id=ed2)
+        for rt in ("projection", "bulletin"):
+            temp_db.insert_or_get_copy_event(service_id, song1_id, rt, song_edition_id=ed1)
+            temp_db.insert_or_get_copy_event(service_id, song2_id, rt, song_edition_id=ed2)
+
+        data = compute_stats_data(
+            temp_db, "2026-01-01", "2026-12-31", leader=None, all_songs=True
+        )
+
+        song_counts = dict(data["sorted_songs"])
+        assert song_counts.get("Song One") == 1, (
+            f"Song One expected count=1 but got {song_counts.get('Song One')}"
+        )
+        assert song_counts.get("Song Two") == 1, (
+            f"Song Two expected count=1 but got {song_counts.get('Song Two')}"
+        )
