@@ -460,3 +460,38 @@ class TestTryOcrCreditsExceptionHandling:
 
         messages = " ".join(r.message for r in caplog.records)
         assert "ValueError" in messages or "valueerror" in messages.lower()
+
+
+# ---------------------------------------------------------------------------
+# Timeout tests (#73)
+# ---------------------------------------------------------------------------
+
+class TestExtractionTimeout:
+    """extract_songs() must raise TimeoutError if it runs longer than _MAX_EXTRACT_SECONDS (#73)."""
+
+    def test_extraction_raises_if_time_limit_exceeded(self, tmp_path, monkeypatch):
+        """extract_songs() raises TimeoutError if it runs longer than _MAX_EXTRACT_SECONDS."""
+        import worship_catalog.extractor as ext_module
+        monkeypatch.setattr(ext_module, "_MAX_EXTRACT_SECONDS", 0.001)
+
+        from pptx import Presentation
+        pptx_path = tmp_path / "test.pptx"
+        prs = Presentation()
+        for _ in range(50):
+            prs.slides.add_slide(prs.slide_layouts[0])
+        prs.save(pptx_path)
+
+        with pytest.raises(TimeoutError):
+            ext_module.extract_songs(pptx_path)
+
+    def test_normal_extraction_completes_within_limit(self, tmp_path):
+        """A minimal PPTX completes well within the default time limit."""
+        from pptx import Presentation
+        from worship_catalog.extractor import extract_songs
+        pptx_path = tmp_path / "quick.pptx"
+        prs = Presentation()
+        prs.slides.add_slide(prs.slide_layouts[0])
+        prs.save(pptx_path)
+        # Should not raise — returns ExtractionResult normally
+        result = extract_songs(pptx_path)
+        assert result is not None

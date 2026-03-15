@@ -6,6 +6,83 @@ from worship_catalog.db import Database
 from worship_catalog.pptx_reader import Slide, SlideText, SlideImage
 
 
+@pytest.fixture(scope="session")
+def synthetic_pptx(tmp_path_factory):
+    """
+    Create a minimal synthetic PPTX that mimics a Paperless Hymnal worship service.
+
+    Slide layout:
+      0: metadata table slide (Service Data → alternating key/value pairs)
+      1-2: Amazing Grace slides (title + verse text)
+      3: How Great Thou Art slide
+
+    This fixture exists so integration tests run in CI without requiring the real
+    worship PPTX file from the data/ directory (#85).
+    """
+    from pptx import Presentation
+    from pptx.util import Inches, Pt
+
+    prs = Presentation()
+    blank_layout = prs.slide_layouts[6]  # blank layout
+
+    def add_text_box(slide, lines, left=Inches(0.5), top=Inches(0.5),
+                     width=Inches(9), height=Inches(2)):
+        """Add a text box with one paragraph per line."""
+        from pptx.util import Pt
+        txBox = slide.shapes.add_textbox(left, top, width, height)
+        tf = txBox.text_frame
+        tf.word_wrap = True
+        for i, line in enumerate(lines):
+            if i == 0:
+                tf.paragraphs[0].text = line
+            else:
+                p = tf.add_paragraph()
+                p.text = line
+        return tf
+
+    def add_table_slide(prs, rows_data):
+        """Add a slide with a table containing the given rows."""
+        slide = prs.slides.add_slide(blank_layout)
+        cols = 2
+        rows = len(rows_data)
+        table = slide.shapes.add_table(rows, cols, Inches(1), Inches(1),
+                                        Inches(8), Inches(0.4 * rows)).table
+        for r, (key, val) in enumerate(rows_data):
+            table.cell(r, 0).text = key
+            table.cell(r, 1).text = val
+        return slide
+
+    # Slide 0: metadata table
+    add_table_slide(prs, [
+        ("Date", "2026-02-15"),
+        ("Service", "Morning Worship"),
+        ("Song Leader", "Matt"),
+        ("Preacher", "Pastor John"),
+        ("Sermon Title", "Grace Abounding"),
+    ])
+
+    # Slides 1-2: Amazing Grace (Paperless Hymnal format)
+    # Publisher marker is required by _is_song_title_slide() to start a new song group.
+    for verse_lines in [
+        ["Amazing Grace", "How sweet the sound", "Words: John Newton", "PaperlessHymnal.com"],
+        ["Amazing Grace", "That saved a wretch like me"],
+    ]:
+        slide = prs.slides.add_slide(blank_layout)
+        add_text_box(slide, verse_lines)
+
+    # Slides 3-4: How Great Thou Art
+    for verse_lines in [
+        ["How Great Thou Art", "O Lord my God", "Words: Stuart K. Hine", "PaperlessHymnal.com"],
+        ["How Great Thou Art", "When I in awesome wonder"],
+    ]:
+        slide = prs.slides.add_slide(blank_layout)
+        add_text_box(slide, verse_lines)
+
+    out = tmp_path_factory.mktemp("pptx") / "AM Worship 2026.02.15.pptx"
+    prs.save(out)
+    return out
+
+
 @pytest.fixture
 def db_with_songs(tmp_path):
     """Create a minimal test DB with one service, two songs, and copy events."""
