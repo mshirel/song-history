@@ -140,3 +140,138 @@ class TestBackupTempCleanup:
         assert result.returncode != 0
         leftover = after - before
         assert len(leftover) == 0, f"Temp files not cleaned up on failure: {leftover}"
+
+
+def _run_backup_with_env(
+    db_path: Path,
+    backup_dir: Path,
+    extra_env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    """Run backup.sh with optional extra environment variables."""
+    import os
+    env = os.environ.copy()
+    if extra_env:
+        env.update(extra_env)
+    return subprocess.run(
+        ["bash", str(BACKUP_SCRIPT), str(db_path), str(backup_dir)],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+
+def _make_db(tmp_path: Path) -> Path:
+    """Create a minimal SQLite DB for testing."""
+    import sqlite3
+    db_path = tmp_path / "worship.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute("CREATE TABLE t (id INTEGER PRIMARY KEY)")
+    conn.commit()
+    conn.close()
+    return db_path
+
+
+@pytest.mark.slow
+class TestBackupHealthcheckPing:
+    """backup.sh must send a healthcheck ping on success — closes #136."""
+
+    def test_ping_sent_on_success_when_url_configured(self, tmp_path: Path) -> None:
+        """When BACKUP_HEALTHCHECK_URL is set, backup.sh must curl it after a successful backup."""
+        import http.server
+        import threading
+
+        # Start a minimal HTTP server to capture the ping
+        ping_received: list[bool] = []
+
+        class _Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self) -> None:
+                ping_received.append(True)
+                self.send_response(200)
+                self.end_headers()
+
+            def log_message(self, *args: object) -> None:
+                pass  # silence server logs during tests
+
+        server = http.server.HTTPServer(("127.0.0.1", 0), _Handler)
+        port = server.server_address[1]
+        t = threading.Thread(target=server.handle_request, daemon=True)
+        t.start()
+
+        db_path = _make_db(tmp_path)
+        backup_dir = tmp_path / "backups"
+        backup_dir.mkdir()
+
+        result = _run_backup_with_env(
+            db_path,
+            backup_dir,
+            extra_env={"BACKUP_HEALTHCHECK_URL": f"http://127.0.0.1:{port}/ping"},
+        )
+        t.join(timeout=3)
+        server.server_close()
+
+        assert result.returncode == 0, result.stderr
+        assert ping_received, (
+            "backup.sh did not send a GET request to BACKUP_HEALTHCHECK_URL on success"
+        )
+
+    def test_no_ping_when_url_not_set(self, tmp_path: Path) -> None:
+        """When BACKUP_HEALTHCHECK_URL is unset, backup.sh must not curl anything."""
+        import http.server
+        import threading
+
+        # Start a server to detect any unexpected pings
+        ping_received: list[bool] = []
+
+        class _Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self) -> None:
+                ping_received.append(True)
+                self.send_response(200)
+                self.end_headers()
+
+            def log_message(self, *args: object) -> None:
+                pass
+
+        server = http.server.HTTPServer(("127.0.0.1", 0), _Handler)
+        t = threading.Thread(target=server.handle_request, daemon=True)
+        t.start()
+
+        db_path = _make_db(tmp_path)
+        backup_dir = tmp_path / "backups"
+        backup_dir.mkdir()
+
+        import os
+        env = os.environ.copy()
+        env.pop("BACKUP_HEALTHCHECK_URL", None)  # ensure not set
+        result = subprocess.run(
+            ["bash", str(BACKUP_SCRIPT), str(db_path), str(backup_dir)],
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        # Give a moment for any stray requests, then shut down
+        t.join(timeout=0.5)
+        server.server_close()
+
+        assert result.returncode == 0, result.stderr
+        assert not ping_received, (
+            "backup.sh must not send any ping when BACKUP_HEALTHCHECK_URL is unset"
+        )
+
+    def test_backup_script_contains_healthcheck_url_logic(self) -> None:
+        """backup.sh source must include BACKUP_HEALTHCHECK_URL env-var guard."""
+        content = BACKUP_SCRIPT.read_text()
+        assert "BACKUP_HEALTHCHECK_URL" in content, (
+            "backup.sh must support the BACKUP_HEALTHCHECK_URL env var"
+        )
+
+    def test_failure_logs_error_to_stderr(self, tmp_path: Path) -> None:
+        """When backup fails, an ERROR line must be printed to stderr."""
+        db_path = tmp_path / "nonexistent.db"
+        backup_dir = tmp_path / "backups"
+        backup_dir.mkdir()
+
+        result = run_backup(db_path, backup_dir)
+        assert result.returncode != 0
+        assert "ERROR" in result.stderr, (
+            f"backup.sh must log ERROR to stderr on failure, got: {result.stderr!r}"
+        )
