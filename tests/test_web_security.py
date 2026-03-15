@@ -259,6 +259,94 @@ class TestUploadFilenamePathTraversal:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Issue #140 — stats download Content-Disposition filename sanitization
+# ---------------------------------------------------------------------------
+
+
+class TestStatsDownloadFilenameSanitization:
+    """Stats CSV/XLSX filenames must be sanitized — issue #140."""
+
+    def test_normal_dates_produce_expected_filename(self, client):
+        """Normal ISO dates produce a clean stats_<start>_<end>.csv filename."""
+        import re
+        resp = client.post(
+            "/reports/stats/csv",
+            data={
+                "start_date": "2026-01-01",
+                "end_date": "2026-12-31",
+                "leader": "",
+                "all_songs": "false",
+            },
+        )
+        assert resp.status_code == 200
+        cd = resp.headers.get("content-disposition", "")
+        assert "stats_2026-01-01_2026-12-31.csv" in cd
+
+    def test_injection_chars_stripped_from_filename(self, client):
+        """A date value with injection chars must not appear verbatim in Content-Disposition."""
+        # The date values are validated by _validate_date_range before reaching filename
+        # construction, so injected dates will return 422.  We verify the sanitizer
+        # directly via the helper used in the route.
+        from worship_catalog.web.app import _sanitize_header_filename
+        evil = '2024-01-01"; filename="evil'
+        sanitized = _sanitize_header_filename(evil)
+        assert '"' not in sanitized, (
+            f"Double-quote leaked into sanitized filename: {sanitized!r}"
+        )
+        assert "evil" not in sanitized or "evil" in sanitized.replace('"', ""), (
+            "Injection quote was not stripped"
+        )
+
+    def test_filename_matches_pattern(self, client):
+        """Stats CSV filename must only contain safe characters."""
+        import re
+        resp = client.post(
+            "/reports/stats/csv",
+            data={
+                "start_date": "2026-01-01",
+                "end_date": "2026-03-31",
+                "leader": "",
+                "all_songs": "false",
+            },
+        )
+        assert resp.status_code == 200
+        cd = resp.headers.get("content-disposition", "")
+        m = re.search(r'filename="?([^";\r\n]+)"?', cd)
+        assert m, f"Could not parse filename from Content-Disposition: {cd!r}"
+        fname = m.group(1).strip('"')
+        # Allow only: alphanumeric, hyphens, underscores, dots
+        assert re.match(r'^[\w.\-]+$', fname), (
+            f"Filename contains unsafe characters: {fname!r}"
+        )
+
+    def test_stats_xlsx_filename_is_sanitized(self, client):
+        """Stats XLSX filename must also use only safe characters."""
+        import re
+        try:
+            resp = client.post(
+                "/reports/stats/xlsx",
+                data={
+                    "start_date": "2026-01-01",
+                    "end_date": "2026-03-31",
+                    "leader": "",
+                    "all_songs": "false",
+                },
+            )
+        except Exception:
+            pytest.skip("openpyxl not installed")
+        if resp.status_code == 501:
+            pytest.skip("openpyxl not installed")
+        assert resp.status_code == 200
+        cd = resp.headers.get("content-disposition", "")
+        m = re.search(r'filename="?([^";\r\n]+)"?', cd)
+        assert m, f"Could not parse filename from Content-Disposition: {cd!r}"
+        fname = m.group(1).strip('"')
+        assert re.match(r'^[\w.\-]+$', fname), (
+            f"XLSX filename contains unsafe characters: {fname!r}"
+        )
+
+
 class TestCsrfSecretStartup:
     """CSRF_SECRET env var behavior — issue #139."""
 

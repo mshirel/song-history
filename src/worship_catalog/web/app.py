@@ -283,7 +283,7 @@ async def reports_stats_csv(
         writer.writerow([rank, title, data["song_credits"].get(title, ""), count])
 
     output.seek(0)
-    filename = f"stats_{start_date}_{end_date}.csv"
+    filename = _sanitize_header_filename(f"stats_{start_date}_{end_date}.csv")
     return StreamingResponse(
         iter([output.getvalue()]),
         media_type="text/csv",
@@ -334,7 +334,7 @@ async def reports_stats_xlsx(
     buf = io.BytesIO()
     wb.save(buf)
     buf.seek(0)
-    filename = f"stats_{start_date}_{end_date}.xlsx"
+    filename = _sanitize_header_filename(f"stats_{start_date}_{end_date}.xlsx")
     return StreamingResponse(
         iter([buf.getvalue()]),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
