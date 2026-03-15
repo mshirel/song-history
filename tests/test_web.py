@@ -1039,8 +1039,10 @@ class TestBackgroundImportTransaction:
         self, tmp_path, monkeypatch
     ):
         """If extract_songs succeeds, job must be complete with songs_imported set."""
-        from unittest.mock import MagicMock
         from worship_catalog.db import Database
+        from worship_catalog.extractor import SongOccurrence, ExtractionResult
+        import worship_catalog.extractor as extractor_mod
+        import worship_catalog.pptx_reader as pptx_reader_mod
 
         db_path = tmp_path / "tx_ok.db"
         _db = Database(db_path)
@@ -1052,12 +1054,25 @@ class TestBackgroundImportTransaction:
 
         monkeypatch.setenv("DB_PATH", str(db_path))
 
-        fake_result = MagicMock()
-        fake_result.songs = ["song1", "song2", "song3"]
-        monkeypatch.setattr(
-            "worship_catalog.extractor.extract_songs",
-            lambda p: fake_result,
+        fake_songs = [
+            SongOccurrence(ordinal=i + 1, canonical_title=f"song {i}", display_title=f"Song {i}")
+            for i in range(3)
+        ]
+        fake_result = ExtractionResult(
+            filename="ok.pptx",
+            file_hash="fakehash",
+            service_date="2026-01-04",
+            service_name="AM Worship",
+            song_leader=None,
+            preacher=None,
+            sermon_title=None,
+            songs=fake_songs,
         )
+
+        # Patch at the module level so the imports inside _run_import_in_background resolve
+        # to the fakes regardless of reload order.
+        monkeypatch.setattr(extractor_mod, "extract_songs", lambda p, **kw: fake_result)
+        monkeypatch.setattr(pptx_reader_mod, "compute_file_hash", lambda p: "fakehash")
 
         import worship_catalog.web.app as app_module
         from importlib import reload
@@ -1273,4 +1288,198 @@ class TestUploadThreadPool:
         # Module-level assignment: _executor = ThreadPoolExecutor(...)
         assert "_executor" in src or "_EXECUTOR" in src, (
             "Executor must be a named module-level constant, not an anonymous per-request object"
+        )
+
+
+# ---------------------------------------------------------------------------
+# #110: E2E test — background import persists songs to DB (issue #96)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+class TestBackgroundImportPersistsSongsToDB:
+    """Issue #96 — _run_import_in_background must write songs to the database.
+
+    The background worker was updating job status but not calling the extractor
+    or persisting any song/service rows.  These tests verify the full E2E path:
+    upload a real PPTX → poll until complete → confirm songs exist in the DB.
+    """
+
+    @pytest.fixture
+    def minimal_pptx_bytes(self, tmp_path):
+        """Build a minimal Paperless Hymnal PPTX in memory and return its bytes."""
+        from pptx import Presentation
+        from pptx.util import Inches
+
+        prs = Presentation()
+        blank = prs.slide_layouts[6]
+
+        def add_text_box(slide, lines):
+            txBox = slide.shapes.add_textbox(Inches(0.5), Inches(0.5), Inches(9), Inches(2))
+            tf = txBox.text_frame
+            for i, line in enumerate(lines):
+                if i == 0:
+                    tf.paragraphs[0].text = line
+                else:
+                    tf.add_paragraph().text = line
+
+        # Metadata slide (table)
+        meta = prs.slides.add_slide(blank)
+        from pptx.util import Inches as _I
+        table = meta.shapes.add_table(3, 2, _I(1), _I(1), _I(8), _I(1.2)).table
+        for r, (k, v) in enumerate([("Date", "2026-01-04"), ("Service", "AM Worship"), ("Song Leader", "Alice")]):
+            table.cell(r, 0).text = k
+            table.cell(r, 1).text = v
+
+        # Song slides
+        add_text_box(prs.slides.add_slide(blank), [
+            "Amazing Grace", "How sweet the sound", "Words: John Newton", "PaperlessHymnal.com",
+        ])
+        add_text_box(prs.slides.add_slide(blank), [
+            "Amazing Grace", "That saved a wretch like me",
+        ])
+
+        import io
+        buf = io.BytesIO()
+        prs.save(buf)
+        return buf.getvalue()
+
+    def _make_upload_client(self, tmp_path, monkeypatch):
+        """Return (CsrfAwareClient, db_path, inbox) with isolated env."""
+        db_path = tmp_path / "upload_e2e.db"
+        _db = Database(db_path)
+        _db.connect()
+        _db.init_schema()
+        _db.close()
+
+        inbox = tmp_path / "inbox"
+        inbox.mkdir()
+        monkeypatch.setenv("DB_PATH", str(db_path))
+        monkeypatch.setenv("INBOX_DIR", str(inbox))
+
+        import worship_catalog.web.app as app_module
+        from importlib import reload
+        reload(app_module)
+        return _CsrfAwareClient(TestClient(app_module.app)), db_path
+
+    def test_upload_real_pptx_job_reaches_complete_status(self, tmp_path, monkeypatch, minimal_pptx_bytes):
+        """A real PPTX uploaded via /upload must drive the job to 'complete' status."""
+        client, db_path = self._make_upload_client(tmp_path, monkeypatch)
+
+        resp = client.post(
+            "/upload",
+            files={"file": ("AM Worship 2026.01.04.pptx", io.BytesIO(minimal_pptx_bytes), VALID_PPTX_MIME)},
+        )
+        assert resp.status_code == 202
+        job_id = resp.json()["job_id"]
+
+        # _run_import_in_background runs synchronously in TestClient's thread pool;
+        # poll up to 5 seconds for the job to finish.
+        import time
+        deadline = time.monotonic() + 5.0
+        status = "pending"
+        while time.monotonic() < deadline and status not in ("complete", "failed"):
+            status = client.get(f"/jobs/{job_id}").json()["status"]
+            time.sleep(0.05)
+
+        assert status == "complete", f"Job never reached 'complete'; last status={status!r}"
+
+    def test_upload_real_pptx_songs_persisted_to_db(self, tmp_path, monkeypatch, minimal_pptx_bytes):
+        """After a successful upload, the extracted songs must exist in the songs table."""
+        client, db_path = self._make_upload_client(tmp_path, monkeypatch)
+
+        resp = client.post(
+            "/upload",
+            files={"file": ("AM Worship 2026.01.04.pptx", io.BytesIO(minimal_pptx_bytes), VALID_PPTX_MIME)},
+        )
+        assert resp.status_code == 202
+        job_id = resp.json()["job_id"]
+
+        # Wait for job to finish
+        import time
+        deadline = time.monotonic() + 5.0
+        status = "pending"
+        while time.monotonic() < deadline and status not in ("complete", "failed"):
+            status = client.get(f"/jobs/{job_id}").json()["status"]
+            time.sleep(0.05)
+
+        assert status == "complete", f"Job did not complete: {status!r}"
+
+        # The song must now be in the DB
+        _db = Database(db_path)
+        _db.connect()
+        cursor = _db.cursor()
+        cursor.execute("SELECT COUNT(*) FROM songs")
+        count = cursor.fetchone()[0]
+        _db.close()
+
+        assert count > 0, (
+            "No songs were persisted to the DB after background import — "
+            "the background worker must call the extractor and write song rows"
+        )
+
+    def test_upload_real_pptx_service_persisted_to_db(self, tmp_path, monkeypatch, minimal_pptx_bytes):
+        """After a successful upload, a service row must exist in the services table."""
+        client, db_path = self._make_upload_client(tmp_path, monkeypatch)
+
+        resp = client.post(
+            "/upload",
+            files={"file": ("AM Worship 2026.01.04.pptx", io.BytesIO(minimal_pptx_bytes), VALID_PPTX_MIME)},
+        )
+        assert resp.status_code == 202
+        job_id = resp.json()["job_id"]
+
+        import time
+        deadline = time.monotonic() + 5.0
+        status = "pending"
+        while time.monotonic() < deadline and status not in ("complete", "failed"):
+            status = client.get(f"/jobs/{job_id}").json()["status"]
+            time.sleep(0.05)
+
+        assert status == "complete", f"Job did not complete: {status!r}"
+
+        _db = Database(db_path)
+        _db.connect()
+        cursor = _db.cursor()
+        cursor.execute("SELECT COUNT(*) FROM services")
+        count = cursor.fetchone()[0]
+        _db.close()
+
+        assert count > 0, (
+            "No services were persisted to the DB after background import — "
+            "the background worker must persist service metadata"
+        )
+
+    def test_background_worker_persists_songs_directly(self, tmp_path, monkeypatch, minimal_pptx_bytes):
+        """Call _run_import_in_background directly and verify DB rows are written."""
+        db_path = tmp_path / "direct.db"
+        _db = Database(db_path)
+        _db.connect()
+        _db.init_schema()
+        job_id = str(_uuid_mod.uuid4())
+        _db.create_import_job(job_id, filename="AM Worship 2026.01.04.pptx")
+        _db.close()
+
+        monkeypatch.setenv("DB_PATH", str(db_path))
+        import worship_catalog.web.app as app_module
+        from importlib import reload
+        reload(app_module)
+
+        pptx_path = tmp_path / "AM Worship 2026.01.04.pptx"
+        pptx_path.write_bytes(minimal_pptx_bytes)
+
+        app_module._run_import_in_background(job_id, pptx_path)
+
+        _db2 = Database(db_path)
+        _db2.connect()
+        row = _db2.get_import_job(job_id)
+        cursor = _db2.cursor()
+        cursor.execute("SELECT COUNT(*) FROM songs")
+        song_count = cursor.fetchone()[0]
+        _db2.close()
+
+        assert row["status"] == "complete"
+        assert song_count > 0, (
+            "_run_import_in_background must persist extracted songs to the DB; "
+            f"found {song_count} song rows after import"
         )
