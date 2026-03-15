@@ -41,9 +41,27 @@ CI config changes and documentation-only changes are exempt, but any change touc
 4. Run full suite: python3 -m pytest
 5. Run linter: python3 -m ruff check src/
 6. Run type check: python3 -m mypy src/
-7. Commit and push
-8. Confirm CI passes before closing the issue
+7. Run QA agents (see below)
+8. Commit and push
+9. Confirm CI passes before closing the issue
 ```
+
+## Agent Workflow
+
+Implementation must follow this sequence:
+
+```
+developer → senior-qa-engineer → specialized QA agents
+```
+
+Specialized QA agents (invoke when relevant):
+- `cli-contract-tester` — CLI commands, flags, exit codes, help output, JSON output
+- `web-ux-tester` — FastAPI routes, templates, HTMX, forms, filters, sorting, downloads
+
+**QA agent rules:**
+- May modify tests only.
+- May not modify production source code (`src/`).
+- Must open a GitHub issue for every defect found — leave failing tests in place, do not patch code.
 
 ---
 
