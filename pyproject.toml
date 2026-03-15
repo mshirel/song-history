@@ -1,10 +1,10 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
 
 [project]
 name = "worship-catalog"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Extract song metadata from PowerPoint worship slide decks, store in SQLite, generate CCLI reports"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -50,6 +50,10 @@ dev = [
     "pip-audit>=2.7",
     "olefile>=0.47",
 ]
+
+[tool.hatch.version]
+source = "vcs"
+fallback-version = "0.0.0+unknown"  # used when .git is not in the build context (e.g. Docker)
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/worship_catalog"]

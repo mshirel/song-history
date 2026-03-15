@@ -72,6 +72,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+        with:
+          fetch-tags: true   # required for docker/metadata-action semver tagging (#36)
 
       # On a push: only rebuild if image-affecting files changed.
       # On schedule: always rebuild (base image may have security patches).
@@ -100,15 +102,26 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Generate image tags and labels
+        id: meta
+        if: steps.changes.outputs.app == 'true' || github.event_name == 'schedule'
+        uses: docker/metadata-action@030e881283bb7a6894de51c315a6bfe6a94e05cf  # v6
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=sha,prefix=sha-,format=long
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+
       - name: Build and push
         if: steps.changes.outputs.app == 'true' || github.event_name == 'schedule'
         uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25  # v5
         with:
           context: .
           push: true
-          # Only SHA-tagged and semver-tagged images — no :latest (#33)
-          tags: |
-            ghcr.io/${{ github.repository }}:sha-${{ github.sha }}
+          # SHA tag always; semver tags added when a vX.Y.Z tag is pushed (#36)
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
           sbom: true
