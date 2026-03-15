@@ -69,9 +69,12 @@ jobs:
       # --- SBOM / dependency baseline validation ---------------------------
       - name: Validate dependency baseline
         run: |
-          pip list --format=freeze | sort > /tmp/current-deps.txt
-          # New packages not in baseline are flagged (removed packages are OK)
-          NEW_PKGS=$(comm -23 /tmp/current-deps.txt sbom-baseline.txt | grep -v "^#" | grep -v "^$" || true)
+          # Compare package NAMES only (not versions) so version bumps don't false-alarm.
+          # Baseline and current list both sorted case-insensitively; local package excluded.
+          pip list --format=columns | tail -n +3 | awk '{print $1}' | sort -f \
+            | grep -v "^worship-catalog$" > /tmp/current-names.txt
+          NEW_PKGS=$(comm -23 /tmp/current-names.txt <(sort -f sbom-baseline.txt) \
+            | grep -v "^$" || true)
           if [ -n "$NEW_PKGS" ]; then
             echo "New packages detected not in sbom-baseline.txt:"
             echo "$NEW_PKGS"
