@@ -42,6 +42,16 @@ def db_with_songs(tmp_path):
     return db_path
 
 
+@pytest.fixture
+def db(db_with_songs):
+    """Connected Database object pointing at the same test DB used by the client fixture."""
+    database = Database(db_with_songs)
+    database.connect()
+    database.init_schema()
+    yield database
+    database.close()
+
+
 def make_slide(
     index: int = 0,
     lines: list[str] | None = None,

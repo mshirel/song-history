@@ -1,11 +1,14 @@
 """SQLite database schema and operations."""
 
+import logging
 import sqlite3
 from collections.abc import Generator
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
+
+_log = logging.getLogger("worship_catalog.db")
 
 # Bump this integer whenever the schema changes in a backwards-incompatible way.
 # connect() will raise SchemaVersionError if the on-disk version is higher than
@@ -179,6 +182,22 @@ class Database:
                 FOREIGN KEY(song_id) REFERENCES songs(id),
                 FOREIGN KEY(song_edition_id) REFERENCES song_editions(id),
                 UNIQUE(service_id, song_id, song_edition_id, reproduction_type)
+            )
+            """
+        )
+
+        # Import jobs table — tracks background PPTX import jobs submitted via
+        # the web upload endpoint (#45).
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS import_jobs (
+                job_id TEXT PRIMARY KEY,
+                filename TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                started_at TEXT NOT NULL,
+                completed_at TEXT,
+                songs_imported INTEGER,
+                error_message TEXT
             )
             """
         )
@@ -672,4 +691,81 @@ class Database:
         # Delete service
         cursor.execute("DELETE FROM services WHERE id = ?", (service_id,))
 
+        self._maybe_commit()
+
+    # ------------------------------------------------------------------
+    # Import job methods (#45)
+    # ------------------------------------------------------------------
+
+    def create_import_job(
+        self,
+        job_id: str,
+        filename: str,
+        started_at: str | None = None,
+    ) -> None:
+        """Insert a new import job record with status='pending'."""
+        ts = started_at if started_at is not None else datetime.utcnow().isoformat()
+        self._conn.execute(
+            """
+            INSERT INTO import_jobs (job_id, filename, status, started_at)
+            VALUES (?, ?, 'pending', ?)
+            """,
+            (job_id, filename, ts),
+        )
+        self._maybe_commit()
+        _log.info("import_job job_id=%s status=pending filename=%s", job_id, filename)
+
+    def get_import_job(self, job_id: str) -> dict[str, Any] | None:
+        """Return a single import job row, or None if not found."""
+        cursor = self._conn.cursor()
+        cursor.execute("SELECT * FROM import_jobs WHERE job_id = ?", (job_id,))
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+    def update_import_job(
+        self,
+        job_id: str,
+        *,
+        status: str | None = None,
+        songs_imported: int | None = None,
+        error_message: str | None = None,
+    ) -> None:
+        """Update mutable fields on an import job record."""
+        sets: list[str] = []
+        params: list[Any] = []
+        if status is not None:
+            sets.append("status = ?")
+            params.append(status)
+            if status in ("complete", "failed"):
+                sets.append("completed_at = ?")
+                params.append(datetime.utcnow().isoformat())
+        if songs_imported is not None:
+            sets.append("songs_imported = ?")
+            params.append(songs_imported)
+        if error_message is not None:
+            sets.append("error_message = ?")
+            params.append(error_message)
+        if not sets:
+            return
+        params.append(job_id)
+        self._conn.execute(
+            f"UPDATE import_jobs SET {', '.join(sets)} WHERE job_id = ?",  # noqa: S608
+            params,
+        )
+        self._maybe_commit()
+        _log.info("import_job job_id=%s status=%s", job_id, status)
+
+    def list_import_jobs(self) -> list[dict[str, Any]]:
+        """Return all import job rows, newest first."""
+        cursor = self._conn.cursor()
+        cursor.execute("SELECT * FROM import_jobs ORDER BY started_at DESC")
+        return [dict(row) for row in cursor.fetchall()]
+
+    def purge_old_import_jobs(self, days: int = 90) -> None:
+        """Delete import job records whose started_at date is older than *days* days."""
+        threshold = (datetime.utcnow() - timedelta(days=days)).strftime("%Y-%m-%d")
+        self._conn.execute(
+            "DELETE FROM import_jobs WHERE date(started_at) < ?",
+            (threshold,),
+        )
         self._maybe_commit()

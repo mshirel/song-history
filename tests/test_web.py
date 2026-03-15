@@ -1,8 +1,10 @@
 """Tests for the FastAPI + HTMX web UI."""
 
+import io
 import json
 import os
 import sqlite3
+import uuid as _uuid_mod
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -39,9 +41,12 @@ class _CsrfAwareClient:
 
 
 @pytest.fixture
-def client(db_with_songs, monkeypatch):
-    """TestClient with DB_PATH env var pointed at the test DB (CSRF-aware)."""
+def client(db_with_songs, tmp_path, monkeypatch):
+    """TestClient with DB_PATH and INBOX_DIR env vars pointed at temp locations (CSRF-aware)."""
+    inbox = tmp_path / "inbox"
+    inbox.mkdir()
     monkeypatch.setenv("DB_PATH", str(db_with_songs))
+    monkeypatch.setenv("INBOX_DIR", str(inbox))
     from importlib import reload
     import worship_catalog.web.app as app_module
     reload(app_module)
@@ -813,3 +818,169 @@ class TestCcliStreamingResponse:
         from worship_catalog.web import app as web_module
         src = inspect.getsource(web_module)
         assert "iter_copy_events" in src
+
+
+# ---------------------------------------------------------------------------
+# Upload / background import job tests (#45)
+# ---------------------------------------------------------------------------
+
+VALID_PPTX_MIME = (
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+)
+SMALL_PPTX_BYTES = b"PK\x03\x04" + b"\x00" * 100  # fake PPTX magic bytes
+
+
+def _upload(
+    client: "_CsrfAwareClient",
+    content: bytes,
+    filename: str,
+    content_type: str,
+):
+    return client.post(
+        "/upload",
+        files={"file": (filename, io.BytesIO(content), content_type)},
+    )
+
+
+class TestUploadEndpoint:
+    def test_upload_valid_pptx_returns_202_with_job_id(self, client):
+        resp = _upload(client, SMALL_PPTX_BYTES, "sunday.pptx", VALID_PPTX_MIME)
+        assert resp.status_code == 202
+        body = resp.json()
+        assert "job_id" in body
+        _uuid_mod.UUID(body["job_id"])  # must be a valid UUID
+
+    def test_upload_non_pptx_mime_returns_400(self, client):
+        resp = _upload(client, b"hello", "notes.pdf", "application/pdf")
+        assert resp.status_code == 400
+        assert "pptx" in resp.json()["detail"].lower()
+
+    def test_upload_wrong_extension_returns_400(self, client):
+        resp = _upload(client, SMALL_PPTX_BYTES, "sunday.ppt", VALID_PPTX_MIME)
+        assert resp.status_code == 400
+
+    def test_upload_oversized_file_returns_413(self, client, monkeypatch):
+        monkeypatch.setattr("worship_catalog.web.app.MAX_UPLOAD_BYTES", 10)
+        resp = _upload(client, b"X" * 11, "big.pptx", VALID_PPTX_MIME)
+        assert resp.status_code == 413
+
+    def test_upload_creates_pending_job_record(self, client, db):
+        resp = _upload(client, SMALL_PPTX_BYTES, "sunday.pptx", VALID_PPTX_MIME)
+        job_id = resp.json()["job_id"]
+        row = db.get_import_job(job_id)
+        assert row is not None
+        assert row["filename"] == "sunday.pptx"
+        assert row["status"] in ("pending", "running", "complete", "failed")
+
+
+class TestJobStatusEndpoint:
+    def test_get_known_job_returns_200(self, client, db):
+        job_id = str(_uuid_mod.uuid4())
+        db.create_import_job(job_id, filename="test.pptx")
+        resp = client.get(f"/jobs/{job_id}")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["job_id"] == job_id
+        assert body["status"] == "pending"
+
+    def test_get_unknown_job_returns_404(self, client):
+        resp = client.get(f"/jobs/{_uuid_mod.uuid4()}")
+        assert resp.status_code == 404
+
+    def test_job_response_includes_all_fields(self, client, db):
+        job_id = str(_uuid_mod.uuid4())
+        db.create_import_job(job_id, filename="test.pptx")
+        resp = client.get(f"/jobs/{job_id}")
+        body = resp.json()
+        for field in (
+            "job_id", "filename", "status", "started_at",
+            "completed_at", "songs_imported", "error_message",
+        ):
+            assert field in body
+
+
+class TestJobListEndpoint:
+    def test_list_jobs_returns_200(self, client):
+        resp = client.get("/jobs")
+        assert resp.status_code == 200
+        assert isinstance(resp.json(), list)
+
+    def test_list_jobs_newest_first(self, client, db):
+        id1 = str(_uuid_mod.uuid4())
+        id2 = str(_uuid_mod.uuid4())
+        db.create_import_job(id1, filename="first.pptx")
+        db.create_import_job(id2, filename="second.pptx")
+        resp = client.get("/jobs")
+        ids = [j["job_id"] for j in resp.json()]
+        assert ids.index(id2) < ids.index(id1)
+
+
+class TestJobLifecycle:
+    def test_job_transitions_pending_to_running_to_complete(self, db):
+        job_id = str(_uuid_mod.uuid4())
+        db.create_import_job(job_id, filename="test.pptx")
+        assert db.get_import_job(job_id)["status"] == "pending"
+
+        db.update_import_job(job_id, status="running")
+        assert db.get_import_job(job_id)["status"] == "running"
+
+        db.update_import_job(job_id, status="complete", songs_imported=5)
+        row = db.get_import_job(job_id)
+        assert row["status"] == "complete"
+        assert row["songs_imported"] == 5
+        assert row["completed_at"] is not None
+
+    def test_job_captures_error_message_on_failure(self, db):
+        job_id = str(_uuid_mod.uuid4())
+        db.create_import_job(job_id, filename="bad.pptx")
+        db.update_import_job(job_id, status="failed", error_message="corrupt file")
+        row = db.get_import_job(job_id)
+        assert row["status"] == "failed"
+        assert "corrupt" in row["error_message"]
+
+    def test_job_songs_imported_count_set_on_success(self, db):
+        job_id = str(_uuid_mod.uuid4())
+        db.create_import_job(job_id, filename="songs.pptx")
+        db.update_import_job(job_id, status="complete", songs_imported=12)
+        assert db.get_import_job(job_id)["songs_imported"] == 12
+
+
+class TestJobAutoPurge:
+    def test_purge_removes_records_older_than_90_days(self, db):
+        old_id = str(_uuid_mod.uuid4())
+        recent_id = str(_uuid_mod.uuid4())
+        # 2025-12-01 is well over 90 days before 2026-03-15
+        db.create_import_job(old_id, filename="old.pptx", started_at="2025-12-01T00:00:00")
+        db.create_import_job(recent_id, filename="recent.pptx")
+        db.purge_old_import_jobs(days=90)
+        assert db.get_import_job(old_id) is None
+        assert db.get_import_job(recent_id) is not None
+
+    def test_purge_keeps_records_exactly_at_boundary(self, db):
+        # 2025-12-15 is exactly 90 days before 2026-03-15
+        boundary_id = str(_uuid_mod.uuid4())
+        db.create_import_job(
+            boundary_id,
+            filename="boundary.pptx",
+            started_at="2025-12-15T00:00:00",
+        )
+        db.purge_old_import_jobs(days=90)
+        assert db.get_import_job(boundary_id) is not None
+
+
+class TestUploadStructuredLogs:
+    def test_log_emitted_on_job_start(self, client, caplog):
+        import logging
+        with caplog.at_level(logging.INFO, logger="worship_catalog"):
+            _upload(client, SMALL_PPTX_BYTES, "sunday.pptx", VALID_PPTX_MIME)
+        messages = [r.message for r in caplog.records]
+        assert any("import_job" in m and "pending" in m for m in messages)
+
+    def test_log_emitted_on_job_complete(self, db, caplog):
+        import logging
+        job_id = str(_uuid_mod.uuid4())
+        db.create_import_job(job_id, filename="test.pptx")
+        with caplog.at_level(logging.INFO, logger="worship_catalog"):
+            db.update_import_job(job_id, status="complete", songs_imported=3)
+        messages = [r.message for r in caplog.records]
+        assert any("complete" in m for m in messages)

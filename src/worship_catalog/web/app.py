@@ -9,13 +9,23 @@ import math
 import os
 import re
 import secrets
+import threading
+import uuid
 from collections.abc import Generator
 from datetime import date
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, Form, HTTPException, Query, Request, Response
-from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
+from fastapi import (
+    FastAPI,
+    Form,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    UploadFile,
+)
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette_csrf import CSRFMiddleware  # type: ignore[attr-defined]
@@ -37,7 +47,7 @@ _CSRF_SECRET = os.environ.get("CSRF_SECRET") or secrets.token_hex(32)
 app.add_middleware(
     CSRFMiddleware,
     secret=_CSRF_SECRET,
-    exempt_urls=[re.compile(r"^/health$")],
+    exempt_urls=[re.compile(r"^/health$"), re.compile(r"^/upload$")],
 )
 app.add_middleware(RequestLoggingMiddleware)
 
@@ -65,6 +75,12 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> HTMLR
 
 
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+# Upload constants (#45)
+MAX_UPLOAD_BYTES: int = 50 * 1024 * 1024  # 50 MB
+_PPTX_MIME = (
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+)
 
 
 def _validate_date_range(start_date: str, end_date: str) -> None:
@@ -450,6 +466,97 @@ async def leader_top_songs_csv(leader_name: str) -> StreamingResponse:
         media_type="text/csv",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+# ---------------------------------------------------------------------------
+# Upload + background import job endpoints (#45)
+# ---------------------------------------------------------------------------
+
+
+def _get_inbox_dir() -> Path:
+    p = Path(os.environ.get("INBOX_DIR", "inbox"))
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def _run_import_in_background(job_id: str, pptx_path: Path) -> None:
+    """Import a PPTX file and update the job record when done.  Runs in a thread."""
+    db = _get_db()
+    try:
+        from worship_catalog.extractor import extract_songs
+
+        result = extract_songs(pptx_path)
+        db.update_import_job(
+            job_id, status="complete", songs_imported=len(result.songs)
+        )
+    except Exception as exc:  # noqa: BLE001
+        db.update_import_job(
+            job_id, status="failed", error_message=str(exc)[:500]
+        )
+    finally:
+        db.close()
+
+
+@app.post("/upload")
+async def upload(file: UploadFile) -> JSONResponse:
+    """Accept a PPTX file, create an import job, and kick off background import."""
+    # Validate MIME type
+    if file.content_type != _PPTX_MIME:
+        return JSONResponse(
+            content={"detail": "Only PPTX files are accepted (pptx mime type required)"},
+            status_code=400,
+        )
+    # Validate extension
+    filename = file.filename or ""
+    if not filename.lower().endswith(".pptx"):
+        return JSONResponse(
+            content={"detail": "File must have a .pptx extension"},
+            status_code=400,
+        )
+    # Read and enforce size limit
+    content = await file.read()
+    if len(content) > MAX_UPLOAD_BYTES:
+        return JSONResponse(
+            content={"detail": f"File exceeds maximum allowed size of {MAX_UPLOAD_BYTES} bytes"},
+            status_code=413,
+        )
+    # Save to inbox
+    inbox = _get_inbox_dir()
+    job_id = str(uuid.uuid4())
+    dest = inbox / f"{job_id}_{filename}"
+    dest.write_bytes(content)
+    # Create pending job record
+    db = _get_db()
+    db.create_import_job(job_id, filename=filename)
+    db.close()
+    # Start import in background thread (daemon so it won't block test exits)
+    thread = threading.Thread(
+        target=_run_import_in_background,
+        args=(job_id, dest),
+        daemon=True,
+    )
+    thread.start()
+    return JSONResponse(content={"job_id": job_id}, status_code=202)
+
+
+@app.get("/jobs")
+async def list_jobs() -> JSONResponse:
+    """Return all import job records, newest first."""
+    db = _get_db()
+    jobs = db.list_import_jobs()
+    db.close()
+    return JSONResponse(content=jobs)
+
+
+@app.get("/jobs/{job_id}")
+async def get_job(job_id: str) -> JSONResponse:
+    """Return a single import job record or 404."""
+    db = _get_db()
+    job = db.get_import_job(job_id)
+    db.close()
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return JSONResponse(content=job)
 
 
 # ---------------------------------------------------------------------------
