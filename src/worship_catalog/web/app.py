@@ -9,6 +9,7 @@ import math
 import os
 import re
 import secrets
+import threading
 from collections.abc import AsyncGenerator, Generator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
@@ -39,6 +40,13 @@ _setup_logging()
 _log = logging.getLogger("worship_catalog.web")
 
 
+# Bounded thread pool for background import jobs (#52)
+# Declared here (before lifespan) so the lifespan can shut it down gracefully (#135).
+_MAX_IMPORT_WORKERS: int = 4
+_EXECUTOR_SHUTDOWN_TIMEOUT: int = 30  # seconds to wait for in-flight jobs before giving up
+_import_executor = ThreadPoolExecutor(max_workers=_MAX_IMPORT_WORKERS)
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Run startup tasks before the app begins serving requests."""
@@ -50,7 +58,25 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         _log.warning("Startup purge failed", extra={"error": str(exc)})
     finally:
         db.close()
-    yield
+    try:
+        yield
+    finally:
+        # Graceful shutdown: give in-flight import jobs time to finish (#135).
+        # Use a background thread so we can enforce a hard timeout without
+        # blocking the event loop indefinitely.
+        shutdown_done = threading.Event()
+
+        def _shutdown_executor() -> None:
+            _import_executor.shutdown(wait=True, cancel_futures=False)
+            shutdown_done.set()
+
+        t = threading.Thread(target=_shutdown_executor, daemon=True)
+        t.start()
+        if not shutdown_done.wait(timeout=_EXECUTOR_SHUTDOWN_TIMEOUT):
+            _log.warning(
+                "Executor did not finish within timeout — proceeding with shutdown",
+                extra={"timeout_seconds": _EXECUTOR_SHUTDOWN_TIMEOUT},
+            )
 
 
 app = FastAPI(title="Worship Catalog", lifespan=_lifespan)
@@ -109,10 +135,6 @@ def _sanitize_header_filename(raw: str) -> str:
     """
     basename = Path(raw).name
     return _SAFE_FILENAME_RE.sub("_", basename)
-
-# Bounded thread pool for background import jobs (#52)
-_MAX_IMPORT_WORKERS: int = 4
-_import_executor = ThreadPoolExecutor(max_workers=_MAX_IMPORT_WORKERS)
 
 # Upload constants (#45)
 MAX_UPLOAD_BYTES: int = 50 * 1024 * 1024  # 50 MB
