@@ -1,12 +1,12 @@
 """Tests for worship_catalog.ocr — Vision API credit extraction."""
 
 import sys
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 
 from worship_catalog.extractor import OcrBudget
-from worship_catalog.ocr import _detect_media_type, extract_credits_via_vision
+from worship_catalog.ocr import _MAX_RETRIES, _detect_media_type, extract_credits_via_vision
 
 
 class TestOcrBudget:
@@ -277,3 +277,96 @@ class TestOcrOutputValidation:
             result = extract_credits_via_vision(b"\xff\xd8\x00\x00")
         assert result is not None
         assert "Chris Tomlin" in result
+
+
+class TestRetryLogic:
+    """Tests for exponential backoff retry on transient API failures (#20)."""
+
+    def _make_mock_anthropic(self):
+        """Return a mock anthropic module with an Anthropic class."""
+        mock_anthropic = MagicMock()
+        mock_anthropic.RateLimitError = type("RateLimitError", (Exception,), {})
+        mock_anthropic.APIStatusError = type(
+            "APIStatusError", (Exception,), {"status_code": 500}
+        )
+        return mock_anthropic
+
+    def test_max_retries_constant_is_3(self):
+        assert _MAX_RETRIES == 3
+
+    def test_succeeds_on_third_attempt(self, monkeypatch):
+        """Function succeeds if it hits a rate limit twice but succeeds on the 3rd attempt."""
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        mock_anthropic = self._make_mock_anthropic()
+        mock_client = MagicMock()
+        mock_anthropic.Anthropic.return_value = mock_client
+
+        success_response = MagicMock()
+        success_response.content = [MagicMock(text="Words: John Newton / Music: William Walker")]
+
+        mock_client.messages.create.side_effect = [
+            mock_anthropic.RateLimitError("rate limited"),
+            mock_anthropic.RateLimitError("rate limited"),
+            success_response,
+        ]
+
+        with patch.dict(sys.modules, {"anthropic": mock_anthropic}):
+            with patch("time.sleep"):  # don't actually sleep
+                result = extract_credits_via_vision(b"\xff\xd8\x00\x00")
+
+        assert result == "Words: John Newton / Music: William Walker"
+        assert mock_client.messages.create.call_count == 3
+
+    def test_raises_after_max_retries_exhausted(self, monkeypatch):
+        """Raises the underlying error after all retries are exhausted."""
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        mock_anthropic = self._make_mock_anthropic()
+        mock_client = MagicMock()
+        mock_anthropic.Anthropic.return_value = mock_client
+
+        mock_client.messages.create.side_effect = mock_anthropic.RateLimitError("rate limited")
+
+        with patch.dict(sys.modules, {"anthropic": mock_anthropic}):
+            with patch("time.sleep"):
+                with pytest.raises(Exception, match="rate limited"):
+                    extract_credits_via_vision(b"\xff\xd8\x00\x00")
+
+        assert mock_client.messages.create.call_count == _MAX_RETRIES
+
+    def test_non_retryable_errors_not_retried(self, monkeypatch):
+        """Non-transient errors (e.g. import failures) are not retried."""
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        mock_anthropic = self._make_mock_anthropic()
+        mock_client = MagicMock()
+        mock_anthropic.Anthropic.return_value = mock_client
+
+        mock_client.messages.create.side_effect = ValueError("unexpected error")
+
+        with patch.dict(sys.modules, {"anthropic": mock_anthropic}):
+            with patch("time.sleep") as mock_sleep:
+                with pytest.raises(ValueError):
+                    extract_credits_via_vision(b"\xff\xd8\x00\x00")
+
+        assert mock_client.messages.create.call_count == 1
+        mock_sleep.assert_not_called()
+
+    def test_sleep_called_between_retries(self, monkeypatch):
+        """time.sleep is called between retry attempts."""
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        mock_anthropic = self._make_mock_anthropic()
+        mock_client = MagicMock()
+        mock_anthropic.Anthropic.return_value = mock_client
+
+        success_response = MagicMock()
+        success_response.content = [MagicMock(text="Words: John Newton / Music: Traditional")]
+
+        mock_client.messages.create.side_effect = [
+            mock_anthropic.RateLimitError("rate limited"),
+            success_response,
+        ]
+
+        with patch.dict(sys.modules, {"anthropic": mock_anthropic}):
+            with patch("time.sleep") as mock_sleep:
+                extract_credits_via_vision(b"\xff\xd8\x00\x00")
+
+        assert mock_sleep.call_count == 1

@@ -1,10 +1,16 @@
 """Vision-based OCR for extracting song credits from slide images."""
 
 import base64
+import logging
 import os
 import re
+import time
 
 _OCR_MODEL: str = "claude-haiku-4-5-20251001"
+_MAX_RETRIES: int = 3
+_RETRY_BASE_DELAY: float = 1.0  # seconds; doubles on each retry
+
+_log = logging.getLogger(__name__)
 
 # Output validation (issue #42 — CWE-94 prompt injection hardening)
 _CREDITS_RE = re.compile(
@@ -64,10 +70,10 @@ def extract_credits_via_vision(image_bytes: bytes) -> str | None:
 
     client = anthropic.Anthropic(api_key=api_key)
 
-    message = client.messages.create(
-        model=_OCR_MODEL,
-        max_tokens=200,
-        messages=[
+    request_kwargs = {
+        "model": _OCR_MODEL,
+        "max_tokens": 200,
+        "messages": [
             {
                 "role": "user",
                 "content": [
@@ -93,7 +99,31 @@ def extract_credits_via_vision(image_bytes: bytes) -> str | None:
                 ],
             }
         ],
-    )
+    }
+
+    # Retry on transient API errors with exponential backoff
+    _retryable = (anthropic.RateLimitError, anthropic.APIStatusError)
+    last_exc: Exception | None = None
+    for attempt in range(_MAX_RETRIES):
+        try:
+            message = client.messages.create(**request_kwargs)
+            break
+        except _retryable as exc:
+            last_exc = exc
+            if attempt < _MAX_RETRIES - 1:
+                delay = _RETRY_BASE_DELAY * (2**attempt)
+                _log.warning(
+                    "OCR API transient error (attempt %d/%d), retrying in %.1fs: %s",
+                    attempt + 1,
+                    _MAX_RETRIES,
+                    delay,
+                    exc,
+                )
+                time.sleep(delay)
+            else:
+                raise
+    else:
+        raise last_exc  # type: ignore[misc]
 
     raw = message.content[0].text.strip()
     if raw.lower() == "none" or not raw:
