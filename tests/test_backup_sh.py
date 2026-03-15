@@ -4,6 +4,8 @@ import gzip
 import subprocess
 from pathlib import Path
 
+import pytest
+
 BACKUP_SCRIPT = Path(__file__).parent.parent / "scripts" / "backup.sh"
 
 
@@ -17,8 +19,13 @@ def run_backup(
     )
 
 
+@pytest.mark.slow
 class TestBackupIntegrityCheck:
-    """backup.sh writes a valid gzip and sentinel file on success."""
+    """backup.sh writes a valid gzip and sentinel file on success.
+
+    Marked ``slow`` because every test in this class spawns a subprocess
+    to invoke bash scripts/backup.sh, which involves fork + exec overhead.
+    """
 
     def test_backup_creates_gz_file(self, tmp_path: Path) -> None:
         """A successful backup produces a worship-*.sql.gz file."""

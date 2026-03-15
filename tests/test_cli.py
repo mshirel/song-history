@@ -13,8 +13,14 @@ from worship_catalog.db import Database
 
 
 @pytest.mark.integration
+@pytest.mark.slow
 class TestValidateCommand:
-    """Tests for validate command."""
+    """Tests for validate command.
+
+    Marked ``slow`` because the tests that exercise validate invoke the full
+    PPTX parsing pipeline (python-pptx + shape extraction), which takes
+    ~200–250 ms per test on a developer laptop.
+    """
 
     @pytest.fixture
     def runner(self):
@@ -74,8 +80,13 @@ class TestValidateCommand:
 
 
 @pytest.mark.integration
+@pytest.mark.slow
 class TestImportCommand:
-    """Tests for import command."""
+    """Tests for import command.
+
+    Marked ``slow`` because tests invoke the full import pipeline: PPTX parsing,
+    credit resolution, and SQLite writes, which takes ~200–350 ms per test.
+    """
 
     @pytest.fixture
     def runner(self):
@@ -819,8 +830,13 @@ class TestLibraryIndexCommand:
 
 
 @pytest.mark.integration
+@pytest.mark.slow
 class TestCLIIntegration:
-    """End-to-end CLI integration tests."""
+    """End-to-end CLI integration tests.
+
+    Marked ``slow`` because test_full_workflow runs the entire
+    validate → import → report pipeline end-to-end (~430 ms).
+    """
 
     @pytest.fixture
     def runner(self):
