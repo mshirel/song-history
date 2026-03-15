@@ -59,3 +59,11 @@ _TMPFILE=""  # file promoted — no cleanup needed
 echo "$STAMP" > "$BACKUP_DIR/.last_success"
 
 echo "[backup] OK: $FINAL"
+
+# Optional healthcheck ping — set BACKUP_HEALTHCHECK_URL to a ping-style URL
+# (healthchecks.io, UptimeRobot, or any HTTP endpoint).  Failure to ping is
+# non-fatal: we log a warning but do not change the exit code.
+if [ -n "${BACKUP_HEALTHCHECK_URL:-}" ]; then
+    curl -fsS --retry 3 "${BACKUP_HEALTHCHECK_URL}" > /dev/null 2>&1 || \
+        echo "[backup] WARNING: healthcheck ping failed for ${BACKUP_HEALTHCHECK_URL}" >&2
+fi

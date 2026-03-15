@@ -1269,15 +1269,19 @@ class TestUploadThreadPool:
     """Background import must use a bounded thread pool, not unbounded threads (#52)."""
 
     def test_app_uses_threadpoolexecutor_not_bare_thread(self):
-        """app.py must use ThreadPoolExecutor, not threading.Thread, for import jobs."""
+        """app.py must use ThreadPoolExecutor for import jobs; threading.Thread is only
+        allowed in the lifespan shutdown guard (a single, bounded, one-time thread)."""
         import inspect
         from worship_catalog.web import app as web_module
         src = inspect.getsource(web_module)
         assert "ThreadPoolExecutor" in src, (
             "Upload background tasks must use ThreadPoolExecutor to bound concurrency"
         )
-        assert "threading.Thread(" not in src, (
-            "threading.Thread() creates unbounded threads — use ThreadPoolExecutor instead"
+        # threading.Thread is permitted in _lifespan for the shutdown timeout guard (#135),
+        # but _run_import_in_background must not use it — verify by inspecting that function.
+        run_import_src = inspect.getsource(web_module._run_import_in_background)
+        assert "threading.Thread(" not in run_import_src, (
+            "Import jobs must not spawn unbounded bare threads — use ThreadPoolExecutor"
         )
 
     def test_thread_pool_is_module_level_singleton(self):
@@ -2012,3 +2016,73 @@ class TestUploadValidationIssue145:
         if resp.status_code >= 400:
             body = resp.json()
             assert "detail" in body, f"Error response must have 'detail' key, got: {body}"
+
+
+class TestGracefulShutdown:
+    """Verify the lifespan context manager shuts down the executor gracefully — closes #135."""
+
+    def test_executor_shutdown_called_on_lifespan_exit(self, tmp_path, monkeypatch):
+        """executor.shutdown(wait=True) must be called when the lifespan context exits."""
+        from unittest.mock import patch, MagicMock
+        from importlib import reload
+        import worship_catalog.web.app as app_module
+
+        shutdown_calls: list[dict] = []
+        real_shutdown = app_module._import_executor.shutdown
+
+        def tracking_shutdown(wait=True, cancel_futures=False):
+            shutdown_calls.append({"wait": wait, "cancel_futures": cancel_futures})
+            # Don't call real shutdown — executor may already be stopped after reload
+
+        inbox = tmp_path / "inbox"
+        inbox.mkdir()
+        monkeypatch.setenv("DB_PATH", str(tmp_path / "test.db"))
+        monkeypatch.setenv("INBOX_DIR", str(inbox))
+
+        reload(app_module)
+        # Patch the executor's shutdown method on the live instance
+        app_module._import_executor.shutdown = tracking_shutdown  # type: ignore[method-assign]
+
+        with TestClient(app_module.app):
+            pass  # lifespan startup on enter, shutdown on exit
+
+        assert shutdown_calls, "executor.shutdown() was never called during lifespan exit"
+        assert shutdown_calls[-1]["wait"] is True, (
+            f"executor.shutdown must be called with wait=True, got: {shutdown_calls[-1]}"
+        )
+
+    def test_in_flight_jobs_complete_before_shutdown(self, tmp_path, monkeypatch):
+        """A job submitted just before shutdown must complete — executor waits for it."""
+        import time
+        from importlib import reload
+        import worship_catalog.web.app as app_module
+
+        completed: list[bool] = []
+
+        def slow_job():
+            time.sleep(0.05)  # short sleep — simulates a brief in-flight job
+            completed.append(True)
+
+        inbox = tmp_path / "inbox"
+        inbox.mkdir()
+        monkeypatch.setenv("DB_PATH", str(tmp_path / "test.db"))
+        monkeypatch.setenv("INBOX_DIR", str(inbox))
+
+        reload(app_module)
+        with TestClient(app_module.app):
+            # Submit a background job right before the context exits
+            app_module._import_executor.submit(slow_job)
+        # After the context exits (lifespan shutdown), the job must be done
+        assert completed == [True], (
+            "In-flight job was not completed before executor shutdown"
+        )
+
+    def test_lifespan_source_contains_shutdown_with_wait(self):
+        """Source code of the lifespan function must include executor.shutdown(wait=True)."""
+        import inspect
+        from importlib import reload
+        import worship_catalog.web.app as app_module
+        reload(app_module)
+        source = inspect.getsource(app_module._lifespan)
+        assert "shutdown" in source, "lifespan must call executor.shutdown"
+        assert "wait=True" in source, "lifespan executor.shutdown must use wait=True"

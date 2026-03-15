@@ -105,7 +105,7 @@ services:
     environment:
       - DB_PATH=/data/worship.db
     restart: unless-stopped
-    stop_grace_period: 15s
+    stop_grace_period: 35s            # 30s executor timeout + 5s margin (#135)
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
       interval: 30s
