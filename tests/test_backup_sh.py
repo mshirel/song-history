@@ -97,3 +97,46 @@ class TestBackupIntegrityCheck:
 
         run_backup(db_path, backup_dir)
         assert not (backup_dir / ".last_success").exists()
+
+
+@pytest.mark.slow
+class TestBackupTempCleanup:
+    """backup.sh must clean up temp files on exit, even on failure — closes #63."""
+
+    def test_backup_sh_contains_exit_trap(self) -> None:
+        """backup.sh must declare a trap on EXIT to clean up temp files."""
+        content = BACKUP_SCRIPT.read_text()
+        assert "trap" in content, "backup.sh must contain a trap statement"
+        assert "EXIT" in content, "backup.sh must trap EXIT for cleanup"
+
+    def test_backup_cleans_up_temp_files_on_success(self, tmp_path: Path) -> None:
+        """After a successful backup, no leftover temp files remain in /tmp."""
+        import sqlite3
+        db_path = tmp_path / "worship.db"
+        backup_dir = tmp_path / "backups"
+        backup_dir.mkdir()
+        conn = sqlite3.connect(db_path)
+        conn.execute("CREATE TABLE t (id INTEGER PRIMARY KEY)")
+        conn.commit()
+        conn.close()
+
+        # Count /tmp/backup-* files before and after
+        before = set(Path("/tmp").glob("backup-*.sql.gz"))
+        result = run_backup(db_path, backup_dir)
+        after = set(Path("/tmp").glob("backup-*.sql.gz"))
+        assert result.returncode == 0, result.stderr
+        leftover = after - before
+        assert len(leftover) == 0, f"Temp files not cleaned up: {leftover}"
+
+    def test_backup_cleans_up_temp_files_on_failure(self, tmp_path: Path) -> None:
+        """After a failed backup, no leftover temp files remain in /tmp."""
+        db_path = tmp_path / "nonexistent.db"
+        backup_dir = tmp_path / "backups"
+        backup_dir.mkdir()
+
+        before = set(Path("/tmp").glob("backup-*.sql.gz"))
+        result = run_backup(db_path, backup_dir)
+        after = set(Path("/tmp").glob("backup-*.sql.gz"))
+        assert result.returncode != 0
+        leftover = after - before
+        assert len(leftover) == 0, f"Temp files not cleaned up on failure: {leftover}"
