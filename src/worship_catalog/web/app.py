@@ -487,7 +487,8 @@ def _run_import_in_background(job_id: str, pptx_path: Path) -> None:
     All song/service DB writes are wrapped in a single transaction so that a
     mid-flight failure rolls back any partial inserts atomically.  The job
     status update is intentionally outside the transaction so it always commits
-    even after a rollback.
+    even after a rollback.  The uploaded file is deleted in a finally block
+    so that the inbox is always cleaned up regardless of success or failure.
     """
     db = _get_db()
     try:
@@ -579,6 +580,15 @@ def _run_import_in_background(job_id: str, pptx_path: Path) -> None:
         )
     finally:
         db.close()
+        # Always clean up the inbox file regardless of success or failure (#138)
+        try:
+            if pptx_path.exists():
+                pptx_path.unlink()
+        except OSError as exc:  # noqa: BLE001
+            _log.warning(
+                "Failed to delete uploaded file from inbox",
+                extra={"path": str(pptx_path), "error": str(exc)},
+            )
 
 
 @app.post("/upload")
@@ -681,6 +691,8 @@ def _query_songs(
     per_page: int = 50,
 ) -> tuple[list[dict[str, Any]], int]:
     """Return songs with performance count, optionally filtered and sorted, with pagination."""
+    from worship_catalog.db import _safe_order_by
+    sort = _safe_order_by(sort, frozenset(_SONGS_SORT_COLS))
     order = f"{sort} {sort_dir.upper()}, s.display_title"
     cursor = db.cursor()
     base = """
@@ -793,6 +805,8 @@ def _query_all_services(
         params.append(end_date)
 
     where_sql = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
+    from worship_catalog.db import _safe_order_by
+    sort = _safe_order_by(sort, frozenset(_SERVICES_SORT_COLS))
     order = f"{sort} {sort_dir.upper()}, sv.service_name"
     offset = (page - 1) * per_page
     cursor = db.cursor()

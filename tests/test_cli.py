@@ -1199,3 +1199,149 @@ class TestCliNamedConstants:
 
         assert isinstance(_STATS_TOP_SONGS, int)
         assert _STATS_TOP_SONGS == 20
+
+
+# ---------------------------------------------------------------------------
+# Issue #134 — CCLI CSV commas corrupt output
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+class TestCcliCsvCommaInTitle:
+    """CCLI report must use csv module so titles with commas are properly quoted — issue #134."""
+
+    @pytest.fixture
+    def runner(self):
+        return CliRunner()
+
+    @pytest.fixture
+    def db_with_comma_title(self, tmp_path):
+        """Database containing a song whose title contains a comma."""
+        db_path = tmp_path / "comma_test.db"
+        db = Database(db_path)
+        db.connect()
+        db.init_schema()
+
+        service_id = db.insert_or_update_service(
+            service_date="2026-03-01",
+            service_name="Morning Worship",
+            source_file="test.pptx",
+            source_hash="comma-hash",
+        )
+        song_id = db.insert_or_get_song("amazing, grace", "Amazing, Grace")
+        edition_id = db.insert_or_get_song_edition(
+            song_id=song_id,
+            publisher="Paperless Hymnal",
+            words_by="John Newton",
+        )
+        db.insert_service_song(
+            service_id=service_id,
+            song_id=song_id,
+            ordinal=1,
+            song_edition_id=edition_id,
+        )
+        db.insert_or_get_copy_event(
+            service_id=service_id,
+            song_id=song_id,
+            song_edition_id=edition_id,
+            reproduction_type="projection",
+            count=1,
+            reportable=True,
+        )
+        db.close()
+        return db_path
+
+    def test_ccli_csv_quotes_title_with_comma(self, runner, db_with_comma_title, tmp_path):
+        """A song title containing a comma must be double-quoted in the CSV output."""
+        import csv
+        out = tmp_path / "report.csv"
+        result = runner.invoke(
+            main,
+            ["report", "ccli", "--db", str(db_with_comma_title), "--out", str(out)],
+        )
+        assert result.exit_code == 0, f"CLI failed: {result.output}"
+        assert out.exists()
+
+        content = out.read_text()
+        # The title with comma must appear properly quoted (csv module style)
+        assert '"Amazing, Grace"' in content, (
+            f"Expected quoted title in CSV, got:\n{content}"
+        )
+
+    def test_ccli_csv_is_parseable_by_csv_reader(self, runner, db_with_comma_title, tmp_path):
+        """The output CSV must be parseable by csv.reader with the correct number of columns."""
+        import csv
+        out = tmp_path / "report.csv"
+        result = runner.invoke(
+            main,
+            ["report", "ccli", "--db", str(db_with_comma_title), "--out", str(out)],
+        )
+        assert result.exit_code == 0
+        content = out.read_text()
+
+        # Filter out comment lines (lines starting with #) and blank lines
+        data_lines = [
+            line for line in content.splitlines()
+            if line.strip() and not line.startswith("#")
+        ]
+        reader = csv.reader(data_lines)
+        rows = list(reader)
+        assert rows, "CSV must have at least a header row"
+        # Header row
+        assert len(rows[0]) == 6, f"Header must have 6 columns, got {len(rows[0])}: {rows[0]}"
+        # Data rows must also have 6 columns
+        for row in rows[1:]:
+            assert len(row) == 6, (
+                f"Data row must have 6 columns, got {len(row)}: {row}"
+            )
+
+    def test_ccli_csv_correct_title_value_after_parse(self, runner, db_with_comma_title, tmp_path):
+        """After parsing with csv.reader, the title field must equal the original title."""
+        import csv
+        out = tmp_path / "report.csv"
+        runner.invoke(
+            main,
+            ["report", "ccli", "--db", str(db_with_comma_title), "--out", str(out)],
+        )
+        content = out.read_text()
+        data_lines = [
+            line for line in content.splitlines()
+            if line.strip() and not line.startswith("#")
+        ]
+        reader = csv.reader(data_lines)
+        rows = list(reader)
+        # Skip header — find the data row
+        data_rows = rows[1:]
+        assert any(row[2] == "Amazing, Grace" for row in data_rows), (
+            f"Expected title 'Amazing, Grace' in column 2, rows: {data_rows}"
+        )
+
+    def test_ccli_csv_happy_path_no_commas(self, runner, tmp_path):
+        """Existing happy path: title without commas still works correctly."""
+        import csv
+        db_path = tmp_path / "simple.db"
+        db = Database(db_path)
+        db.connect()
+        db.init_schema()
+        service_id = db.insert_or_update_service(
+            service_date="2026-03-02",
+            service_name="Evening Worship",
+            source_file="s.pptx",
+            source_hash="simple",
+        )
+        song_id = db.insert_or_get_song("majesty", "Majesty")
+        edition_id = db.insert_or_get_song_edition(song_id=song_id, publisher="PH")
+        db.insert_service_song(service_id, song_id, ordinal=1, song_edition_id=edition_id)
+        db.insert_or_get_copy_event(service_id, song_id, "projection", song_edition_id=edition_id, reportable=True)
+        db.close()
+
+        out = tmp_path / "out.csv"
+        result = runner.invoke(
+            main,
+            ["report", "ccli", "--db", str(db_path), "--out", str(out)],
+        )
+        assert result.exit_code == 0
+        content = out.read_text()
+        data_lines = [l for l in content.splitlines() if l.strip() and not l.startswith("#")]
+        rows = list(csv.reader(data_lines))
+        assert any("Majesty" in row for row in rows[1:]), f"Majesty not found in {rows}"

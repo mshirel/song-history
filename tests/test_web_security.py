@@ -252,3 +252,85 @@ class TestUploadFilenamePathTraversal:
             assert recorded and recorded != ".", (
                 f"Empty or dot filename accepted: {recorded!r}"
             )
+
+
+# ---------------------------------------------------------------------------
+# Issue #139 — CSRF_SECRET startup behavior
+# ---------------------------------------------------------------------------
+
+
+class TestCsrfSecretStartup:
+    """CSRF_SECRET env var behavior — issue #139."""
+
+    def test_app_starts_normally_when_csrf_secret_set(self, tmp_path, monkeypatch):
+        """App starts without error when CSRF_SECRET is set in the environment."""
+        monkeypatch.setenv("CSRF_SECRET", "a" * 64)
+        monkeypatch.setenv("DB_PATH", str(tmp_path / "csrf_test.db"))
+        monkeypatch.setenv("INBOX_DIR", str(tmp_path / "inbox"))
+        (tmp_path / "inbox").mkdir()
+        from worship_catalog.db import Database
+        db = Database(tmp_path / "csrf_test.db")
+        db.connect()
+        db.init_schema()
+        db.close()
+        from importlib import reload
+        import worship_catalog.web.app as app_module
+        reload(app_module)
+        client = TestClient(app_module.app)
+        resp = client.get("/health")
+        assert resp.status_code == 200
+
+    def test_app_starts_with_random_fallback_when_testing_mode(self, tmp_path, monkeypatch):
+        """When CSRF_SECRET is absent but TESTING=1, app still starts (random fallback)."""
+        monkeypatch.delenv("CSRF_SECRET", raising=False)
+        monkeypatch.setenv("TESTING", "1")
+        monkeypatch.setenv("DB_PATH", str(tmp_path / "csrf_test2.db"))
+        monkeypatch.setenv("INBOX_DIR", str(tmp_path / "inbox2"))
+        (tmp_path / "inbox2").mkdir()
+        from worship_catalog.db import Database
+        db = Database(tmp_path / "csrf_test2.db")
+        db.connect()
+        db.init_schema()
+        db.close()
+        from importlib import reload
+        import worship_catalog.web.app as app_module
+        reload(app_module)
+        client = TestClient(app_module.app)
+        resp = client.get("/health")
+        assert resp.status_code == 200
+
+    def test_csrf_token_persists_across_requests(self, tmp_path, monkeypatch):
+        """CSRF token obtained in one request must be valid in the next."""
+        monkeypatch.setenv("CSRF_SECRET", "b" * 64)
+        monkeypatch.setenv("DB_PATH", str(tmp_path / "csrf_persist.db"))
+        monkeypatch.setenv("INBOX_DIR", str(tmp_path / "inbox3"))
+        (tmp_path / "inbox3").mkdir()
+        from worship_catalog.db import Database
+        db = Database(tmp_path / "csrf_persist.db")
+        db.connect()
+        db.init_schema()
+        db.close()
+        from importlib import reload
+        import worship_catalog.web.app as app_module
+        reload(app_module)
+        inner = TestClient(app_module.app)
+
+        # Get a CSRF token from first request
+        resp1 = inner.get("/songs")
+        token = resp1.cookies.get("csrftoken", "")
+        assert token, "No csrftoken cookie set by GET /songs"
+
+        # Use that token on second request (POST)
+        # We need to supply a valid pptx mime+file to get past mime check, or hit a POST
+        # that doesn't need a body — just confirm 403 is NOT returned (which would mean invalid CSRF)
+        from io import BytesIO
+        resp2 = inner.post(
+            "/upload",
+            files={"file": ("test.pptx", BytesIO(b"PK"), _PPTX_MIME)},
+            headers={"X-CSRFToken": token},
+        )
+        # Any response except 403 means CSRF token was accepted
+        assert resp2.status_code != 403, (
+            f"CSRF token was rejected on second request (status={resp2.status_code}). "
+            "Token must remain valid across requests when CSRF_SECRET is fixed."
+        )

@@ -664,3 +664,184 @@ class TestOcrBudgetRefundLogging:
         assert budget.calls_made == 0, (
             f"Expected calls_made=0 after refund, got {budget.calls_made}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Issue #131 — OCR refund path: budget must not be consumed when credits are
+# already present (skip path).
+# ---------------------------------------------------------------------------
+
+
+class TestOcrBudgetRefundPathIssue131:
+    """Budget must not be consumed when OCR is skipped due to credits already present — issue #131."""
+
+    def _make_slides(self, image_blob: bytes | None = None):
+        from worship_catalog.pptx_reader import Slide, SlideImage, SlideText
+        images = [SlideImage(shape_id=1, blob=image_blob)] if image_blob else []
+        return [
+            Slide(
+                index=0,
+                hidden=False,
+                text=SlideText(text_lines=["1 – Great Is Thy Faithfulness"]),
+                images=images,
+            )
+        ]
+
+    def test_budget_not_consumed_when_credits_already_present(self, monkeypatch):
+        """Budget slot must NOT be consumed when Step 1 returns due to existing credits."""
+        from worship_catalog.extractor import CreditResolver, OcrBudget
+        import worship_catalog.extractor as ext_module
+
+        ocr_calls: list = []
+        monkeypatch.setattr(ext_module, "_try_ocr_credits", lambda _: ocr_calls.append(1) or "Words: X")
+
+        budget = OcrBudget(max_calls=10)
+        assert budget.calls_made == 0
+
+        resolver = CreditResolver(library_index=None, ocr_budget=budget, use_ocr=True)
+        # Credits already present — Step 1 should return immediately
+        credits_with_data = {"words_by": "John Newton", "music_by": None, "arranger": None}
+        slides = self._make_slides(image_blob=b"\x89PNG\r\n")
+        resolver.resolve(slides, credits_with_data, canonical_title="amazing grace")
+
+        assert budget.calls_made == 0, (
+            f"Budget must not be consumed when credits are already present, "
+            f"got calls_made={budget.calls_made}"
+        )
+        assert len(ocr_calls) == 0, "OCR must not be called when credits already present"
+
+    def test_budget_consumed_when_ocr_called(self, monkeypatch):
+        """Budget IS consumed when OCR is actually called (no pre-existing credits)."""
+        from worship_catalog.extractor import CreditResolver, OcrBudget
+        import worship_catalog.extractor as ext_module
+
+        monkeypatch.setattr(ext_module, "_try_ocr_credits", lambda _: "Words: Someone")
+
+        budget = OcrBudget(max_calls=10)
+        resolver = CreditResolver(library_index=None, ocr_budget=budget, use_ocr=True)
+        empty_credits = {"words_by": None, "music_by": None, "arranger": None}
+        slides = self._make_slides(image_blob=b"\x89PNG\r\n")
+        resolver.resolve(slides, empty_credits, canonical_title="some song")
+
+        assert budget.calls_made == 1, (
+            f"Budget must be consumed when OCR is called, got calls_made={budget.calls_made}"
+        )
+
+    def test_remaining_accurate_after_skip(self, monkeypatch):
+        """remaining count is unchanged after a skip (credits already present)."""
+        from worship_catalog.extractor import CreditResolver, OcrBudget
+        import worship_catalog.extractor as ext_module
+
+        monkeypatch.setattr(ext_module, "_try_ocr_credits", lambda _: None)
+
+        budget = OcrBudget(max_calls=5)
+        resolver = CreditResolver(library_index=None, ocr_budget=budget, use_ocr=True)
+        credits_with_data = {"words_by": "Somebody", "music_by": None, "arranger": None}
+        slides = self._make_slides(image_blob=b"\x89PNG\r\n")
+        resolver.resolve(slides, credits_with_data, canonical_title="amazing grace")
+
+        assert budget.remaining == 5, (
+            f"remaining must stay at 5 when OCR is skipped, got {budget.remaining}"
+        )
+
+    def test_budget_refunded_when_ocr_returns_nothing(self, monkeypatch):
+        """Budget IS refunded when OCR is called but returns no credits."""
+        from worship_catalog.extractor import CreditResolver, OcrBudget
+        import worship_catalog.extractor as ext_module
+
+        monkeypatch.setattr(ext_module, "_try_ocr_credits", lambda _: None)
+
+        budget = OcrBudget(max_calls=5)
+        resolver = CreditResolver(library_index=None, ocr_budget=budget, use_ocr=True)
+        empty_credits = {"words_by": None, "music_by": None, "arranger": None}
+        slides = self._make_slides(image_blob=b"\x89PNG\r\n")
+        resolver.resolve(slides, empty_credits, canonical_title="some song")
+
+        # OCR was called (consume), then returned nothing (refund)
+        assert budget.calls_made == 0, (
+            f"Budget must be refunded when OCR returns nothing, got calls_made={budget.calls_made}"
+        )
+        assert budget.remaining == 5
+
+
+# ---------------------------------------------------------------------------
+# Issue #146 — OcrBudget boundary conditions
+# ---------------------------------------------------------------------------
+
+
+class TestOcrBudgetBoundaryConditions:
+    """OcrBudget boundary condition tests — issue #146."""
+
+    def test_consume_returns_true_when_budget_remains(self):
+        """consume() returns True when there is remaining budget."""
+        from worship_catalog.extractor import OcrBudget
+        budget = OcrBudget(max_calls=5)
+        assert budget.consume() is True
+
+    def test_consume_returns_false_when_at_cap(self):
+        """consume() returns False when all budget is exhausted."""
+        from worship_catalog.extractor import OcrBudget
+        budget = OcrBudget(max_calls=2)
+        budget.consume()
+        budget.consume()
+        # Now at cap
+        assert budget.consume() is False
+
+    def test_is_capped_true_when_exhausted(self):
+        """is_capped is True after all budget is used."""
+        from worship_catalog.extractor import OcrBudget
+        budget = OcrBudget(max_calls=1)
+        budget.consume()
+        assert budget.is_capped is True
+
+    def test_remaining_decrements_on_each_consume(self):
+        """remaining decrements correctly on each consume() call."""
+        from worship_catalog.extractor import OcrBudget
+        budget = OcrBudget(max_calls=5)
+        assert budget.remaining == 5
+        budget.consume()
+        assert budget.remaining == 4
+        budget.consume()
+        assert budget.remaining == 3
+
+    def test_refund_increments_remaining(self):
+        """refund() increments remaining back after a consume."""
+        from worship_catalog.extractor import OcrBudget
+        budget = OcrBudget(max_calls=5)
+        budget.consume()
+        assert budget.remaining == 4
+        budget.refund()
+        assert budget.remaining == 5
+
+    def test_refund_does_not_exceed_max(self):
+        """refund() when no calls have been made should not set remaining above max_calls."""
+        from worship_catalog.extractor import OcrBudget
+        budget = OcrBudget(max_calls=3)
+        # calls_made is already 0 — refund should be a no-op
+        budget.refund()
+        assert budget.remaining == 3
+        assert budget.calls_made == 0
+
+    def test_max_calls_zero_immediately_capped(self):
+        """OcrBudget(max_calls=0) is immediately capped and consume() returns False."""
+        from worship_catalog.extractor import OcrBudget
+        budget = OcrBudget(max_calls=0)
+        assert budget.is_capped is True
+        assert budget.consume() is False
+        assert budget.remaining == 0
+
+    def test_max_calls_none_unlimited_never_caps(self):
+        """OcrBudget(max_calls=None) is never capped, consume() always returns True."""
+        from worship_catalog.extractor import OcrBudget
+        budget = OcrBudget(max_calls=None)
+        assert budget.is_capped is False
+        assert budget.remaining is None
+        for _ in range(1000):
+            assert budget.consume() is True
+        assert budget.is_capped is False
+
+    def test_remaining_is_none_for_unlimited_budget(self):
+        """remaining is None for unlimited budget (max_calls=None)."""
+        from worship_catalog.extractor import OcrBudget
+        budget = OcrBudget(max_calls=None)
+        assert budget.remaining is None

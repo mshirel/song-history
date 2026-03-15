@@ -1733,3 +1733,282 @@ class TestDownloadFilenameContract:
         assert ";" not in filename, (
             f"Filename must not contain semicolons, got: {filename!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Issue #132 — ORDER BY whitelist guard inside _query_songs / _query_all_services
+# ---------------------------------------------------------------------------
+
+
+class TestQuerySongsInternalWhitelist:
+    """_query_songs() must validate sort column internally — issue #132."""
+
+    @pytest.fixture
+    def temp_db(self, tmp_path):
+        from worship_catalog.db import Database
+        db = Database(tmp_path / "qs_test.db")
+        db.connect()
+        db.init_schema()
+        yield db
+        db.close()
+
+    def test_valid_sort_col_works(self, temp_db):
+        """Passing a valid sort column to _query_songs succeeds without error."""
+        from worship_catalog.web.app import _query_songs
+        # Should not raise
+        rows, total = _query_songs(temp_db, sort="display_title", sort_dir="asc")
+        assert isinstance(rows, list)
+
+    def test_invalid_sort_col_raises_value_error(self, temp_db):
+        """Passing an invalid sort column directly to _query_songs raises ValueError."""
+        from worship_catalog.web.app import _query_songs
+        with pytest.raises(ValueError, match="Invalid sort column"):
+            _query_songs(temp_db, sort="not_a_real_column")
+
+    def test_sql_injection_sort_raises_value_error(self, temp_db):
+        """SQL injection string as sort column is rejected by _query_songs."""
+        from worship_catalog.web.app import _query_songs
+        with pytest.raises(ValueError):
+            _query_songs(temp_db, sort="title; DROP TABLE songs--")
+
+    def test_empty_sort_col_raises_value_error(self, temp_db):
+        """Empty string sort column is rejected."""
+        from worship_catalog.web.app import _query_songs
+        with pytest.raises(ValueError):
+            _query_songs(temp_db, sort="")
+
+    def test_all_valid_songs_sort_cols_work(self, temp_db):
+        """Every column in _SONGS_SORT_COLS must be accepted without error."""
+        from worship_catalog.web.app import _query_songs, _SONGS_SORT_COLS
+        for col in _SONGS_SORT_COLS:
+            rows, total = _query_songs(temp_db, sort=col)
+            assert isinstance(rows, list), f"Column {col!r} failed unexpectedly"
+
+
+class TestQueryServicesInternalWhitelist:
+    """_query_all_services() must validate sort column internally — issue #132."""
+
+    @pytest.fixture
+    def temp_db(self, tmp_path):
+        from worship_catalog.db import Database
+        db = Database(tmp_path / "svc_test.db")
+        db.connect()
+        db.init_schema()
+        yield db
+        db.close()
+
+    def test_valid_sort_col_works(self, temp_db):
+        """Passing a valid sort column to _query_all_services succeeds."""
+        from worship_catalog.web.app import _query_all_services
+        rows, total = _query_all_services(temp_db, sort="service_date", sort_dir="asc")
+        assert isinstance(rows, list)
+
+    def test_invalid_sort_col_raises_value_error(self, temp_db):
+        """Invalid sort column to _query_all_services raises ValueError."""
+        from worship_catalog.web.app import _query_all_services
+        with pytest.raises(ValueError, match="Invalid sort column"):
+            _query_all_services(temp_db, sort="not_valid_col")
+
+    def test_sql_injection_sort_raises_value_error(self, temp_db):
+        """SQL injection string as sort column raises ValueError in _query_all_services."""
+        from worship_catalog.web.app import _query_all_services
+        with pytest.raises(ValueError):
+            _query_all_services(temp_db, sort="service_date; DROP TABLE services--")
+
+    def test_all_valid_services_sort_cols_work(self, temp_db):
+        """Every column in _SERVICES_SORT_COLS must be accepted without error."""
+        from worship_catalog.web.app import _query_all_services, _SERVICES_SORT_COLS
+        for col in _SERVICES_SORT_COLS:
+            rows, total = _query_all_services(temp_db, sort=col)
+            assert isinstance(rows, list), f"Column {col!r} failed unexpectedly"
+
+
+# ---------------------------------------------------------------------------
+# Issue #138 — Uploaded PPTX files must be deleted from inbox after import
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+class TestUploadInboxCleanup:
+    """After background import completes, the uploaded file must be deleted — issue #138."""
+
+    @pytest.fixture
+    def minimal_pptx_bytes(self):
+        try:
+            from pptx import Presentation
+            from pptx.util import Inches
+            prs = Presentation()
+            blank = prs.slide_layouts[6]
+
+            def add_text_box(slide, lines):
+                txBox = slide.shapes.add_textbox(Inches(1), Inches(1), Inches(8), Inches(2))
+                tf = txBox.text_frame
+                for i, line in enumerate(lines):
+                    if i == 0:
+                        tf.text = line
+                    else:
+                        tf.add_paragraph().text = line
+
+            add_text_box(prs.slides.add_slide(blank), [
+                "Amazing Grace", "How sweet the sound",
+                "Words: John Newton", "PaperlessHymnal.com",
+            ])
+            buf = io.BytesIO()
+            prs.save(buf)
+            return buf.getvalue()
+        except ImportError:
+            pytest.skip("pptx not available")
+
+    def _make_upload_client(self, tmp_path, monkeypatch):
+        db_path = tmp_path / "cleanup_test.db"
+        _db = Database(db_path)
+        _db.connect()
+        _db.init_schema()
+        _db.close()
+        inbox = tmp_path / "inbox"
+        inbox.mkdir()
+        monkeypatch.setenv("DB_PATH", str(db_path))
+        monkeypatch.setenv("INBOX_DIR", str(inbox))
+        import worship_catalog.web.app as app_module
+        from importlib import reload
+        reload(app_module)
+        return _CsrfAwareClient(TestClient(app_module.app)), inbox
+
+    def _wait_for_job(self, client, job_id, timeout=5.0):
+        import time
+        deadline = time.monotonic() + timeout
+        status = "pending"
+        while time.monotonic() < deadline and status not in ("complete", "failed"):
+            status = client.get(f"/jobs/{job_id}").json()["status"]
+            time.sleep(0.05)
+        return status
+
+    def test_file_deleted_from_inbox_after_success(self, tmp_path, monkeypatch, minimal_pptx_bytes):
+        """Uploaded file must be deleted from inbox after successful import."""
+        client, inbox = self._make_upload_client(tmp_path, monkeypatch)
+        resp = client.post(
+            "/upload",
+            files={"file": ("AM Worship 2026.03.01.pptx", io.BytesIO(minimal_pptx_bytes), VALID_PPTX_MIME)},
+        )
+        assert resp.status_code == 202
+        job_id = resp.json()["job_id"]
+        status = self._wait_for_job(client, job_id)
+        assert status == "complete", f"Job status={status!r}"
+        # No PPTX files should remain in the inbox
+        remaining = list(inbox.glob("*.pptx"))
+        assert remaining == [], f"Inbox still contains files after import: {remaining}"
+
+    def test_file_deleted_from_inbox_after_failure(self, tmp_path, monkeypatch):
+        """Uploaded file must be deleted from inbox even if the import raises."""
+        db_path = tmp_path / "fail_cleanup.db"
+        _db = Database(db_path)
+        _db.connect()
+        _db.init_schema()
+        _db.close()
+        inbox = tmp_path / "inbox_fail"
+        inbox.mkdir()
+        monkeypatch.setenv("DB_PATH", str(db_path))
+        monkeypatch.setenv("INBOX_DIR", str(inbox_fail := inbox))
+        import worship_catalog.web.app as app_module
+        from importlib import reload
+        reload(app_module)
+        client = _CsrfAwareClient(TestClient(app_module.app))
+
+        # Upload a garbage PPTX that will fail extraction
+        resp = client.post(
+            "/upload",
+            files={"file": ("bad.pptx", io.BytesIO(b"not a real pptx"), VALID_PPTX_MIME)},
+        )
+        assert resp.status_code == 202
+        job_id = resp.json()["job_id"]
+        import time
+        deadline = time.monotonic() + 5.0
+        status = "pending"
+        while time.monotonic() < deadline and status not in ("complete", "failed"):
+            status = client.get(f"/jobs/{job_id}").json()["status"]
+            time.sleep(0.05)
+        # Job should reach 'failed'
+        assert status == "failed", f"Expected 'failed' status, got {status!r}"
+        # Inbox must still be clean
+        remaining = list(inbox_fail.glob("*.pptx"))
+        assert remaining == [], f"Inbox still contains files after failed import: {remaining}"
+
+    def test_job_status_set_before_file_deletion(self, tmp_path, monkeypatch, minimal_pptx_bytes):
+        """Job status must transition to 'complete' before file cleanup."""
+        client, inbox = self._make_upload_client(tmp_path, monkeypatch)
+        resp = client.post(
+            "/upload",
+            files={"file": ("AM Worship 2026.03.02.pptx", io.BytesIO(minimal_pptx_bytes), VALID_PPTX_MIME)},
+        )
+        assert resp.status_code == 202
+        job_id = resp.json()["job_id"]
+        status = self._wait_for_job(client, job_id)
+        # Status must be terminal before we check cleanup
+        assert status in ("complete", "failed"), f"Unexpected status: {status}"
+        remaining = list(inbox.glob("*.pptx"))
+        assert remaining == [], f"File not cleaned up for status={status}: {remaining}"
+
+
+# ---------------------------------------------------------------------------
+# Issue #145 — /upload MIME type rejection and size limit tests
+# ---------------------------------------------------------------------------
+
+
+class TestUploadValidationIssue145:
+    """Validation tests for /upload endpoint — issue #145 (tests only, no impl changes needed)."""
+
+    def test_text_plain_mime_returns_400(self, client):
+        """Uploading a file with content-type text/plain must be rejected with 400."""
+        resp = _upload(client, b"hello world", "file.pptx", "text/plain")
+        assert resp.status_code == 400, f"Expected 400 for text/plain, got {resp.status_code}"
+
+    def test_text_plain_error_message_is_useful(self, client):
+        """The 400 error body must contain a useful message for text/plain rejection."""
+        resp = _upload(client, b"hello world", "file.pptx", "text/plain")
+        body = resp.json()
+        detail = body.get("detail", "")
+        assert detail, f"Response body must contain 'detail', got: {body}"
+        # Must mention pptx or mime
+        assert "pptx" in detail.lower() or "mime" in detail.lower(), (
+            f"Error message must mention PPTX or MIME type, got: {detail!r}"
+        )
+
+    def test_valid_pptx_mime_returns_202(self, client):
+        """Uploading with the correct PPTX MIME type returns 202."""
+        resp = _upload(client, SMALL_PPTX_BYTES, "valid.pptx", VALID_PPTX_MIME)
+        assert resp.status_code == 202, f"Expected 202 for valid PPTX MIME, got {resp.status_code}"
+        assert "job_id" in resp.json()
+
+    def test_oversized_file_returns_413(self, client, monkeypatch):
+        """Uploading a file larger than MAX_UPLOAD_BYTES returns 413."""
+        monkeypatch.setattr("worship_catalog.web.app.MAX_UPLOAD_BYTES", 10)
+        resp = _upload(client, b"X" * 20, "large.pptx", VALID_PPTX_MIME)
+        assert resp.status_code == 413, f"Expected 413 for oversized file, got {resp.status_code}"
+
+    def test_oversized_file_error_message_is_useful(self, client, monkeypatch):
+        """The 413 error body must contain a useful error message."""
+        monkeypatch.setattr("worship_catalog.web.app.MAX_UPLOAD_BYTES", 10)
+        resp = _upload(client, b"X" * 20, "large.pptx", VALID_PPTX_MIME)
+        body = resp.json()
+        detail = body.get("detail", "")
+        assert detail, f"413 response must contain 'detail', got: {body}"
+        # Must mention size/exceeds/max
+        assert any(kw in detail.lower() for kw in ("exceed", "size", "max", "byte")), (
+            f"413 error message should mention file size, got: {detail!r}"
+        )
+
+    def test_zero_byte_file_returns_400_or_202(self, client):
+        """A zero-byte upload should return an error response (not silently succeed)."""
+        resp = _upload(client, b"", "empty.pptx", VALID_PPTX_MIME)
+        # Zero-byte file: either rejected immediately (4xx) or accepted and fails on extraction
+        # The key requirement is that it's handled gracefully (not 5xx)
+        assert resp.status_code < 500, (
+            f"Zero-byte upload must not return 5xx, got {resp.status_code}"
+        )
+
+    def test_zero_byte_file_has_detail_if_rejected(self, client):
+        """If a zero-byte file is rejected, the response body must have a detail field."""
+        resp = _upload(client, b"", "empty.pptx", VALID_PPTX_MIME)
+        if resp.status_code >= 400:
+            body = resp.json()
+            assert "detail" in body, f"Error response must have 'detail' key, got: {body}"

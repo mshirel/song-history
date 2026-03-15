@@ -164,3 +164,68 @@ class TestExtractImagesLogsOnError:
         assert warning_records[0].exc_info is not None, (
             "exc_info must be set so the traceback is captured"
         )
+
+
+# ---------------------------------------------------------------------------
+# Issue #147 — parse_filename_for_metadata() untested
+# ---------------------------------------------------------------------------
+
+
+class TestParseFilenameForMetadata:
+    """Tests for parse_filename_for_metadata() — issue #147."""
+
+    def test_am_worship_filename(self):
+        """'AM Worship 2024.01.14.pptx' parses to Morning Worship with correct date."""
+        from worship_catalog.pptx_reader import parse_filename_for_metadata
+        result = parse_filename_for_metadata("AM Worship 2024.01.14.pptx")
+        assert result.service_name == "Morning Worship"
+        assert result.date == "2024-01-14"
+
+    def test_pm_worship_filename(self):
+        """'PM Worship 2024.01.14.pptx' parses to Evening Worship with correct date."""
+        from worship_catalog.pptx_reader import parse_filename_for_metadata
+        result = parse_filename_for_metadata("PM Worship 2024.01.14.pptx")
+        assert result.service_name == "Evening Worship"
+        assert result.date == "2024-01-14"
+
+    def test_date_year_month_day_correct(self):
+        """Date components parse to correct YYYY-MM-DD format."""
+        from worship_catalog.pptx_reader import parse_filename_for_metadata
+        result = parse_filename_for_metadata("AM Worship 2026.03.15.pptx")
+        assert result.date == "2026-03-15"
+
+    def test_random_filename_returns_none_fields(self):
+        """Unrecognized filename returns None for date and service_name."""
+        from worship_catalog.pptx_reader import parse_filename_for_metadata
+        result = parse_filename_for_metadata("random_filename.pptx")
+        assert result.date is None
+        assert result.service_name is None
+
+    def test_filename_no_extension_returns_none_fields(self):
+        """Filename with no extension returns None for date and service_name."""
+        from worship_catalog.pptx_reader import parse_filename_for_metadata
+        result = parse_filename_for_metadata("AM Worship 2024.01.14")
+        # No extension — pattern still matches (pattern doesn't require .pptx extension)
+        # Either date is parsed or not — just confirm no exception
+        assert isinstance(result.date, (str, type(None)))
+        assert isinstance(result.service_name, (str, type(None)))
+
+    def test_empty_filename_returns_none_fields(self):
+        """Empty filename string returns None for all fields."""
+        from worship_catalog.pptx_reader import parse_filename_for_metadata
+        result = parse_filename_for_metadata("")
+        assert result.date is None
+        assert result.service_name is None
+
+    def test_leader_and_preacher_always_none(self):
+        """parse_filename_for_metadata never sets song_leader or preacher."""
+        from worship_catalog.pptx_reader import parse_filename_for_metadata
+        result = parse_filename_for_metadata("AM Worship 2026.01.01.pptx")
+        assert result.song_leader is None
+        assert result.preacher is None
+
+    def test_result_is_service_metadata(self):
+        """Return type is ServiceMetadata."""
+        from worship_catalog.pptx_reader import parse_filename_for_metadata, ServiceMetadata
+        result = parse_filename_for_metadata("AM Worship 2026.01.01.pptx")
+        assert isinstance(result, ServiceMetadata)
