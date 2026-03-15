@@ -127,6 +127,7 @@ def validate(pptx: str, format: str) -> None:
         sys.exit(0)
 
     except Exception as e:
+        _log.exception("validate error", extra={"error": str(e)})
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
 
@@ -390,6 +391,7 @@ def import_cmd(
             sys.exit(0)
 
     except Exception as e:
+        _log.exception("import error", extra={"error": str(e)})
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
 
@@ -480,6 +482,7 @@ def ccli(start_date: str, end_date: str, out: str, db: str) -> None:
         sys.exit(0)
 
     except Exception as e:
+        _log.exception("ccli report error", extra={"error": str(e)})
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
 
@@ -656,6 +659,7 @@ def stats(
         sys.exit(0)
 
     except Exception as e:
+        _log.exception("stats report error", extra={"error": str(e)})
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
 
@@ -917,6 +921,7 @@ def library_index_cmd(path: str, out: str) -> None:
         sys.exit(0)
 
     except Exception as e:
+        _log.exception("library index error", extra={"error": str(e)})
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
 
