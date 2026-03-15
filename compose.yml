@@ -135,7 +135,8 @@ services:
   # Start:  docker compose up -d backup
   # ---------------------------------------------------------------------------
   backup:
-    image: alpine
+    # Pin alpine to exact digest (#26)
+    image: alpine@sha256:25109184c71bdad752c8312a8623239686a9a2071e8825f20acb8f2198c3f659
     init: true                        # tini as PID 1 — forwards SIGTERM to children (#29)
     entrypoint: /bin/sh
     command: >
