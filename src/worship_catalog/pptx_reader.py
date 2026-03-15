@@ -6,6 +6,10 @@ from pathlib import Path
 
 from pptx import Presentation
 
+_HASH_CHUNK_SIZE: int = 4096
+# python-pptx shape type integer for Picture shapes (MSO_SHAPE_TYPE.PICTURE == 13)
+_PPTX_PICTURE_SHAPE_TYPE: int = 13
+
 
 @dataclass
 class SlideText:
@@ -56,7 +60,7 @@ def compute_file_hash(file_path: Path | str) -> str:
     file_path = Path(file_path)
     sha256_hash = hashlib.sha256()
     with open(file_path, "rb") as f:
-        for chunk in iter(lambda: f.read(4096), b""):
+        for chunk in iter(lambda: f.read(_HASH_CHUNK_SIZE), b""):
             sha256_hash.update(chunk)
     return sha256_hash.hexdigest()
 
@@ -114,7 +118,7 @@ def extract_images_from_slide(slide) -> list[SlideImage]:
     images = []
 
     for shape in slide.shapes:
-        if shape.shape_type == 13:  # Picture shape type
+        if shape.shape_type == _PPTX_PICTURE_SHAPE_TYPE:
             try:
                 blob = shape.image.blob
             except Exception:

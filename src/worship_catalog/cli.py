@@ -14,6 +14,8 @@ from worship_catalog.log_config import setup as _setup_logging
 
 _log = logging.getLogger("worship_catalog.cli")
 
+_DEFAULT_MAX_OCR_CALLS: int = 25
+
 
 def _resolve_library_index(path_arg: str) -> Path:
     """Return the best available library index path.
@@ -162,7 +164,7 @@ def validate(pptx: str, format: str) -> None:
 @click.option(
     "--max-ocr-calls",
     type=int,
-    default=25,
+    default=_DEFAULT_MAX_OCR_CALLS,
     show_default=True,
     help="Maximum Vision API calls across this run (ignored without --ocr)",
 )
@@ -680,7 +682,7 @@ def stats(
 @click.option(
     "--max-ocr-calls",
     type=int,
-    default=25,
+    default=_DEFAULT_MAX_OCR_CALLS,
     show_default=True,
     help="Maximum Vision API calls for this run (ignored without --ocr)",
 )

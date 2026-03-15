@@ -7,12 +7,14 @@ from pathlib import Path
 import pytest
 
 from worship_catalog.extractor import (
+    _NO_TEXT_STREAK_THRESHOLD,
     _create_song_occurrence,
     _extract_title_candidates,
     _group_song_slides,
     _is_song_title_slide,
     extract_songs,
 )
+from worship_catalog.normalize import _TITLE_MAX_LENGTH
 from worship_catalog.pptx_reader import Slide, SlideImage, SlideText
 
 
@@ -308,3 +310,25 @@ class TestPptxSizeLimits:
         with patch("worship_catalog.extractor.load_pptx", return_value=mock_prs):
             with pytest.raises(ValueError, match="(?i)too many slides"):
                 extract_songs(pptx_path)
+
+
+class TestNamedConstants:
+    """Verify magic numbers have been replaced with named constants (#22)."""
+
+    def test_title_max_length_constant_exists_and_is_120(self):
+        assert _TITLE_MAX_LENGTH == 120
+
+    def test_no_text_streak_threshold_exists_and_is_5(self):
+        assert _NO_TEXT_STREAK_THRESHOLD == 5
+
+    def test_title_max_length_enforced_in_extractor(self):
+        """A line exactly at the limit is still a valid title candidate."""
+        slide = make_slide(lines=["A" * _TITLE_MAX_LENGTH])
+        candidates = _extract_title_candidates(slide)
+        assert len(candidates) > 0
+
+    def test_line_over_title_max_length_excluded(self):
+        """A line longer than the limit is rejected as a title candidate."""
+        slide = make_slide(lines=["A" * (_TITLE_MAX_LENGTH + 1)])
+        candidates = _extract_title_candidates(slide)
+        assert len(candidates) == 0

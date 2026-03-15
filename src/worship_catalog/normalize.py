@@ -2,6 +2,9 @@
 
 import re
 
+# Lines longer than this are considered lyrics, not titles
+_TITLE_MAX_LENGTH: int = 120
+
 
 def strip_title_prefix(line: str) -> str:
     """
@@ -162,7 +165,7 @@ def _is_invalid_line(line: str) -> bool:
         return True
 
     # Very long lines are likely lyrics, not titles
-    if len(line) > 120:
+    if len(line) > _TITLE_MAX_LENGTH:
         return True
 
     # Scripture references (e.g., "John 3:16", "1 Peter 1:3-4", "Psalm 23:1-3")

@@ -4,6 +4,8 @@ import base64
 import os
 import re
 
+_OCR_MODEL: str = "claude-haiku-4-5-20251001"
+
 # Output validation (issue #42 — CWE-94 prompt injection hardening)
 _CREDITS_RE = re.compile(
     r"\b(words|music|arr|arrangement|lyrics|composer)\b",
@@ -63,7 +65,7 @@ def extract_credits_via_vision(image_bytes: bytes) -> str | None:
     client = anthropic.Anthropic(api_key=api_key)
 
     message = client.messages.create(
-        model="claude-haiku-4-5-20251001",
+        model=_OCR_MODEL,
         max_tokens=200,
         messages=[
             {

@@ -6,6 +6,7 @@ from typing import Any
 
 from worship_catalog.normalize import (
     _SCRIPTURE_RE,
+    _TITLE_MAX_LENGTH,
     canonicalize_title,
     detect_publisher,
     parse_credits,
@@ -24,6 +25,9 @@ from worship_catalog.pptx_reader import (
 # Pre-flight guards (issue #40 — CWE-400 resource exhaustion)
 _MAX_PPTX_SIZE_BYTES: int = 50 * 1024 * 1024  # 50 MB
 _MAX_SLIDE_COUNT: int = 500
+
+# Consecutive slides with no text after which the current song group is closed
+_NO_TEXT_STREAK_THRESHOLD: int = 5
 
 
 @dataclass
@@ -214,9 +218,13 @@ def _group_song_slides(slides: list[Slide]) -> list[tuple[str, list[Slide]]]:
                 # Increment no-text streak
                 no_text_streak += 1
 
-                # If we've seen 5+ slides with no text, close current group
+                # If we've seen enough slides with no text, close current group
                 # (likely transitioned from song to sermon/presentation)
-                if no_text_streak >= 5 and current_group and current_canonical:
+                if (
+                    no_text_streak >= _NO_TEXT_STREAK_THRESHOLD
+                    and current_group
+                    and current_canonical
+                ):
                     groups.append((current_canonical, current_group))
                     current_canonical = None
                     current_group = []
@@ -226,7 +234,7 @@ def _group_song_slides(slides: list[Slide]) -> list[tuple[str, list[Slide]]]:
                 no_text_streak = 0
 
             # Add to current group if exists (but only if not breaking from long text gap)
-            if current_group and no_text_streak < 5:
+            if current_group and no_text_streak < _NO_TEXT_STREAK_THRESHOLD:
                 current_group.append(slide)
             continue
 
@@ -361,7 +369,7 @@ def _extract_title_candidates(slide: Slide) -> list[str]:
             continue
 
         # Skip very long lines (likely lyrics)
-        if len(line) > 120:
+        if len(line) > _TITLE_MAX_LENGTH:
             continue
 
         # Skip scripture references (e.g., "John 3:16", "1 Peter 1:3-4")
