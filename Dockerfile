@@ -3,10 +3,14 @@ FROM python:3.12-slim@sha256:ccc7089399c8bb65dd1fb3ed6d55efa538a3f5e7fca3f5988ac
 
 WORKDIR /app
 
-# Install system dependencies (for python-pptx / lxml)
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    libxml2 \
-    libxslt1.1 \
+# Upgrade all Debian packages to pull in any security patches issued since
+# the base image was published, then install runtime deps.
+# This ensures Trivy finds no fixable CVEs even when the base digest is stale.
+RUN apt-get update \
+    && apt-get upgrade -y --no-install-recommends \
+    && apt-get install -y --no-install-recommends \
+        libxml2 \
+        libxslt1.1 \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy package files first (for layer caching)
