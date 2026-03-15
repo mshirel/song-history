@@ -91,6 +91,22 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> HTMLR
 
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
+# Whitelist pattern for safe filename characters in HTTP headers and filesystems.
+# Keeps only alphanumeric characters, regular spaces (U+0020), hyphens, underscores, and dots.
+# Explicitly excludes CR (\r) and LF (\n) even though \s would otherwise allow them.
+_SAFE_FILENAME_RE = re.compile(r"[^\w .\-]|[\r\n]")
+
+
+def _sanitize_header_filename(raw: str) -> str:
+    """Strip unsafe characters from a filename used in Content-Disposition headers.
+
+    Uses Path.name to strip directory components, then replaces any character
+    that is not alphanumeric, a space, hyphen, underscore, or dot with an
+    underscore.  CR and LF are always replaced to prevent HTTP header injection.
+    """
+    basename = Path(raw).name
+    return _SAFE_FILENAME_RE.sub("_", basename)
+
 # Bounded thread pool for background import jobs (#52)
 _MAX_IMPORT_WORKERS: int = 4
 _import_executor = ThreadPoolExecutor(max_workers=_MAX_IMPORT_WORKERS)
@@ -442,7 +458,8 @@ async def leader_top_songs_csv(leader_name: str) -> StreamingResponse:
         writer.writerow([rank, song["display_title"], credits, song["performance_count"]])
 
     output.seek(0)
-    filename = f"leader_songs_{leader_name}.csv"
+    safe_name = _sanitize_header_filename(leader_name)
+    filename = f"leader_songs_{safe_name}.csv"
     return StreamingResponse(
         iter([output.getvalue()]),
         media_type="text/csv",
@@ -472,12 +489,86 @@ def _run_import_in_background(job_id: str, pptx_path: Path) -> None:
     db = _get_db()
     try:
         from worship_catalog.extractor import extract_songs
+        from worship_catalog.pptx_reader import compute_file_hash
+
+        result = extract_songs(pptx_path)
+        service_hash = compute_file_hash(pptx_path)
 
         with db.transaction():
-            result = extract_songs(pptx_path)
-            db.update_import_job(
-                job_id, status="complete", songs_imported=len(result.songs)
+            # Idempotent re-import: delete existing service data if present
+            cursor = db.cursor()
+            cursor.execute(
+                """
+                SELECT id FROM services
+                WHERE service_date = ? AND service_name = ? AND source_hash = ?
+                """,
+                (
+                    result.service_date or "0000-00-00",
+                    result.service_name or "Unknown",
+                    service_hash,
+                ),
             )
+            existing = cursor.fetchone()
+            if existing:
+                db.delete_service_data(existing[0])
+
+            service_id = db.insert_or_update_service(
+                service_date=result.service_date or "0000-00-00",
+                service_name=result.service_name or "Unknown",
+                source_file=str(pptx_path),
+                source_hash=service_hash,
+                song_leader=result.song_leader,
+                preacher=result.preacher,
+                sermon_title=result.sermon_title,
+            )
+
+            for song in result.songs:
+                song_id = db.insert_or_get_song(
+                    song.canonical_title,
+                    song.display_title,
+                )
+
+                edition_id = None
+                if song.publisher or song.words_by or song.music_by or song.arranger:
+                    edition_id = db.insert_or_get_song_edition(
+                        song_id=song_id,
+                        publisher=song.publisher,
+                        words_by=song.words_by,
+                        music_by=song.music_by,
+                        arranger=song.arranger,
+                    )
+
+                db.insert_service_song(
+                    service_id=service_id,
+                    song_id=song_id,
+                    ordinal=song.ordinal,
+                    song_edition_id=edition_id,
+                    first_slide_index=song.first_slide_index,
+                    last_slide_index=song.last_slide_index,
+                    occurrences=1,
+                )
+
+                db.insert_or_get_copy_event(
+                    service_id=service_id,
+                    song_id=song_id,
+                    song_edition_id=edition_id,
+                    reproduction_type="projection",
+                    count=1,
+                    reportable=True,
+                )
+
+                db.insert_or_get_copy_event(
+                    service_id=service_id,
+                    song_id=song_id,
+                    song_edition_id=edition_id,
+                    reproduction_type="recording",
+                    count=1,
+                    reportable=True,
+                )
+
+        db.update_import_job(
+            job_id, status="complete", songs_imported=len(result.songs)
+        )
     except Exception as exc:  # noqa: BLE001
         # update_import_job runs outside the transaction block — commits even on rollback
         db.update_import_job(
@@ -509,11 +600,20 @@ async def upload(request: Request, file: UploadFile) -> JSONResponse:
             content={"detail": "Only PPTX files are accepted (pptx mime type required)"},
             status_code=400,
         )
-    # Validate extension
-    filename = file.filename or ""
+    # Sanitize filename: strip directory components and unsafe characters (#106)
+    raw_filename = file.filename or ""
+    filename = _sanitize_header_filename(raw_filename)
+    # Validate extension (re-check after sanitization)
     if not filename.lower().endswith(".pptx"):
         return JSONResponse(
             content={"detail": "File must have a .pptx extension"},
+            status_code=400,
+        )
+    # Validate that something remains after sanitization
+    stem = filename[: -len(".pptx")]
+    if not stem:
+        return JSONResponse(
+            content={"detail": "Filename is invalid after sanitization"},
             status_code=400,
         )
     # Read and enforce size limit
