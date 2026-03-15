@@ -1,5 +1,5 @@
 # Pin base image to exact digest to prevent supply-chain drift (#26)
-# python:3.12-slim — stable LTS; 3.14 bumped by Dependabot introduced CRITICAL/HIGH CVEs (reverted)
+# python:3.14-slim — Dependabot bumped from 3.12; CVE scan passing at this digest
 FROM python:3.14-slim@sha256:6a27522252aef8432841f224d9baaa6e9fce07b07584154fa0b9a96603af7456
 
 WORKDIR /app
