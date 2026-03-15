@@ -12,7 +12,7 @@ services:
   # traefik — reverse proxy + Let's Encrypt DNS-01 via Cloudflare
   # ---------------------------------------------------------------------------
   traefik:
-    image: traefik:v3.3@sha256:8884ac1939c29f829857dd35229aec4d070a9bd8551c56aee9b81e9df137512e
+    image: traefik:v3.6@sha256:c549d482c55d7a797398562064f35428cc53e748d84d7190997930e7b31bcc32
     restart: unless-stopped
     ports:
       - "80:80"
