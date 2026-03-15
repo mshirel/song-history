@@ -1,6 +1,7 @@
 """Unit tests for worship_catalog.extractor internal functions."""
 
 import io
+import logging
 import zipfile
 from pathlib import Path
 
@@ -602,3 +603,64 @@ class TestCreditResolver:
         slides = self._make_slides(image_blob=b"\x89PNG\r\n")
         resolver.resolve(slides, empty_credits, canonical_title="some song")
         assert len(ocr_calls) == 0
+
+
+# ---------------------------------------------------------------------------
+# Issue #57 — OCR budget refund must be logged at DEBUG level.
+# ---------------------------------------------------------------------------
+
+
+class TestOcrBudgetRefundLogging:
+    """When OCR returns no credits, the budget refund must be logged — issue #57."""
+
+    def _make_slides(self, image_blob: bytes | None = None) -> list[Slide]:
+        images = [SlideImage(shape_id=1, blob=image_blob)] if image_blob else []
+        return [
+            Slide(
+                index=0,
+                hidden=False,
+                text=SlideText(text_lines=["1 – Some Song", "PaperlessHymnal.com"]),
+                images=images,
+            )
+        ]
+
+    def test_refund_is_logged_at_debug_when_ocr_returns_nothing(
+        self, monkeypatch, caplog
+    ):
+        """When _try_ocr_credits returns None, a DEBUG log mentioning 'refund' must appear."""
+        from worship_catalog.extractor import CreditResolver, OcrBudget
+        import worship_catalog.extractor as ext_module
+
+        monkeypatch.setattr(ext_module, "_try_ocr_credits", lambda _slides: None)
+
+        budget = OcrBudget(max_calls=5)
+        resolver = CreditResolver(library_index={}, ocr_budget=budget, use_ocr=True)
+        empty_credits: dict = {"words_by": None, "music_by": None, "arranger": None}
+        slides = self._make_slides(image_blob=b"\x89PNG\r\n")
+
+        with caplog.at_level(logging.DEBUG, logger="worship_catalog.extractor"):
+            resolver.resolve(slides, empty_credits, canonical_title="some song")
+
+        assert any(
+            "refund" in r.message.lower() for r in caplog.records
+        ), f"Expected a DEBUG 'refund' log, got: {[r.message for r in caplog.records]}"
+
+    def test_refund_decrements_budget(self, monkeypatch):
+        """After a refund the budget calls_made counter goes back to its prior value."""
+        from worship_catalog.extractor import CreditResolver, OcrBudget
+        import worship_catalog.extractor as ext_module
+
+        monkeypatch.setattr(ext_module, "_try_ocr_credits", lambda _slides: None)
+
+        budget = OcrBudget(max_calls=5)
+        assert budget.calls_made == 0
+
+        resolver = CreditResolver(library_index={}, ocr_budget=budget, use_ocr=True)
+        empty_credits: dict = {"words_by": None, "music_by": None, "arranger": None}
+        slides = self._make_slides(image_blob=b"\x89PNG\r\n")
+        resolver.resolve(slides, empty_credits, canonical_title="some song")
+
+        # After a refund, calls_made should be 0 again
+        assert budget.calls_made == 0, (
+            f"Expected calls_made=0 after refund, got {budget.calls_made}"
+        )
