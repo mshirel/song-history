@@ -498,8 +498,21 @@ def _run_import_in_background(job_id: str, pptx_path: Path) -> None:
 
 
 @app.post("/upload")
-async def upload(file: UploadFile) -> JSONResponse:
+async def upload(request: Request, file: UploadFile) -> JSONResponse:
     """Accept a PPTX file, create an import job, and kick off background import."""
+    # Pre-flight: reject by Content-Length header before reading the body (defence-in-depth)
+    cl_header = request.headers.get("content-length")
+    if cl_header is not None:
+        try:
+            if int(cl_header) > MAX_UPLOAD_BYTES:
+                return JSONResponse(
+                    content={"detail": f"File exceeds maximum allowed size of {MAX_UPLOAD_BYTES} bytes"},  # noqa: E501
+                    status_code=413,
+                )
+        except ValueError:
+            return JSONResponse(
+                content={"detail": "Invalid Content-Length header"}, status_code=400
+            )
     # Validate MIME type
     if file.content_type != _PPTX_MIME:
         return JSONResponse(

@@ -864,6 +864,22 @@ class TestUploadEndpoint:
         resp = _upload(client, b"X" * 11, "big.pptx", VALID_PPTX_MIME)
         assert resp.status_code == 413
 
+    def test_upload_rejects_oversized_content_length_before_reading(self, client, monkeypatch):
+        """413 must come from Content-Length header check, not post-read byte count."""
+        monkeypatch.setattr("worship_catalog.web.app.MAX_UPLOAD_BYTES", 10)
+        resp = client.post(
+            "/upload",
+            files={"file": ("big.pptx", io.BytesIO(b"X" * 5), VALID_PPTX_MIME)},
+            headers={"content-length": "11"},
+        )
+        assert resp.status_code == 413
+
+    def test_upload_missing_content_length_falls_back_to_body_limit(self, client, monkeypatch):
+        """Without Content-Length header, post-read body check still rejects oversized body."""
+        monkeypatch.setattr("worship_catalog.web.app.MAX_UPLOAD_BYTES", 10)
+        resp = _upload(client, b"X" * 11, "big.pptx", VALID_PPTX_MIME)
+        assert resp.status_code == 413
+
     def test_upload_creates_pending_job_record(self, client, db):
         resp = _upload(client, SMALL_PPTX_BYTES, "sunday.pptx", VALID_PPTX_MIME)
         job_id = resp.json()["job_id"]
