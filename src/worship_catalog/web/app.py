@@ -23,6 +23,7 @@ from starlette_csrf import CSRFMiddleware  # type: ignore[attr-defined]
 from worship_catalog.db import Database
 from worship_catalog.log_config import RequestLoggingMiddleware
 from worship_catalog.log_config import setup as _setup_logging
+from worship_catalog.services.report_service import compute_stats_data
 
 _setup_logging()
 _log = logging.getLogger("worship_catalog.web")
@@ -211,59 +212,8 @@ def _compute_stats(
     leader: str,
     all_songs: bool,
 ) -> dict[str, Any]:
-    """Compute stats report data, shared by HTML, CSV, and Excel routes."""
-    services = db.query_services(start_date, end_date, song_leader=leader or None)
-    service_ids = [s["id"] for s in services]
-    events = db.query_copy_events(start_date, end_date, service_ids=service_ids or None)
-
-    song_counts: dict[str, int] = {}
-    song_credits: dict[str, str] = {}
-    for e in events:
-        title = e["display_title"]
-        song_counts[title] = song_counts.get(title, 0) + 1
-        if title not in song_credits:
-            parts = [e.get("words_by") or "", e.get("music_by") or ""]
-            song_credits[title] = " / ".join(p for p in parts if p)
-
-    sorted_songs = sorted(song_counts.items(), key=lambda x: -x[1])
-    if not all_songs:
-        sorted_songs = sorted_songs[:20]
-
-    leader_breakdown: dict[str, list[tuple[str, int]]] = {}
-    if not leader:
-        service_leader_map = {s["id"]: (s.get("song_leader") or "Unknown") for s in services}
-        ldr_song_services: dict[str, dict[str, set[int]]] = {}
-        for e in events:
-            ldr = service_leader_map.get(e["service_id"], "Unknown")
-            title = e["display_title"]
-            ldr_song_services.setdefault(ldr, {}).setdefault(title, set()).add(e["service_id"])
-        leader_breakdown = {
-            ldr: sorted(
-                [(t, len(sids)) for t, sids in songs.items()],
-                key=lambda x: (-x[1], x[0].lower()),
-            )
-            for ldr, songs in sorted(
-                ldr_song_services.items(),
-                key=lambda kv: -sum(len(v) for v in kv[1].values()),
-            )
-        }
-
-    leader_service_counts: dict[str, int] = {
-        s.get("song_leader") or "Unknown": 0 for s in services
-    }
-    for s in services:
-        ldr = s.get("song_leader") or "Unknown"
-        leader_service_counts[ldr] = leader_service_counts.get(ldr, 0) + 1
-
-    return {
-        "services": services,
-        "sorted_songs": sorted_songs,
-        "song_credits": song_credits,
-        "total_performances": sum(song_counts.values()),
-        "total_events": len(events),
-        "leader_breakdown": leader_breakdown,
-        "leader_service_counts": leader_service_counts,
-    }
+    """Thin wrapper — delegates to services.report_service.compute_stats_data (#25)."""
+    return compute_stats_data(db, start_date, end_date, leader or None, all_songs)
 
 
 @app.post("/reports/stats", response_class=HTMLResponse)
