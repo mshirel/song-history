@@ -1537,3 +1537,195 @@ class TestBackgroundImportPersistsSongsToDB:
             "_run_import_in_background must persist extracted songs to the DB; "
             f"found {song_count} song rows after import"
         )
+
+
+# ---------------------------------------------------------------------------
+# Issue #112: Contract tests for Content-Disposition filename format
+# ---------------------------------------------------------------------------
+
+import re as _re
+
+
+class TestDownloadFilenameContract:
+    """Contract tests that assert the filename format in Content-Disposition headers.
+
+    These tests define the download-filename contract so that future refactors
+    cannot accidentally break the format expected by browsers and downstream
+    consumers (#112).
+    """
+
+    # -----------------------------------------------------------------------
+    # Helpers shared across all download endpoints
+    # -----------------------------------------------------------------------
+
+    _STATS_FORM = {
+        "start_date": "2026-01-01",
+        "end_date": "2026-12-31",
+        "leader": "",
+        "all_songs": "",
+    }
+
+    _SAFE_FILENAME_RE = _re.compile(r'^[\w.\-]+$')
+
+    def _assert_attachment(self, cd: str) -> None:
+        assert cd.startswith('attachment; filename='), (
+            f"Content-Disposition should start with 'attachment; filename=', got: {cd!r}"
+        )
+
+    def _extract_filename(self, cd: str) -> str:
+        # Support both quoted (filename="foo.csv") and unquoted (filename=foo.csv)
+        part = cd.split("filename=", 1)[-1].strip().strip('"')
+        return part
+
+    # -----------------------------------------------------------------------
+    # POST /reports/stats/csv
+    # -----------------------------------------------------------------------
+
+    def test_stats_csv_has_attachment_disposition(self, client):
+        resp = client.post("/reports/stats/csv", data=self._STATS_FORM)
+        assert resp.status_code == 200
+        cd = resp.headers.get("content-disposition", "")
+        self._assert_attachment(cd)
+
+    def test_stats_csv_filename_contains_only_safe_chars(self, client):
+        resp = client.post("/reports/stats/csv", data=self._STATS_FORM)
+        cd = resp.headers.get("content-disposition", "")
+        filename = self._extract_filename(cd)
+        assert self._SAFE_FILENAME_RE.match(filename), (
+            f"Unsafe characters in stats CSV filename: {filename!r}"
+        )
+
+    def test_stats_csv_filename_has_csv_extension(self, client):
+        resp = client.post("/reports/stats/csv", data=self._STATS_FORM)
+        cd = resp.headers.get("content-disposition", "")
+        filename = self._extract_filename(cd)
+        assert filename.endswith(".csv"), f"Expected .csv extension, got: {filename!r}"
+
+    def test_stats_csv_filename_embeds_dates(self, client):
+        resp = client.post("/reports/stats/csv", data={
+            **self._STATS_FORM,
+            "start_date": "2026-01-15",
+            "end_date": "2026-03-31",
+        })
+        cd = resp.headers.get("content-disposition", "")
+        filename = self._extract_filename(cd)
+        assert "2026-01-15" in filename and "2026-03-31" in filename, (
+            f"Stats CSV filename should include both date bounds, got: {filename!r}"
+        )
+
+    # -----------------------------------------------------------------------
+    # POST /reports/stats/xlsx
+    # -----------------------------------------------------------------------
+
+    def test_stats_xlsx_has_attachment_disposition(self, client):
+        resp = client.post("/reports/stats/xlsx", data=self._STATS_FORM)
+        assert resp.status_code == 200
+        cd = resp.headers.get("content-disposition", "")
+        self._assert_attachment(cd)
+
+    def test_stats_xlsx_filename_contains_only_safe_chars(self, client):
+        resp = client.post("/reports/stats/xlsx", data=self._STATS_FORM)
+        cd = resp.headers.get("content-disposition", "")
+        filename = self._extract_filename(cd)
+        assert self._SAFE_FILENAME_RE.match(filename), (
+            f"Unsafe characters in stats XLSX filename: {filename!r}"
+        )
+
+    def test_stats_xlsx_filename_has_xlsx_extension(self, client):
+        resp = client.post("/reports/stats/xlsx", data=self._STATS_FORM)
+        cd = resp.headers.get("content-disposition", "")
+        filename = self._extract_filename(cd)
+        assert filename.endswith(".xlsx"), f"Expected .xlsx extension, got: {filename!r}"
+
+    def test_stats_xlsx_filename_embeds_dates(self, client):
+        resp = client.post("/reports/stats/xlsx", data={
+            **self._STATS_FORM,
+            "start_date": "2026-02-01",
+            "end_date": "2026-04-30",
+        })
+        cd = resp.headers.get("content-disposition", "")
+        filename = self._extract_filename(cd)
+        assert "2026-02-01" in filename and "2026-04-30" in filename, (
+            f"Stats XLSX filename should include both date bounds, got: {filename!r}"
+        )
+
+    # -----------------------------------------------------------------------
+    # GET /leaders/{leader_name}/top-songs/csv
+    # -----------------------------------------------------------------------
+
+    def test_leader_csv_has_attachment_disposition(self, client):
+        resp = client.get("/leaders/Matt/top-songs/csv")
+        assert resp.status_code == 200
+        cd = resp.headers.get("content-disposition", "")
+        self._assert_attachment(cd)
+
+    def test_leader_csv_filename_contains_only_safe_chars(self, client):
+        resp = client.get("/leaders/Matt/top-songs/csv")
+        cd = resp.headers.get("content-disposition", "")
+        filename = self._extract_filename(cd)
+        assert self._SAFE_FILENAME_RE.match(filename), (
+            f"Unsafe characters in leader CSV filename: {filename!r}"
+        )
+
+    def test_leader_csv_filename_has_csv_extension(self, client):
+        resp = client.get("/leaders/Matt/top-songs/csv")
+        cd = resp.headers.get("content-disposition", "")
+        filename = self._extract_filename(cd)
+        assert filename.endswith(".csv"), f"Expected .csv extension, got: {filename!r}"
+
+    def test_leader_csv_filename_contains_leader_name(self, client):
+        """Leader name (sanitized) appears in the download filename."""
+        resp = client.get("/leaders/Matt/top-songs/csv")
+        cd = resp.headers.get("content-disposition", "")
+        filename = self._extract_filename(cd)
+        assert "Matt" in filename or "matt" in filename.lower(), (
+            f"Leader name should appear in filename, got: {filename!r}"
+        )
+
+    def test_leader_csv_filename_sanitizes_spaces(self, client, db_with_songs, monkeypatch):
+        """A leader name with spaces must not produce a filename with spaces."""
+        # Insert a service led by a leader whose name contains spaces
+        from worship_catalog.db import Database
+        db = Database(db_with_songs)
+        db.connect()
+        svc = db.insert_or_update_service(
+            service_date="2026-01-10",
+            service_name="PM Worship",
+            source_file="pm.pptx",
+            source_hash="pm123",
+            song_leader="John Doe",
+        )
+        song_id = db.insert_or_get_song("amazing grace", "Amazing Grace")
+        db.insert_service_song(svc, song_id, ordinal=1, song_edition_id=None)
+        db.insert_or_get_copy_event(svc, song_id, "projection", song_edition_id=None)
+        db.insert_or_get_copy_event(svc, song_id, "projection", song_edition_id=None)
+        db.close()
+
+        resp = client.get("/leaders/John%20Doe/top-songs/csv")
+        assert resp.status_code == 200
+        cd = resp.headers.get("content-disposition", "")
+        filename = self._extract_filename(cd)
+        assert " " not in filename, (
+            f"Filename must not contain spaces, got: {filename!r}"
+        )
+        assert self._SAFE_FILENAME_RE.match(filename), (
+            f"Unsafe characters in leader CSV filename with spaced leader name: {filename!r}"
+        )
+
+    def test_leader_csv_filename_no_path_separators(self, client):
+        """Filename must never contain path separators (security: path traversal guard)."""
+        resp = client.get("/leaders/Matt/top-songs/csv")
+        cd = resp.headers.get("content-disposition", "")
+        filename = self._extract_filename(cd)
+        assert "/" not in filename and "\\" not in filename, (
+            f"Filename must not contain path separators, got: {filename!r}"
+        )
+
+    def test_leader_csv_content_disposition_no_semicolon_in_filename(self, client):
+        """The filename portion must not contain semicolons (would break header parsing)."""
+        resp = client.get("/leaders/Matt/top-songs/csv")
+        cd = resp.headers.get("content-disposition", "")
+        filename = self._extract_filename(cd)
+        assert ";" not in filename, (
+            f"Filename must not contain semicolons, got: {filename!r}"
+        )

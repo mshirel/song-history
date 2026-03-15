@@ -92,17 +92,20 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> HTMLR
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 # Whitelist pattern for safe filename characters in HTTP headers and filesystems.
-# Keeps only alphanumeric characters, regular spaces (U+0020), hyphens, underscores, and dots.
-# Explicitly excludes CR (\r) and LF (\n) even though \s would otherwise allow them.
-_SAFE_FILENAME_RE = re.compile(r"[^\w .\-]|[\r\n]")
+# Keeps only alphanumeric characters, hyphens, underscores, and dots.
+# Spaces are replaced so that Content-Disposition filenames are unambiguously
+# safe without relying on RFC 6266 quoted-string parsing by every client.
+# CR and LF are always excluded to prevent HTTP header injection.
+_SAFE_FILENAME_RE = re.compile(r"[^\w.\-]|[\r\n]")
 
 
 def _sanitize_header_filename(raw: str) -> str:
     """Strip unsafe characters from a filename used in Content-Disposition headers.
 
     Uses Path.name to strip directory components, then replaces any character
-    that is not alphanumeric, a space, hyphen, underscore, or dot with an
-    underscore.  CR and LF are always replaced to prevent HTTP header injection.
+    that is not alphanumeric, a hyphen, underscore, or dot with an underscore.
+    Spaces are replaced with underscores for maximum client compatibility.
+    CR and LF are always replaced to prevent HTTP header injection.
     """
     basename = Path(raw).name
     return _SAFE_FILENAME_RE.sub("_", basename)
