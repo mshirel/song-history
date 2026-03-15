@@ -1,11 +1,14 @@
 """PPTX file reading and slide parsing."""
 
 import hashlib
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from pptx import Presentation
+
+logger = logging.getLogger(__name__)
 
 _HASH_CHUNK_SIZE: int = 4096
 # python-pptx shape type integer for Picture shapes (MSO_SHAPE_TYPE.PICTURE == 13)
@@ -123,6 +126,11 @@ def extract_images_from_slide(slide: Any) -> list[SlideImage]:
             try:
                 blob = shape.image.blob
             except Exception:
+                logger.warning(
+                    "Failed to extract blob from shape %s — returning blob=None",
+                    shape.shape_id,
+                    exc_info=True,
+                )
                 blob = None
             images.append(SlideImage(shape_id=shape.shape_id, blob=blob))
 

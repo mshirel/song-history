@@ -1,8 +1,9 @@
 """Unit tests for worship_catalog.pptx_reader internal functions."""
 
 import hashlib
+import logging
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, PropertyMock
 
 import pytest
 
@@ -10,6 +11,7 @@ from worship_catalog.pptx_reader import (
     ServiceMetadata,
     SlideText,
     compute_file_hash,
+    extract_images_from_slide,
     extract_metadata_from_table_slide,
     is_slide_hidden,
     parse_filename_for_metadata,
@@ -116,3 +118,49 @@ class TestExtractMetadataFromTableSlide:
         result = extract_metadata_from_table_slide(lines)
         assert result.date == "2026-03-01"
         assert result.service_name is None
+
+
+class TestExtractImagesLogsOnError:
+    """Issue #101 — blob extraction errors must be logged at WARNING."""
+
+    def _make_slide_with_failing_blob(self) -> MagicMock:
+        """Return a mock slide whose first picture shape raises on blob access."""
+        mock_shape = MagicMock()
+        mock_shape.shape_type = 13  # _PPTX_PICTURE_SHAPE_TYPE
+        mock_shape.shape_id = 1
+        # Make blob raise an exception when accessed
+        type(mock_shape.image).blob = PropertyMock(
+            side_effect=Exception("corrupt blob")
+        )
+
+        mock_slide = MagicMock()
+        mock_slide.shapes = [mock_shape]
+        return mock_slide
+
+    def test_blob_error_is_logged_as_warning(self, caplog):
+        mock_slide = self._make_slide_with_failing_blob()
+        with caplog.at_level(logging.WARNING, logger="worship_catalog.pptx_reader"):
+            result = extract_images_from_slide(mock_slide)
+        assert any(
+            "blob" in r.message.lower() or "extract" in r.message.lower()
+            for r in caplog.records
+        ), f"Expected a WARNING about blob/extract, got: {caplog.records}"
+
+    def test_blob_error_still_appends_shape_with_none_blob(self, caplog):
+        """Shape is still recorded with blob=None so callers know it existed."""
+        mock_slide = self._make_slide_with_failing_blob()
+        with caplog.at_level(logging.WARNING, logger="worship_catalog.pptx_reader"):
+            result = extract_images_from_slide(mock_slide)
+        assert len(result) == 1
+        assert result[0].blob is None
+
+    def test_warning_includes_exc_info(self, caplog):
+        """The warning record must carry exc_info so the traceback is captured."""
+        mock_slide = self._make_slide_with_failing_blob()
+        with caplog.at_level(logging.WARNING, logger="worship_catalog.pptx_reader"):
+            extract_images_from_slide(mock_slide)
+        warning_records = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert warning_records, "No WARNING records found"
+        assert warning_records[0].exc_info is not None, (
+            "exc_info must be set so the traceback is captured"
+        )
