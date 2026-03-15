@@ -69,8 +69,6 @@ jobs:
       contents: read
       packages: write         # required to push to ghcr.io
       security-events: write  # required to upload Trivy SARIF results (#32)
-      attestations: write     # required for provenance signing (#34)
-      id-token: write         # required for OIDC-based provenance attestation (#34)
 
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
@@ -103,7 +101,6 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push
-        id: build-and-push
         if: steps.changes.outputs.app == 'true' || github.event_name == 'schedule'
         uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25  # v5
         with:
@@ -116,13 +113,6 @@ jobs:
           cache-to: type=gha,mode=max
           sbom: true
           provenance: true
-
-      - name: Attest image provenance
-        if: steps.changes.outputs.app == 'true' || github.event_name == 'schedule'
-        uses: actions/attest-build-provenance@v2
-        with:
-          subject-name: ghcr.io/${{ github.repository }}
-          subject-digest: ${{ steps.build-and-push.outputs.digest }}
 
       # --- Container image vulnerability scanning (#32) -------------------
       - name: Scan image for CVEs
