@@ -9,8 +9,8 @@ import math
 import os
 import re
 import secrets
-import threading
 from collections.abc import AsyncGenerator, Generator
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from datetime import date
 from pathlib import Path
@@ -90,6 +90,10 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> HTMLR
 
 
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+# Bounded thread pool for background import jobs (#52)
+_MAX_IMPORT_WORKERS: int = 4
+_import_executor = ThreadPoolExecutor(max_workers=_MAX_IMPORT_WORKERS)
 
 # Upload constants (#45)
 MAX_UPLOAD_BYTES: int = 50 * 1024 * 1024  # 50 MB
@@ -197,43 +201,6 @@ async def songs(
 async def reports_page(request: Request) -> HTMLResponse:
     return templates.TemplateResponse(request, "reports.html")
 
-
-@app.post("/reports/ccli")
-async def reports_ccli(
-    start_date: str = Form(...),
-    end_date: str = Form(...),
-) -> StreamingResponse:
-    _validate_date_range(start_date, end_date)
-    db = _get_db()
-    events = list(db.iter_copy_events(start_date, end_date))
-    db.close()
-
-    output = io.StringIO()
-    writer = csv.writer(output)
-    writer.writerow(["Date", "Service", "Title", "CCLI#", "Reproduction Type", "Count"])
-    for e in events:
-        credits_parts = [e.get("words_by") or "", e.get("music_by") or ""]
-        credits = " / ".join(p for p in credits_parts if p) or ""
-        writer.writerow([
-            e["service_date"],
-            e["service_name"],
-            e["display_title"],
-            credits,
-            e["reproduction_type"],
-            e["count"],
-        ])
-
-    _log.info(
-        "CCLI report generated",
-        extra={"start_date": start_date, "end_date": end_date, "rows": len(events)},
-    )
-    output.seek(0)
-    filename = f"ccli_report_{start_date}_{end_date}.csv"
-    return StreamingResponse(
-        iter([output.getvalue()]),
-        media_type="text/csv",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
-    )
 
 
 def _compute_stats(
@@ -565,13 +532,8 @@ async def upload(request: Request, file: UploadFile) -> JSONResponse:
     db = _get_db()
     db.create_import_job(job_id, filename=filename)
     db.close()
-    # Start import in background thread (daemon so it won't block test exits)
-    thread = threading.Thread(
-        target=_run_import_in_background,
-        args=(job_id, dest),
-        daemon=True,
-    )
-    thread.start()
+    # Submit import to bounded thread pool (#52)
+    _import_executor.submit(_run_import_in_background, job_id, dest)
     return JSONResponse(content={"job_id": job_id}, status_code=202)
 
 

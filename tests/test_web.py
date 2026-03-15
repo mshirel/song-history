@@ -119,61 +119,17 @@ class TestReportsPage:
         assert response.status_code == 200
         assert "text/html" in response.headers["content-type"]
 
-    def test_reports_page_has_ccli_form(self, client):
+    def test_reports_page_does_not_show_ccli_form(self, client):
+        """CCLI form must be hidden until format is validated (#93)."""
         response = client.get("/reports")
-        assert "ccli" in response.text.lower()
-        assert 'action="/reports/ccli"' in response.text
+        assert 'action="/reports/ccli"' not in response.text, (
+            "CCLI form must not appear until the column format is validated against CCLI spec"
+        )
 
     def test_reports_page_has_stats_form(self, client):
         response = client.get("/reports")
         assert "stats" in response.text.lower()
         assert "/reports/stats" in response.text
-
-
-class TestCCLIReport:
-    def test_ccli_returns_csv(self, client):
-        response = client.post(
-            "/reports/ccli",
-            data={"start_date": "2026-01-01", "end_date": "2026-12-31"},
-        )
-        assert response.status_code == 200
-        assert "text/csv" in response.headers["content-type"]
-        assert "attachment" in response.headers["content-disposition"]
-
-    def test_ccli_csv_has_header_row(self, client):
-        response = client.post(
-            "/reports/ccli",
-            data={"start_date": "2026-01-01", "end_date": "2026-12-31"},
-        )
-        first_line = response.text.splitlines()[0]
-        assert "Date" in first_line
-        assert "Title" in first_line
-        assert "Reproduction Type" in first_line
-
-    def test_ccli_csv_contains_song_data(self, client):
-        response = client.post(
-            "/reports/ccli",
-            data={"start_date": "2026-01-01", "end_date": "2026-12-31"},
-        )
-        assert "Amazing Grace" in response.text or "How Great Thou Art" in response.text
-
-    def test_ccli_empty_range_returns_header_only(self, client):
-        response = client.post(
-            "/reports/ccli",
-            data={"start_date": "2020-01-01", "end_date": "2020-01-31"},
-        )
-        assert response.status_code == 200
-        lines = [l for l in response.text.splitlines() if l.strip()]
-        assert len(lines) == 1  # header row only
-
-    def test_ccli_filename_includes_dates(self, client):
-        response = client.post(
-            "/reports/ccli",
-            data={"start_date": "2026-02-01", "end_date": "2026-02-28"},
-        )
-        cd = response.headers["content-disposition"]
-        assert "2026-02-01" in cd
-        assert "2026-02-28" in cd
 
 
 class TestStatsReport:
@@ -748,7 +704,7 @@ class TestDateValidation:
     def test_invalid_start_date_returns_422(self, client):
         """Non-ISO date string in start_date returns a validation error."""
         response = client.post(
-            "/reports/ccli",
+            "/reports/stats/csv",
             data={"start_date": "Jan 2026", "end_date": "2026-12-31"},
         )
         assert response.status_code == 422
@@ -756,7 +712,7 @@ class TestDateValidation:
     def test_invalid_end_date_returns_422(self, client):
         """Non-ISO date string in end_date returns a validation error."""
         response = client.post(
-            "/reports/ccli",
+            "/reports/stats/csv",
             data={"start_date": "2026-01-01", "end_date": "December 2026"},
         )
         assert response.status_code == 422
@@ -764,7 +720,7 @@ class TestDateValidation:
     def test_start_after_end_returns_422(self, client):
         """start_date > end_date returns a validation error."""
         response = client.post(
-            "/reports/ccli",
+            "/reports/stats/csv",
             data={"start_date": "2026-12-31", "end_date": "2026-01-01"},
         )
         assert response.status_code == 422
@@ -772,7 +728,7 @@ class TestDateValidation:
     def test_valid_dates_are_accepted(self, client):
         """Well-formed ISO dates proceed normally."""
         response = client.post(
-            "/reports/ccli",
+            "/reports/stats/csv",
             data={"start_date": "2026-01-01", "end_date": "2026-12-31"},
         )
         assert response.status_code == 200
@@ -792,7 +748,7 @@ class TestCSRFProtection:
     def test_post_without_csrf_token_is_rejected(self, raw_client):
         """POST to report endpoint without CSRF token returns 403."""
         response = raw_client.post(
-            "/reports/ccli",
+            "/reports/stats/csv",
             data={"start_date": "2026-01-01", "end_date": "2026-12-31"},
         )
         assert response.status_code == 403
@@ -804,7 +760,7 @@ class TestCSRFProtection:
         assert token is not None, "CSRF cookie should be set on GET"
 
         response = raw_client.post(
-            "/reports/ccli",
+            "/reports/stats/csv",
             data={"start_date": "2026-01-01", "end_date": "2026-12-31"},
             headers={"X-CSRFToken": token},
         )
@@ -814,7 +770,7 @@ class TestCSRFProtection:
         """POST with wrong X-CSRFToken value returns 403."""
         raw_client.get("/reports")  # set cookie
         response = raw_client.post(
-            "/reports/ccli",
+            "/reports/stats/csv",
             data={"start_date": "2026-01-01", "end_date": "2026-12-31"},
             headers={"X-CSRFToken": "wrong-token"},
         )
@@ -823,7 +779,6 @@ class TestCSRFProtection:
     def test_all_report_post_endpoints_require_csrf(self, raw_client):
         """All report POST endpoints reject requests without CSRF token."""
         endpoints = [
-            "/reports/ccli",
             "/reports/stats",
             "/reports/stats/csv",
             "/reports/stats/xlsx",
@@ -849,16 +804,6 @@ class TestCSRFProtection:
         """/upload with a valid CSRF token must not return 403. (#59)"""
         resp = _upload(client, SMALL_PPTX_BYTES, "sunday.pptx", VALID_PPTX_MIME)
         assert resp.status_code != 403
-
-
-class TestCcliStreamingResponse:
-    """POST /reports/ccli uses iter_copy_events (streaming) not query_copy_events (#27)."""
-
-    def test_ccli_report_uses_iter_not_query(self):
-        import inspect
-        from worship_catalog.web import app as web_module
-        src = inspect.getsource(web_module)
-        assert "iter_copy_events" in src
 
 
 # ---------------------------------------------------------------------------
@@ -1182,3 +1127,150 @@ class TestStartupPurge:
             with TestClient(app):
                 pass
         assert any("purge" in r.message.lower() for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# xlsx export tests (#84)
+# ---------------------------------------------------------------------------
+
+class TestStatsXlsxExport:
+    """POST /reports/stats/xlsx — full coverage (#84)."""
+
+    def _post(self, client, start="2026-01-01", end="2026-12-31", leader="", all_songs=False):
+        return client.post("/reports/stats/xlsx", data={
+            "start_date": start,
+            "end_date": end,
+            "leader": leader,
+            "all_songs": "true" if all_songs else "",
+        })
+
+    def test_xlsx_returns_200(self, client):
+        assert self._post(client).status_code == 200
+
+    def test_xlsx_content_type_is_excel(self, client):
+        ct = self._post(client).headers["content-type"]
+        assert "spreadsheetml" in ct or "openxmlformats" in ct
+
+    def test_xlsx_content_disposition_is_attachment(self, client):
+        cd = self._post(client).headers["content-disposition"]
+        assert "attachment" in cd
+        assert ".xlsx" in cd
+
+    def test_xlsx_filename_includes_dates(self, client):
+        cd = self._post(client, start="2026-01-01", end="2026-03-31").headers["content-disposition"]
+        assert "2026-01-01" in cd and "2026-03-31" in cd
+
+    def test_xlsx_body_is_parseable_workbook(self, client):
+        import io as _io
+        import openpyxl
+        wb = openpyxl.load_workbook(_io.BytesIO(self._post(client).content))
+        assert "Top Songs" in wb.sheetnames
+
+    def test_xlsx_top_songs_sheet_has_header_row(self, client):
+        import io as _io
+        import openpyxl
+        ws = openpyxl.load_workbook(_io.BytesIO(self._post(client).content))["Top Songs"]
+        headers = [ws.cell(1, c).value for c in range(1, 5)]
+        assert headers == ["Rank", "Title", "Credits", "Count"]
+
+    def test_xlsx_top_songs_sheet_contains_song_data(self, client):
+        import io as _io
+        import openpyxl
+        ws = openpyxl.load_workbook(_io.BytesIO(self._post(client).content))["Top Songs"]
+        titles = [ws.cell(r, 2).value for r in range(2, ws.max_row + 1) if ws.cell(r, 2).value]
+        assert len(titles) > 0
+
+    def test_xlsx_invalid_date_returns_422(self, client):
+        assert self._post(client, start="not-a-date").status_code == 422
+
+    def test_xlsx_openpyxl_missing_returns_501(self, client, monkeypatch):
+        import builtins
+        real_import = builtins.__import__
+        def _block(name, *args, **kwargs):
+            if name == "openpyxl":
+                raise ImportError("blocked for test")
+            return real_import(name, *args, **kwargs)
+        monkeypatch.setattr(builtins, "__import__", _block)
+        assert self._post(client).status_code == 501
+
+
+# ---------------------------------------------------------------------------
+# Boundary / adversarial input tests (#89)
+# ---------------------------------------------------------------------------
+
+class TestInputBoundaryConditions:
+    """Boundary and adversarial input tests for web forms (#89)."""
+
+    def test_page_zero_does_not_500(self, client):
+        assert client.get("/songs?page=0").status_code != 500
+
+    def test_negative_page_does_not_500(self, client):
+        assert client.get("/songs?page=-1").status_code != 500
+
+    def test_non_integer_page_does_not_500(self, client):
+        assert client.get("/songs?page=abc").status_code != 500
+
+    def test_search_xss_is_html_escaped(self, client):
+        """Script tag in q param must never appear unescaped in the response."""
+        resp = client.get("/songs?q=%3Cscript%3Ealert(1)%3C%2Fscript%3E")
+        assert resp.status_code != 500
+        assert "<script>alert(1)</script>" not in resp.text
+
+    def test_search_percent_wildcard_returns_200(self, client):
+        assert client.get("/songs?q=%25").status_code == 200
+
+    def test_search_sql_quote_returns_200(self, client):
+        assert client.get("/songs?q=%27").status_code == 200
+
+    def test_per_page_zero_does_not_500(self, client):
+        assert client.get("/songs?per_page=0").status_code != 500
+
+    def test_per_page_enormous_does_not_500(self, client):
+        assert client.get("/songs?per_page=100000").status_code != 500
+
+    def test_very_long_search_does_not_500(self, client):
+        assert client.get(f"/songs?q={'a' * 5000}").status_code != 500
+
+    def test_leader_name_with_apostrophe_does_not_500(self, client):
+        resp = client.get("/leaders/O%27Brien/top-songs")
+        assert resp.status_code in (200, 404)
+        assert resp.status_code != 500
+
+    def test_services_page_negative_page_does_not_500(self, client):
+        assert client.get("/services?page=-1").status_code != 500
+
+    def test_ccli_route_removed_returns_404_or_405(self, client):
+        """POST /reports/ccli must not exist — CCLI removed until format validated (#93)."""
+        resp = client.post("/reports/ccli",
+                           data={"start_date": "2026-01-01", "end_date": "2026-12-31"})
+        assert resp.status_code in (404, 405, 410)
+
+
+# ---------------------------------------------------------------------------
+# ThreadPoolExecutor bound for upload jobs (#52)
+# ---------------------------------------------------------------------------
+
+class TestUploadThreadPool:
+    """Background import must use a bounded thread pool, not unbounded threads (#52)."""
+
+    def test_app_uses_threadpoolexecutor_not_bare_thread(self):
+        """app.py must use ThreadPoolExecutor, not threading.Thread, for import jobs."""
+        import inspect
+        from worship_catalog.web import app as web_module
+        src = inspect.getsource(web_module)
+        assert "ThreadPoolExecutor" in src, (
+            "Upload background tasks must use ThreadPoolExecutor to bound concurrency"
+        )
+        assert "threading.Thread(" not in src, (
+            "threading.Thread() creates unbounded threads — use ThreadPoolExecutor instead"
+        )
+
+    def test_thread_pool_is_module_level_singleton(self):
+        """The executor must be a module-level singleton, not created per-request."""
+        import inspect
+        from worship_catalog.web import app as web_module
+        src = inspect.getsource(web_module)
+        # Module-level assignment: _executor = ThreadPoolExecutor(...)
+        assert "_executor" in src or "_EXECUTOR" in src, (
+            "Executor must be a named module-level constant, not an anonymous per-request object"
+        )

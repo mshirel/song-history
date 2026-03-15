@@ -3,26 +3,6 @@
 {% block content %}
 <h1>Generate Reports</h1>
 
-<!-- CCLI Report -->
-<div class="card">
-  <h2>CCLI Usage Report <small style="font-weight:400;color:#6c757d;font-size:0.85rem">(CSV download)</small></h2>
-  <form method="post" action="/reports/ccli">
-    <div class="form-grid">
-      <div>
-        <label for="ccli-from">From</label>
-        <input type="date" id="ccli-from" name="start_date" required>
-      </div>
-      <div>
-        <label for="ccli-to">To</label>
-        <input type="date" id="ccli-to" name="end_date" required>
-      </div>
-      <div style="display:flex;align-items:flex-end;">
-        <button type="submit">Download CSV</button>
-      </div>
-    </div>
-  </form>
-</div>
-
 <!-- Stats Report -->
 <div class="card">
   <h2>Song Statistics <small style="font-weight:400;color:#6c757d;font-size:0.85rem">(view in browser)</small></h2>

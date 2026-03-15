@@ -1,5 +1,6 @@
 """Orchestrate song extraction from PPTX files."""
 
+import concurrent.futures
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -28,6 +29,9 @@ _log = logging.getLogger(__name__)
 # Pre-flight guards (issue #40 — CWE-400 resource exhaustion)
 _MAX_PPTX_SIZE_BYTES: int = 50 * 1024 * 1024  # 50 MB
 _MAX_SLIDE_COUNT: int = 500
+
+# Wall-clock timeout for a single file extraction (#73 — prevents runaway on adversarial PPTX)
+_MAX_EXTRACT_SECONDS: int = 120
 
 # Consecutive slides with no text after which the current song group is closed
 _NO_TEXT_STREAK_THRESHOLD: int = 5
@@ -123,6 +127,32 @@ def extract_songs(
     """
     Extract songs from a PPTX file.
 
+    Enforces a wall-clock timeout of _MAX_EXTRACT_SECONDS to protect against
+    adversarial or pathological PPTX files that would otherwise stall imports (#73).
+
+    Raises:
+        TimeoutError: If extraction exceeds _MAX_EXTRACT_SECONDS.
+        ValueError: If file exceeds size/slide-count limits.
+    """
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(_extract_songs_impl, file_path, use_ocr, ocr_budget)
+        try:
+            return future.result(timeout=_MAX_EXTRACT_SECONDS)
+        except concurrent.futures.TimeoutError as exc:
+            raise TimeoutError(
+                f"extract_songs exceeded {_MAX_EXTRACT_SECONDS}s time limit for "
+                f"{Path(file_path).name}"
+            ) from exc
+
+
+def _extract_songs_impl(
+    file_path: Path | str,
+    use_ocr: bool = False,
+    ocr_budget: OcrBudget | None = None,
+) -> ExtractionResult:
+    """
+    Core extraction logic — called by extract_songs() inside a bounded thread.
+
     Process:
     1. Load and parse all slides
     2. Extract service metadata
@@ -130,11 +160,6 @@ def extract_songs(
     4. Group by canonical title
     5. Extract credits (with optional Vision OCR fallback)
     6. Return normalized results
-
-    Args:
-        file_path: Path to the PPTX file
-        use_ocr: If True, use Claude Vision API to extract credits from image-only slides
-        ocr_budget: Optional call cap; if None and use_ocr is True, calls are unlimited
     """
     file_path = Path(file_path)
 
