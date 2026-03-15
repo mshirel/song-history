@@ -845,3 +845,142 @@ class TestOcrBudgetBoundaryConditions:
         from worship_catalog.extractor import OcrBudget
         budget = OcrBudget(max_calls=None)
         assert budget.remaining is None
+
+
+# ---------------------------------------------------------------------------
+# Issue #128 — CreditResolver must use library_index when provided
+# ---------------------------------------------------------------------------
+
+
+class TestCreditResolverLibraryLookup:
+    """CreditResolver must consult the library index when provided — issue #128."""
+
+    def _make_slides(self) -> list:
+        return [make_slide(index=0, lines=["Amazing Grace", "PaperlessHymnal.com"])]
+
+    def test_library_index_is_used_when_provided(self, monkeypatch):
+        """When library_index is provided and contains the song, credits come from it."""
+        from worship_catalog.extractor import CreditResolver
+
+        library = {"amazing grace": {"words_by": "John Newton", "music_by": None, "arranger": None}}
+        resolver = CreditResolver(library_index=library, ocr_budget=None, use_ocr=False)
+        empty_credits: dict = {"words_by": None, "music_by": None, "arranger": None}
+        result = resolver.resolve(self._make_slides(), empty_credits, canonical_title="amazing grace")
+        assert result["words_by"] == "John Newton"
+
+    def test_library_index_is_skipped_when_none(self, monkeypatch):
+        """When library_index=None, the library step is skipped entirely."""
+        from worship_catalog.extractor import CreditResolver
+
+        # Construct with None — should not find any credits
+        resolver = CreditResolver(library_index=None, ocr_budget=None, use_ocr=False)
+        empty_credits: dict = {"words_by": None, "music_by": None, "arranger": None}
+        result = resolver.resolve(self._make_slides(), empty_credits, canonical_title="amazing grace")
+        # Without library or OCR, credits remain empty
+        assert result["words_by"] is None
+
+    def test_credits_resolved_from_library_for_unknown_song(self):
+        """A song with no text credits gets credits from the library index."""
+        from worship_catalog.extractor import _create_song_occurrence
+
+        slides = [make_slide(0, ["Amazing Grace", "PaperlessHymnal.com"])]
+        library_index = {
+            "amazing grace": {
+                "words_by": "John Newton",
+                "music_by": "Traditional",
+                "arranger": None,
+            }
+        }
+        result = _create_song_occurrence(
+            1, "amazing grace", slides, library_index=library_index
+        )
+        assert result.words_by == "John Newton"
+        assert result.music_by == "Traditional"
+
+    def test_create_song_occurrence_without_library_leaves_credits_empty(self):
+        """Without library_index, a song with no text credits has empty credits."""
+        from worship_catalog.extractor import _create_song_occurrence
+
+        slides = [make_slide(0, ["Amazing Grace", "PaperlessHymnal.com"])]
+        result = _create_song_occurrence(1, "amazing grace", slides, library_index=None)
+        assert result.words_by is None
+        assert result.music_by is None
+
+
+# ---------------------------------------------------------------------------
+# Issue #129 — run_import() shared pipeline function
+# ---------------------------------------------------------------------------
+
+
+class TestRunImport:
+    """run_import() provides a shared import pipeline callable by CLI and web — issue #129."""
+
+    def _minimal_pptx_bytes(self) -> bytes:
+        """Reuse the minimal PPTX factory from TestExtractSongsFileHash."""
+        return TestExtractSongsFileHash()._minimal_pptx()
+
+    def test_returns_import_result_with_song_count(self, tmp_path):
+        """run_import returns an object with a songs_imported count."""
+        from worship_catalog.import_service import ImportResult, run_import
+        from worship_catalog.db import Database
+
+        db_path = tmp_path / "test.db"
+        db = Database(db_path)
+        db.connect()
+        db.init_schema()
+
+        pptx_path = tmp_path / "test.pptx"
+        pptx_path.write_bytes(self._minimal_pptx_bytes())
+
+        result = run_import(db, pptx_path)
+        assert isinstance(result, ImportResult)
+        assert isinstance(result.songs_imported, int)
+        db.close()
+
+    def test_works_with_no_library_index(self, tmp_path):
+        """run_import works when library_index is not provided (defaults to None)."""
+        from worship_catalog.import_service import run_import
+        from worship_catalog.db import Database
+
+        db_path = tmp_path / "test.db"
+        db = Database(db_path)
+        db.connect()
+        db.init_schema()
+
+        pptx_path = tmp_path / "test.pptx"
+        pptx_path.write_bytes(self._minimal_pptx_bytes())
+
+        result = run_import(db, pptx_path, library_index=None)
+        assert result is not None
+        db.close()
+
+    def test_works_with_no_ocr_budget(self, tmp_path):
+        """run_import works when ocr_budget is not provided (defaults to None)."""
+        from worship_catalog.import_service import run_import
+        from worship_catalog.db import Database
+
+        db_path = tmp_path / "test.db"
+        db = Database(db_path)
+        db.connect()
+        db.init_schema()
+
+        pptx_path = tmp_path / "test.pptx"
+        pptx_path.write_bytes(self._minimal_pptx_bytes())
+
+        result = run_import(db, pptx_path, ocr_budget=None)
+        assert result is not None
+        db.close()
+
+    def test_raises_on_invalid_pptx_path(self, tmp_path):
+        """run_import raises an exception for a non-existent path."""
+        from worship_catalog.import_service import run_import
+        from worship_catalog.db import Database
+
+        db_path = tmp_path / "test.db"
+        db = Database(db_path)
+        db.connect()
+        db.init_schema()
+
+        with pytest.raises(Exception):
+            run_import(db, tmp_path / "nonexistent.pptx")
+        db.close()
