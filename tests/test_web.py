@@ -1291,6 +1291,60 @@ class TestUploadThreadPool:
         )
 
 
+class TestUploadConcurrencyLimit:
+    """Pool-full behaviour — submitting more jobs than pool capacity must return 503 (#52)."""
+
+    def test_upload_returns_503_when_pool_full(self, client, monkeypatch):
+        """When the import thread pool is saturated, /upload returns 503."""
+        from concurrent.futures import Future
+        import worship_catalog.web.app as app_module
+        from importlib import reload
+
+        # Replace the module-level executor with one whose submit() raises
+        # concurrent.futures.BrokenExecutor (pool full / shutdown).
+        class _FullExecutor:
+            def submit(self, *args, **kwargs):
+                raise RuntimeError("pool saturated")
+
+        monkeypatch.setattr(app_module, "_import_executor", _FullExecutor())
+        resp = _upload(client, SMALL_PPTX_BYTES, "sunday.pptx", VALID_PPTX_MIME)
+        assert resp.status_code == 503
+        body = resp.json()
+        assert "busy" in body.get("detail", "").lower() or "unavailable" in body.get("detail", "").lower()
+
+    def test_upload_succeeds_when_pool_has_capacity(self, client, monkeypatch):
+        """When the pool has capacity, /upload succeeds (202) as normal."""
+        from concurrent.futures import Future
+        import worship_catalog.web.app as app_module
+
+        # Replace executor with a no-op that always accepts (simulates available pool)
+        class _AcceptingExecutor:
+            def submit(self, *args, **kwargs):
+                f: Future[None] = Future()
+                f.set_result(None)
+                return f
+
+        monkeypatch.setattr(app_module, "_import_executor", _AcceptingExecutor())
+        resp = _upload(client, SMALL_PPTX_BYTES, "sunday.pptx", VALID_PPTX_MIME)
+        assert resp.status_code == 202
+        assert "job_id" in resp.json()
+
+    def test_upload_503_body_is_json(self, client, monkeypatch):
+        """The 503 response for a full pool must be JSON, not HTML."""
+        import worship_catalog.web.app as app_module
+
+        class _FullExecutor:
+            def submit(self, *args, **kwargs):
+                raise RuntimeError("pool saturated")
+
+        monkeypatch.setattr(app_module, "_import_executor", _FullExecutor())
+        resp = _upload(client, SMALL_PPTX_BYTES, "sunday.pptx", VALID_PPTX_MIME)
+        assert resp.status_code == 503
+        # Must be parseable as JSON
+        body = resp.json()
+        assert "detail" in body
+
+
 # ---------------------------------------------------------------------------
 # #110: E2E test — background import persists songs to DB (issue #96)
 # ---------------------------------------------------------------------------

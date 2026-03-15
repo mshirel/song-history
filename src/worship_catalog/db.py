@@ -16,6 +16,19 @@ _log = logging.getLogger("worship_catalog.db")
 _SCHEMA_VERSION: int = 1
 
 
+def _safe_order_by(col: str, whitelist: frozenset[str]) -> str:
+    """Validate *col* against *whitelist* and return it if safe.
+
+    Raises ValueError with "Invalid sort column" if *col* is not in the
+    whitelist or is empty/whitespace-only.  This eliminates the need for
+    f-string SQL that triggers S608 (SQL injection via format string).
+    """
+    stripped = col.strip()
+    if not stripped or stripped not in whitelist:
+        raise ValueError(f"Invalid sort column: {col!r}")
+    return stripped
+
+
 class SchemaVersionError(RuntimeError):
     """Raised when the database schema version is incompatible with this code."""
 
@@ -205,6 +218,8 @@ class Database:
         self._conn.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
         self._maybe_commit()
 
+    # --- Songs ---
+
     def insert_or_get_song(
         self, canonical_title: str, display_title: str
     ) -> int:
@@ -277,6 +292,8 @@ class Database:
         self._maybe_commit()
         return cursor.lastrowid
 
+    # --- Services ---
+
     def insert_or_update_service(
         self,
         service_date: str,
@@ -338,6 +355,8 @@ class Database:
         self._maybe_commit()
         return service_id
 
+    # --- Service Songs ---
+
     def insert_service_song(
         self,
         service_id: int,
@@ -370,6 +389,8 @@ class Database:
         )
         self._maybe_commit()
         return cursor.lastrowid
+
+    # --- Copy Events ---
 
     def insert_copy_event(
         self,
@@ -430,6 +451,8 @@ class Database:
         )
         self._maybe_commit()
         return cursor.lastrowid
+
+    # --- Queries ---
 
     def query_services(
         self, start_date: str, end_date: str, song_leader: str | None = None
@@ -678,6 +701,8 @@ class Database:
         )
         return [dict(row) for row in cursor.fetchall()]
 
+    # --- Deletions ---
+
     def delete_service_data(self, service_id: int) -> None:
         """Delete all data for a service (for idempotent re-import)."""
         cursor = self._conn.cursor()
@@ -749,7 +774,7 @@ class Database:
             return
         params.append(job_id)
         self._conn.execute(
-            f"UPDATE import_jobs SET {', '.join(sets)} WHERE job_id = ?",  # noqa: S608
+            f"UPDATE import_jobs SET {', '.join(sets)} WHERE job_id = ?",
             params,
         )
         self._maybe_commit()

@@ -632,8 +632,16 @@ async def upload(request: Request, file: UploadFile) -> JSONResponse:
     db = _get_db()
     db.create_import_job(job_id, filename=filename)
     db.close()
-    # Submit import to bounded thread pool (#52)
-    _import_executor.submit(_run_import_in_background, job_id, dest)
+    # Submit import to bounded thread pool (#52).
+    # If the pool is saturated or shut down, submit() raises — return 503.
+    try:
+        _import_executor.submit(_run_import_in_background, job_id, dest)
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("Import pool unavailable, rejecting upload", extra={"error": str(exc)})
+        return JSONResponse(
+            content={"detail": "Server busy — import queue is full, try again later"},
+            status_code=503,
+        )
     return JSONResponse(content={"job_id": job_id}, status_code=202)
 
 

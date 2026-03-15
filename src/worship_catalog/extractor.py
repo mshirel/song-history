@@ -78,6 +78,75 @@ class OcrBudget:
 
 
 @dataclass
+class CreditResolver:
+    """Encapsulate the three-step credit resolution cascade (#53).
+
+    Steps (applied in order until credits are found):
+    1. Return parsed credits immediately if any credit field is non-empty.
+    2. Look up the canonical title in the library index.
+    3. Call OCR on the first slide image if ``use_ocr`` is True and the budget
+       allows it.
+
+    Passing ``library_index=None`` skips the library step.
+    Passing ``ocr_budget=None`` disables the budget cap (unlimited OCR);
+    passing ``use_ocr=False`` disables OCR entirely.
+    """
+
+    library_index: dict[str, Any] | None = None
+    ocr_budget: OcrBudget | None = None
+    use_ocr: bool = False
+
+    def resolve(
+        self,
+        slides: list["Slide"],
+        parsed_credits: dict[str, str | None],
+        canonical_title: str,
+    ) -> dict[str, str | None]:
+        """Return the best-available credits dict for *canonical_title*.
+
+        The returned dict always has the keys ``words_by``, ``music_by``, and
+        ``arranger`` (values may be None).
+        """
+        credits: dict[str, str | None] = dict(parsed_credits)
+
+        # Step 1 — return immediately if parsed credits are complete
+        if any([credits.get("words_by"), credits.get("music_by"), credits.get("arranger")]):
+            return credits
+
+        # Step 2 — library lookup
+        if self.library_index is not None:
+            entry = self.library_index.get(canonical_title)
+            if entry:
+                credits["words_by"] = entry.get("words_by")
+                credits["music_by"] = entry.get("music_by")
+                credits["arranger"] = entry.get("arranger")
+                if any([credits.get("words_by"), credits.get("music_by"), credits.get("arranger")]):
+                    _log.debug(
+                        "Credits resolved via library for '%s'", canonical_title
+                    )
+                    return credits
+
+        # Step 3 — OCR fallback
+        if self.use_ocr:
+            if self.ocr_budget is None or self.ocr_budget.consume():
+                ocr_text = _try_ocr_credits(slides)
+                if ocr_text:
+                    _log.debug(
+                        "Credits resolved via OCR for '%s': %r",
+                        canonical_title,
+                        ocr_text,
+                    )
+                    from worship_catalog.normalize import parse_credits as _parse_credits
+                    return _parse_credits(ocr_text)
+                else:
+                    _log.debug("OCR returned no credits for '%s'", canonical_title)
+                    if self.ocr_budget is not None:
+                        self.ocr_budget.refund()
+
+        return credits
+
+
+@dataclass
 class SongOccurrence:
     """A song occurrence within a service."""
 
@@ -451,34 +520,22 @@ def _create_song_occurrence(
     )
 
     # Extract credits from text
-    credits = parse_credits(all_text)
+    parsed = parse_credits(all_text)
 
-    if any([credits.get("words_by"), credits.get("music_by"), credits.get("arranger")]):
+    if any([parsed.get("words_by"), parsed.get("music_by"), parsed.get("arranger")]):
         _log.debug(
             "Credits found via text for '%s': words_by=%r music_by=%r arranger=%r",
             canonical_title,
-            credits.get("words_by"),
-            credits.get("music_by"),
-            credits.get("arranger"),
+            parsed.get("words_by"),
+            parsed.get("music_by"),
+            parsed.get("arranger"),
         )
     else:
         _log.debug("No credits found via text for '%s'", canonical_title)
 
-    # OCR fallback: if no credits found and first slide has an image, try Vision API.
-    # Budget is consumed only when the call returns useful text; it is refunded on
-    # failure so that transient errors or image-less slides don't waste quota.
-    if use_ocr and not any([
-        credits.get("words_by"), credits.get("music_by"), credits.get("arranger"),
-    ]):
-        if ocr_budget is None or ocr_budget.consume():
-            ocr_text = _try_ocr_credits(slides)
-            if ocr_text:
-                _log.debug("Credits found via OCR for '%s': %r", canonical_title, ocr_text)
-                credits = parse_credits(ocr_text)
-            else:
-                _log.debug("OCR returned no credits for '%s'", canonical_title)
-                if ocr_budget is not None:
-                    ocr_budget.refund()
+    # Delegate to CreditResolver for the library + OCR fallback steps (#53)
+    resolver = CreditResolver(library_index=None, ocr_budget=ocr_budget, use_ocr=use_ocr)
+    credits = resolver.resolve(slides, parsed, canonical_title)
 
     # Detect publisher
     publisher = detect_publisher(all_text)
