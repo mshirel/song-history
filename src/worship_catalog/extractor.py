@@ -1,5 +1,6 @@
 """Orchestrate song extraction from PPTX files."""
 
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -21,6 +22,8 @@ from worship_catalog.pptx_reader import (
     load_pptx,
     parse_all_slides,
 )
+
+_log = logging.getLogger(__name__)
 
 # Pre-flight guards (issue #40 — CWE-400 resource exhaustion)
 _MAX_PPTX_SIZE_BYTES: int = 50 * 1024 * 1024  # 50 MB
@@ -162,8 +165,16 @@ def extract_songs(
     else:
         metadata = None
 
+    _log.debug(
+        "Loaded %d slides from %s", len(slides), file_path.name
+    )
+
     # Step 3: Identify and group song slides (skip first slide which is metadata)
     song_groups = _group_song_slides(slides[1:] if slides else [])
+
+    _log.debug(
+        "Identified %d song group(s) in %s", len(song_groups), file_path.name
+    )
 
     # Step 4: Convert groups to song occurrences
     songs = []
@@ -172,6 +183,10 @@ def extract_songs(
             ordinal, canonical, group, use_ocr=use_ocr, ocr_budget=ocr_budget
         )
         songs.append(song)
+
+    _log.debug(
+        "Extracted %d song(s) from %s", len(songs), file_path.name
+    )
 
     # Create result
     result = ExtractionResult(
@@ -413,6 +428,17 @@ def _create_song_occurrence(
     # Extract credits from text
     credits = parse_credits(all_text)
 
+    if any([credits.get("words_by"), credits.get("music_by"), credits.get("arranger")]):
+        _log.debug(
+            "Credits found via text for '%s': words_by=%r music_by=%r arranger=%r",
+            canonical_title,
+            credits.get("words_by"),
+            credits.get("music_by"),
+            credits.get("arranger"),
+        )
+    else:
+        _log.debug("No credits found via text for '%s'", canonical_title)
+
     # OCR fallback: if no credits found and first slide has an image, try Vision API.
     # Budget is consumed only when the call returns useful text; it is refunded on
     # failure so that transient errors or image-less slides don't waste quota.
@@ -422,9 +448,12 @@ def _create_song_occurrence(
         if ocr_budget is None or ocr_budget.consume():
             ocr_text = _try_ocr_credits(slides)
             if ocr_text:
+                _log.debug("Credits found via OCR for '%s': %r", canonical_title, ocr_text)
                 credits = parse_credits(ocr_text)
-            elif ocr_budget is not None:
-                ocr_budget.refund()
+            else:
+                _log.debug("OCR returned no credits for '%s'", canonical_title)
+                if ocr_budget is not None:
+                    ocr_budget.refund()
 
     # Detect publisher
     publisher = detect_publisher(all_text)

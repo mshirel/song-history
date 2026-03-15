@@ -332,3 +332,58 @@ class TestNamedConstants:
         slide = make_slide(lines=["A" * (_TITLE_MAX_LENGTH + 1)])
         candidates = _extract_title_candidates(slide)
         assert len(candidates) == 0
+
+
+class TestExtractionLogging:
+    """Verify extraction decisions are logged for debugging silent data loss (#23)."""
+
+    def test_extract_songs_logs_song_count(self, tmp_path, caplog):
+        """extract_songs() should log how many songs were found."""
+        import logging
+        from tests.test_extractor_unit import TestExtractSongsFileHash
+
+        pptx_bytes = TestExtractSongsFileHash()._minimal_pptx()
+        pptx_path = tmp_path / "test.pptx"
+        pptx_path.write_bytes(pptx_bytes)
+
+        with caplog.at_level(logging.DEBUG, logger="worship_catalog.extractor"):
+            extract_songs(pptx_path)
+
+        assert any("song" in record.message.lower() for record in caplog.records)
+
+    def test_no_credits_found_is_logged(self, caplog):
+        """When no credits are found, a DEBUG message should mention it."""
+        import logging
+        from worship_catalog.extractor import _create_song_occurrence
+        from worship_catalog.pptx_reader import Slide, SlideText
+
+        slide = make_slide(lines=["Amazing Grace"])
+
+        with caplog.at_level(logging.DEBUG, logger="worship_catalog.extractor"):
+            _create_song_occurrence(
+                ordinal=1,
+                canonical_title="amazing grace",
+                slides=[slide],
+                use_ocr=False,
+            )
+
+        messages = [r.message.lower() for r in caplog.records]
+        assert any("credit" in m or "no credit" in m for m in messages)
+
+    def test_credits_found_via_text_is_logged(self, caplog):
+        """When credits are found via text parsing, it should be logged at DEBUG."""
+        import logging
+        from worship_catalog.extractor import _create_song_occurrence
+
+        slide = make_slide(lines=["Amazing Grace", "Words: John Newton / Music: Traditional"])
+
+        with caplog.at_level(logging.DEBUG, logger="worship_catalog.extractor"):
+            _create_song_occurrence(
+                ordinal=1,
+                canonical_title="amazing grace",
+                slides=[slide],
+                use_ocr=False,
+            )
+
+        messages = [r.message.lower() for r in caplog.records]
+        assert any("credit" in m for m in messages)
