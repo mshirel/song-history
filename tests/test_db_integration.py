@@ -1060,3 +1060,40 @@ class TestSchemaVersioning:
         from worship_catalog.db import _SCHEMA_VERSION
         assert isinstance(_SCHEMA_VERSION, int)
         assert _SCHEMA_VERSION >= 1
+
+
+class TestStreamCopyEvents:
+    """iter_copy_events() yields rows without loading all into memory (#27)."""
+
+    @pytest.fixture
+    def temp_db(self, tmp_path):
+        from worship_catalog.db import Database
+        db = Database(tmp_path / "stream_test.db")
+        db.connect()
+        db.init_schema()
+        yield db
+        db.close()
+
+    def test_iter_copy_events_returns_generator(self, temp_db):
+        import types
+        result = temp_db.iter_copy_events("0000-01-01", "9999-12-31")
+        assert isinstance(result, types.GeneratorType)
+
+    def test_iter_copy_events_yields_same_data_as_query(self, temp_db):
+        svc_id = temp_db.insert_or_update_service(
+            service_date="2026-01-01", service_name="Sunday AM",
+            source_file="test.pptx", source_hash="hash1",
+            song_leader=None, preacher=None, sermon_title=None,
+        )
+        song_id = temp_db.insert_or_get_song("amazing grace", "Amazing Grace")
+        temp_db.insert_or_get_copy_event(service_id=svc_id, song_id=song_id,
+                                          song_edition_id=None, reproduction_type="projection",
+                                          count=1, reportable=True)
+        streamed = list(temp_db.iter_copy_events("0000-01-01", "9999-12-31"))
+        queried = temp_db.query_copy_events("0000-01-01", "9999-12-31")
+        assert len(streamed) == len(queried)
+        assert streamed[0]["display_title"] == queried[0]["display_title"]
+
+    def test_iter_copy_events_empty_db_yields_nothing(self, temp_db):
+        result = list(temp_db.iter_copy_events("0000-01-01", "9999-12-31"))
+        assert result == []

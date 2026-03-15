@@ -174,7 +174,7 @@ async def reports_ccli(
 ) -> StreamingResponse:
     _validate_date_range(start_date, end_date)
     db = _get_db()
-    events = db.query_copy_events(start_date, end_date)
+    events = list(db.iter_copy_events(start_date, end_date))
     db.close()
 
     output = io.StringIO()

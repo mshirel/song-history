@@ -476,6 +476,52 @@ class Database:
             )
         return [dict(row) for row in cursor.fetchall()]
 
+    def iter_copy_events(
+        self, start_date: str, end_date: str, service_ids: list[int] | None = None
+    ) -> Generator[dict[str, Any], None, None]:
+        """Yield copy event rows one at a time (streaming; avoids loading all into memory).
+
+        Executes the same query as query_copy_events but yields each row
+        individually so callers can process large result sets without
+        materialising the entire list (#27).
+        """
+        cursor = self._conn.cursor()
+        if service_ids is not None:
+            placeholders = ",".join("?" * len(service_ids))
+            cursor.execute(
+                f"""
+                SELECT ce.*, s.canonical_title, s.display_title, sv.service_date, sv.service_name,
+                       se.words_by, se.music_by, se.arranger
+                FROM copy_events ce
+                JOIN services sv ON ce.service_id = sv.id
+                JOIN songs s ON ce.song_id = s.id
+                LEFT JOIN song_editions se ON ce.song_edition_id = se.id
+                WHERE sv.service_date >= ? AND sv.service_date <= ?
+                  AND ce.reportable = 1
+                  AND ce.service_id IN ({placeholders})
+                ORDER BY sv.service_date, s.canonical_title
+                """,
+                (start_date, end_date, *service_ids),
+            )
+        else:
+            cursor.execute(
+                """
+                SELECT ce.*, s.canonical_title, s.display_title, sv.service_date, sv.service_name,
+                       se.words_by, se.music_by, se.arranger
+                FROM copy_events ce
+                JOIN services sv ON ce.service_id = sv.id
+                JOIN songs s ON ce.song_id = s.id
+                LEFT JOIN song_editions se ON ce.song_edition_id = se.id
+                WHERE sv.service_date >= ? AND sv.service_date <= ? AND ce.reportable = 1
+                ORDER BY sv.service_date, s.canonical_title
+                """,
+                (start_date, end_date),
+            )
+        row = cursor.fetchone()
+        while row is not None:
+            yield dict(row)
+            row = cursor.fetchone()
+
     def query_songs_missing_credits(self) -> list[dict]:
         """
         Return songs that have no credits (words_by, music_by, arranger all NULL).

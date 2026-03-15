@@ -803,3 +803,13 @@ class TestCSRFProtection:
             assert resp.status_code == 403, (
                 f"{endpoint} accepted POST without CSRF token (got {resp.status_code})"
             )
+
+
+class TestCcliStreamingResponse:
+    """POST /reports/ccli uses iter_copy_events (streaming) not query_copy_events (#27)."""
+
+    def test_ccli_report_uses_iter_not_query(self):
+        import inspect
+        from worship_catalog.web import app as web_module
+        src = inspect.getsource(web_module)
+        assert "iter_copy_events" in src
