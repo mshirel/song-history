@@ -49,5 +49,5 @@ ENV INBOX_DIR=/inbox
 # Drop privileges before running anything
 USER appuser
 
-ENTRYPOINT ["worship-catalog"]
-CMD ["--help"]
+ENTRYPOINT ["uvicorn"]
+CMD ["worship_catalog.web.app:app", "--host", "0.0.0.0", "--port", "8000"]
