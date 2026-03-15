@@ -73,10 +73,11 @@ warn_return_any = true
 warn_unused_configs = true
 
 [[tool.mypy.overrides]]
-# anthropic is an optional runtime dependency; import-not-found suppressed per line
-# All other errors resolved with targeted suppressions in ocr.py (#71)
+# anthropic is an optional runtime dependency (import-not-found when absent).
+# The **request_kwargs unpacking pattern is correct at runtime but the SDK's
+# deeply overloaded create() can't be statically verified (call-overload). (#71)
 module = "worship_catalog.ocr"
-disable_error_code = ["import-not-found"]
+disable_error_code = ["import-not-found", "call-overload"]
 
 [[tool.mypy.overrides]]
 # sqlite3.Row/cursor.lastrowid typing is imprecise; relax return checks in db layer
