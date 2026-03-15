@@ -33,6 +33,14 @@ jobs:
       - name: Test
         run: python3 -m pytest
 
+      # Integration tests that require real PPTX files are skipped gracefully
+      # in CI (the fixture files are gitignored large binaries).  DB-only
+      # integration tests run as part of the default `pytest` run above.
+      # This step explicitly runs the integration subset to surface any
+      # unexpected skip-all regressions — closes #137.
+      - name: Integration tests (DB-only subset)
+        run: python3 -m pytest -m "integration and not slow" -v --tb=short
+
   security:
     runs-on: ubuntu-latest
     permissions:

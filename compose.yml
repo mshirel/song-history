@@ -124,6 +124,13 @@ services:
           cpus: '1.0'
         reservations:
           memory: 128M
+    # Uncomment to enable Traefik reverse-proxy routing (#149):
+    # labels:
+    #   - "traefik.enable=true"
+    #   - "traefik.http.routers.song-history.rule=Host(`songs.example.com`)"
+    #   - "traefik.http.routers.song-history.entrypoints=websecure"
+    #   - "traefik.http.routers.song-history.tls.certresolver=letsencrypt"
+    #   - "traefik.http.services.song-history.loadbalancer.server.port=8000"
 
   # ---------------------------------------------------------------------------
   # backup — nightly SQLite dump with 30-day retention

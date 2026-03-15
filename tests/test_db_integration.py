@@ -1683,3 +1683,84 @@ class TestSchemaVersionErrorGuard:
         db = Database(db_path)
         db.connect()  # Must not raise
         db.close()
+
+
+# ---------------------------------------------------------------------------
+# Issue #56 — insert_copy_event() deprecation
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+class TestInsertCopyEventDeprecation:
+    """insert_copy_event() must emit DeprecationWarning — issue #56."""
+
+    @pytest.fixture
+    def temp_db(self, tmp_path):
+        db_path = tmp_path / "test.db"
+        db = Database(db_path)
+        db.connect()
+        db.init_schema()
+        # Insert prerequisite rows
+        service_id = db.insert_or_update_service(
+            service_date="2026-02-15",
+            service_name="Morning Worship",
+            source_file="test.pptx",
+            source_hash="hash_deprecation",
+        )
+        song_id = db.insert_or_get_song("amazing grace", "Amazing Grace")
+        yield db, service_id, song_id
+        db.close()
+
+    def test_insert_copy_event_emits_deprecation_warning(self, temp_db):
+        """insert_copy_event() must emit a DeprecationWarning."""
+        import warnings
+        db, service_id, song_id = temp_db
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            db.insert_copy_event(
+                service_id=service_id,
+                song_id=song_id,
+                reproduction_type="projection",
+            )
+        assert any(
+            issubclass(w.category, DeprecationWarning)
+            and "insert_copy_event" in str(w.message).lower()
+            for w in caught
+        ), f"Expected DeprecationWarning about insert_copy_event, got: {[str(w.message) for w in caught]}"
+
+    def test_insert_or_get_copy_event_no_warning(self, temp_db):
+        """insert_or_get_copy_event() must NOT emit any DeprecationWarning."""
+        import warnings
+        db, service_id, song_id = temp_db
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            db.insert_or_get_copy_event(
+                service_id=service_id,
+                song_id=song_id,
+                reproduction_type="projection",
+            )
+        deprecations = [
+            w for w in caught if issubclass(w.category, DeprecationWarning)
+        ]
+        assert len(deprecations) == 0, (
+            f"insert_or_get_copy_event() should not emit DeprecationWarning, "
+            f"but got: {[str(w.message) for w in deprecations]}"
+        )
+
+    def test_duplicate_insert_or_get_returns_same_id(self, temp_db):
+        """Calling insert_or_get_copy_event twice with same args returns the same event_id."""
+        db, service_id, song_id = temp_db
+        id1 = db.insert_or_get_copy_event(
+            service_id=service_id,
+            song_id=song_id,
+            reproduction_type="recording",
+        )
+        id2 = db.insert_or_get_copy_event(
+            service_id=service_id,
+            song_id=song_id,
+            reproduction_type="recording",
+        )
+        assert id1 == id2, (
+            f"insert_or_get_copy_event must return same id for duplicate insert, "
+            f"got {id1} and {id2}"
+        )

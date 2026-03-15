@@ -198,6 +198,7 @@ def extract_songs(
     file_path: Path | str,
     use_ocr: bool = False,
     ocr_budget: OcrBudget | None = None,
+    library_index: dict[str, Any] | None = None,
 ) -> ExtractionResult:
     """
     Extract songs from a PPTX file.
@@ -210,7 +211,7 @@ def extract_songs(
         ValueError: If file exceeds size/slide-count limits.
     """
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(_extract_songs_impl, file_path, use_ocr, ocr_budget)
+        future = executor.submit(_extract_songs_impl, file_path, use_ocr, ocr_budget, library_index)
         try:
             return future.result(timeout=_MAX_EXTRACT_SECONDS)
         except concurrent.futures.TimeoutError as exc:
@@ -224,6 +225,7 @@ def _extract_songs_impl(
     file_path: Path | str,
     use_ocr: bool = False,
     ocr_budget: OcrBudget | None = None,
+    library_index: dict[str, Any] | None = None,
 ) -> ExtractionResult:
     """
     Core extraction logic — called by extract_songs() inside a bounded thread.
@@ -280,7 +282,8 @@ def _extract_songs_impl(
     songs = []
     for ordinal, (canonical, group) in enumerate(song_groups, 1):
         song = _create_song_occurrence(
-            ordinal, canonical, group, use_ocr=use_ocr, ocr_budget=ocr_budget
+            ordinal, canonical, group, use_ocr=use_ocr, ocr_budget=ocr_budget,
+            library_index=library_index,
         )
         songs.append(song)
 
@@ -502,6 +505,7 @@ def _create_song_occurrence(
     slides: list[Slide],
     use_ocr: bool = False,
     ocr_budget: OcrBudget | None = None,
+    library_index: dict[str, Any] | None = None,
 ) -> SongOccurrence:
     """
     Create a song occurrence from grouped slides.
@@ -540,7 +544,7 @@ def _create_song_occurrence(
         _log.debug("No credits found via text for '%s'", canonical_title)
 
     # Delegate to CreditResolver for the library + OCR fallback steps (#53)
-    resolver = CreditResolver(library_index=None, ocr_budget=ocr_budget, use_ocr=use_ocr)
+    resolver = CreditResolver(library_index=library_index, ocr_budget=ocr_budget, use_ocr=use_ocr)
     credits = resolver.resolve(slides, parsed, canonical_title)
 
     # Detect publisher
