@@ -225,6 +225,7 @@ def import_cmd(
 
         _log.info("Starting import", extra={"path": str(path), "files": len(pptx_files)})
         total_songs = 0
+        failed_files = 0
         for pptx_file in pptx_files:
             click.echo(f"Processing {pptx_file.name}...", err=False)
 
@@ -358,12 +359,29 @@ def import_cmd(
             except Exception as e:
                 _log.error("File import failed", extra={"file": pptx_file.name, "error": str(e)})
                 click.echo(f"  ✗ Error: {e}", err=True)
+                failed_files += 1
                 continue
 
         database.close()
-        _log.info("Import complete", extra={"total_songs": total_songs, "files": len(pptx_files)})
-        click.echo(f"\nTotal: {total_songs} songs imported", err=False)
-        sys.exit(0)
+        succeeded = len(pptx_files) - failed_files
+        _log.info(
+            "Import complete",
+            extra={
+                "total_songs": total_songs,
+                "files": len(pptx_files),
+                "failed": failed_files,
+            },
+        )
+        if failed_files:
+            click.echo(
+                f"\nTotal: {total_songs} songs imported "
+                f"({succeeded} succeeded, {failed_files} failed)",
+                err=False,
+            )
+            sys.exit(1)
+        else:
+            click.echo(f"\nTotal: {total_songs} songs imported", err=False)
+            sys.exit(0)
 
     except Exception as e:
         click.echo(f"Error: {e}", err=True)

@@ -15,6 +15,7 @@ from worship_catalog.normalize import (
 from worship_catalog.ocr import extract_credits_via_vision
 from worship_catalog.pptx_reader import (
     Slide,
+    compute_file_hash,
     extract_service_metadata,
     load_pptx,
     parse_all_slides,
@@ -42,6 +43,11 @@ class OcrBudget:
             return False
         self.calls_made += 1
         return True
+
+    def refund(self) -> None:
+        """Undo one consume() call (used when OCR returns nothing useful)."""
+        if self.calls_made > 0:
+            self.calls_made -= 1
 
     @property
     def is_capped(self) -> bool:
@@ -145,7 +151,7 @@ def extract_songs(
     # Create result
     result = ExtractionResult(
         filename=file_path.name,
-        file_hash="",  # TODO: compute hash
+        file_hash=compute_file_hash(file_path),
         service_date=metadata.date if metadata else None,
         service_name=metadata.service_name if metadata else None,
         song_leader=metadata.song_leader if metadata else None,
@@ -378,7 +384,9 @@ def _create_song_occurrence(
     # Extract credits from text
     credits = parse_credits(all_text)
 
-    # OCR fallback: if no credits found and first slide has an image, try Vision API
+    # OCR fallback: if no credits found and first slide has an image, try Vision API.
+    # Budget is consumed only when the call returns useful text; it is refunded on
+    # failure so that transient errors or image-less slides don't waste quota.
     if use_ocr and not any([
         credits.get("words_by"), credits.get("music_by"), credits.get("arranger"),
     ]):
@@ -386,6 +394,8 @@ def _create_song_occurrence(
             ocr_text = _try_ocr_credits(slides)
             if ocr_text:
                 credits = parse_credits(ocr_text)
+            elif ocr_budget is not None:
+                ocr_budget.refund()
 
     # Detect publisher
     publisher = detect_publisher(all_text)

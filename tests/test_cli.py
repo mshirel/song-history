@@ -172,6 +172,33 @@ class TestImportCommand:
             )
             assert result.exit_code != 0
 
+    def test_import_non_pptx_exits_nonzero(self, runner):
+        """Importing a non-PPTX file returns exit code 1 (issue #16)."""
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "test.db"
+            bad_file = Path(tmpdir) / "not_a_presentation.pptx"
+            bad_file.write_text("this is not a PPTX file")
+
+            result = runner.invoke(
+                main,
+                ["import", str(bad_file), "--db", str(db_path), "--non-interactive"],
+            )
+            assert result.exit_code != 0
+
+    def test_import_summary_includes_failure_count(self, runner):
+        """Summary line mentions failed count when a file fails (issue #16)."""
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "test.db"
+            bad_file = Path(tmpdir) / "bad.pptx"
+            bad_file.write_text("not a pptx")
+
+            result = runner.invoke(
+                main,
+                ["import", str(bad_file), "--db", str(db_path), "--non-interactive"],
+            )
+            # Either non-zero exit or explicit failure mention in output
+            assert result.exit_code != 0 or "failed" in result.output.lower()
+
     def test_import_handles_duplicate_songs_in_service(self, runner):
         """Import file with same song appearing multiple times in service.
 

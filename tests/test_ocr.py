@@ -62,6 +62,78 @@ class TestOcrBudget:
         budget.consume()
         assert budget.remaining == 4
 
+    def test_refund_restores_one_call(self):
+        """refund() undoes one consume() call."""
+        budget = OcrBudget(max_calls=3)
+        budget.consume()
+        budget.refund()
+        assert budget.calls_made == 0
+        assert budget.remaining == 3
+
+    def test_refund_does_not_go_below_zero(self):
+        """refund() on a fresh budget does not make calls_made negative."""
+        budget = OcrBudget(max_calls=3)
+        budget.refund()
+        assert budget.calls_made == 0
+
+    def test_refund_re_enables_capped_budget(self):
+        """After refund, a previously capped budget allows one more call."""
+        budget = OcrBudget(max_calls=1)
+        budget.consume()
+        assert budget.is_capped is True
+        budget.refund()
+        assert budget.is_capped is False
+        assert budget.consume() is True
+
+    def test_failed_ocr_does_not_consume_budget(self, monkeypatch):
+        """If _try_ocr_credits returns None, budget is not decremented."""
+        from unittest.mock import MagicMock, patch
+        from worship_catalog.extractor import _create_song_occurrence
+        from worship_catalog.pptx_reader import Slide, SlideText
+
+        slide = MagicMock(spec=Slide)
+        slide.text = MagicMock(spec=SlideText)
+        slide.text.text_lines = ["Amazing Grace", "1–Amazing grace how sweet the sound"]
+        slide.images = []
+        slide.index = 1
+
+        budget = OcrBudget(max_calls=5)
+        with patch("worship_catalog.extractor._try_ocr_credits", return_value=None):
+            _create_song_occurrence(
+                ordinal=1,
+                canonical_title="amazing grace",
+                slides=[slide],
+                use_ocr=True,
+                ocr_budget=budget,
+            )
+        assert budget.calls_made == 0
+
+    def test_successful_ocr_consumes_budget(self, monkeypatch):
+        """If _try_ocr_credits returns text, budget is decremented by 1."""
+        from unittest.mock import MagicMock, patch
+        from worship_catalog.extractor import _create_song_occurrence
+        from worship_catalog.pptx_reader import Slide, SlideText
+
+        slide = MagicMock(spec=Slide)
+        slide.text = MagicMock(spec=SlideText)
+        slide.text.text_lines = ["Amazing Grace"]
+        slide.images = []
+        slide.index = 1
+
+        budget = OcrBudget(max_calls=5)
+        with patch(
+            "worship_catalog.extractor._try_ocr_credits",
+            return_value="Words by: John Newton",
+        ):
+            _create_song_occurrence(
+                ordinal=1,
+                canonical_title="amazing grace",
+                slides=[slide],
+                use_ocr=True,
+                ocr_budget=budget,
+            )
+        assert budget.calls_made == 1
+
 
 class TestDetectMediaType:
     """Tests for magic-byte media type detection."""

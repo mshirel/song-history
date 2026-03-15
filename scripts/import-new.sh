@@ -39,50 +39,21 @@ log() {
 
 FAILURES_JSON="${INBOX_DIR}/.import_failures.json"
 
+# Resolve path to failure_tracker.py relative to this script — never interpolate
+# filenames into Python code strings (fixes CWE-78 shell injection).
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+FAILURE_TRACKER="${SCRIPT_DIR}/failure_tracker.py"
+
 get_failure_count() {
-    local filename="$1"
-    if [[ ! -f "$FAILURES_JSON" ]]; then
-        echo 0
-        return
-    fi
-    python3 -c "
-import json, sys
-data = json.loads(open('$FAILURES_JSON').read())
-print(data.get('$filename', {}).get('count', 0))
-"
+    python3 "$FAILURE_TRACKER" get "$FAILURES_JSON" "$1"
 }
 
 set_failure_count() {
-    local filename="$1"
-    local count="$2"
-    python3 -c "
-import json, sys
-from datetime import datetime
-path = '$FAILURES_JSON'
-try:
-    data = json.loads(open(path).read())
-except (FileNotFoundError, json.JSONDecodeError):
-    data = {}
-data['$filename'] = {'count': $count, 'last_failure': datetime.now().isoformat(timespec='seconds')}
-open(path, 'w').write(json.dumps(data, indent=2))
-"
+    python3 "$FAILURE_TRACKER" set "$FAILURES_JSON" "$1" "$2"
 }
 
 clear_failure_record() {
-    local filename="$1"
-    if [[ ! -f "$FAILURES_JSON" ]]; then
-        return
-    fi
-    python3 -c "
-import json
-path = '$FAILURES_JSON'
-try:
-    data = json.loads(open(path).read())
-except (FileNotFoundError, json.JSONDecodeError):
-    data = {}
-data.pop('$filename', None)
-open(path, 'w').write(json.dumps(data, indent=2))
-"
+    python3 "$FAILURE_TRACKER" clear "$FAILURES_JSON" "$1"
 }
 
 # ---------------------------------------------------------------------------
@@ -106,6 +77,12 @@ log "Found ${#pptx_files[@]} file(s) in ${INBOX_DIR}."
 
 for filepath in "${pptx_files[@]}"; do
     filename="$(basename "$filepath")"
+
+    # Refuse to process symlinks — prevents symlink-following attacks.
+    if [[ -L "$filepath" ]]; then
+        log "WARNING: $filepath is a symlink — skipping"
+        continue
+    fi
 
     log "Importing: $filename"
 

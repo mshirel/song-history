@@ -1,12 +1,15 @@
 """Unit tests for worship_catalog.extractor internal functions."""
 
-import pytest
+import io
+import zipfile
+from pathlib import Path
 
 from worship_catalog.extractor import (
     _create_song_occurrence,
     _extract_title_candidates,
     _group_song_slides,
     _is_song_title_slide,
+    extract_songs,
 )
 from worship_catalog.pptx_reader import Slide, SlideImage, SlideText
 
@@ -183,3 +186,81 @@ class TestCreateSongOccurrence:
         slides = [make_slide(0, ["Amazing Grace"])]
         _create_song_occurrence(1, "amazing grace", slides, use_ocr=True)
         assert called == []
+
+
+class TestExtractSongsFileHash:
+    """Tests for ExtractionResult.file_hash — issue #15."""
+
+    def _minimal_pptx(self) -> bytes:
+        """Build a minimal valid PPTX (ZIP) with a single blank slide."""
+        ns_pkg = "http://schemas.openxmlformats.org/package/2006"
+        ns_doc = "http://schemas.openxmlformats.org/officeDocument/2006"
+        ns_pml = "http://schemas.openxmlformats.org/presentationml/2006/main"
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr(
+                "[Content_Types].xml",
+                '<?xml version="1.0" encoding="UTF-8"?>'
+                f'<Types xmlns="{ns_pkg}/content-types">'
+                '<Default Extension="rels" ContentType='
+                f'"{ns_pkg}/relationships+xml"/>'
+                '<Default Extension="xml" ContentType="application/xml"/>'
+                '<Override PartName="/ppt/presentation.xml" ContentType='
+                '"application/vnd.openxmlformats-officedocument'
+                '.presentationml.presentation.main+xml"/>'
+                "</Types>",
+            )
+            zf.writestr(
+                "_rels/.rels",
+                '<?xml version="1.0" encoding="UTF-8"?>'
+                f'<Relationships xmlns="{ns_pkg}/relationships">'
+                f'<Relationship Id="rId1" Type="{ns_doc}/relationships'
+                '/officeDocument" Target="ppt/presentation.xml"/>'
+                "</Relationships>",
+            )
+            zf.writestr(
+                "ppt/presentation.xml",
+                '<?xml version="1.0" encoding="UTF-8"?>'
+                f'<p:presentation xmlns:p="{ns_pml}"'
+                f' xmlns:r="{ns_doc}/relationships">'
+                '<p:sldMasterIdLst/>'
+                '<p:sldSz cx="9144000" cy="5143500"/>'
+                '<p:notesSz cx="6858000" cy="9144000"/>'
+                "</p:presentation>",
+            )
+            zf.writestr(
+                "ppt/_rels/presentation.xml.rels",
+                '<?xml version="1.0" encoding="UTF-8"?>'
+                f'<Relationships xmlns="{ns_pkg}/relationships">'
+                "</Relationships>",
+            )
+        return buf.getvalue()
+
+    def test_file_hash_is_non_empty(self, tmp_path: Path) -> None:
+        """ExtractionResult.file_hash must be a non-empty string."""
+        pptx_path = tmp_path / "test.pptx"
+        pptx_path.write_bytes(self._minimal_pptx())
+        result = extract_songs(pptx_path)
+        assert result.file_hash, "file_hash must not be empty"
+        assert isinstance(result.file_hash, str)
+
+    def test_file_hash_is_stable(self, tmp_path: Path) -> None:
+        """Same file produces the same hash on repeated calls."""
+        pptx_bytes = self._minimal_pptx()
+        pptx_path = tmp_path / "test.pptx"
+        pptx_path.write_bytes(pptx_bytes)
+        result1 = extract_songs(pptx_path)
+        result2 = extract_songs(pptx_path)
+        assert result1.file_hash == result2.file_hash
+
+    def test_different_files_produce_different_hashes(self, tmp_path: Path) -> None:
+        """Different file content produces different hashes."""
+        bytes_a = self._minimal_pptx()
+        bytes_b = bytes_a + b"\x00"  # trivially different content
+        path_a = tmp_path / "a.pptx"
+        path_b = tmp_path / "b.pptx"
+        path_a.write_bytes(bytes_a)
+        path_b.write_bytes(bytes_b)
+        result_a = extract_songs(path_a)
+        result_b = extract_songs(path_b)
+        assert result_a.file_hash != result_b.file_hash
