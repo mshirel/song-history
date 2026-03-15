@@ -1076,3 +1076,57 @@ class TestBackgroundImportTransaction:
         _db2.close()
         assert row["status"] == "complete"
         assert row["songs_imported"] == 3
+
+
+# ---------------------------------------------------------------------------
+# Startup auto-purge (#74)
+# ---------------------------------------------------------------------------
+
+class TestStartupPurge:
+    def _make_app(self, db_path, tmp_path, monkeypatch):
+        """Reload the app module with a fresh DB path and return a TestClient."""
+        inbox = tmp_path / "inbox"
+        inbox.mkdir(exist_ok=True)
+        monkeypatch.setenv("DB_PATH", str(db_path))
+        monkeypatch.setenv("INBOX_DIR", str(inbox))
+        import worship_catalog.web.app as m
+        from importlib import reload
+        reload(m)
+        return m.app
+
+    def test_startup_purges_import_jobs_older_than_90_days(self, tmp_path, monkeypatch):
+        """On app startup the lifespan must delete import_jobs older than 90 days."""
+        db_path = tmp_path / "purge.db"
+        _db = Database(db_path)
+        _db.connect()
+        _db.init_schema()
+        old_id = str(_uuid_mod.uuid4())
+        recent_id = str(_uuid_mod.uuid4())
+        _db.create_import_job(old_id, filename="old.pptx", started_at="2025-12-01T00:00:00")
+        _db.create_import_job(recent_id, filename="recent.pptx")
+        _db.close()
+
+        app = self._make_app(db_path, tmp_path, monkeypatch)
+        with TestClient(app):
+            pass  # lifespan fires on __enter__
+
+        _db2 = Database(db_path)
+        _db2.connect()
+        assert _db2.get_import_job(old_id) is None
+        assert _db2.get_import_job(recent_id) is not None
+        _db2.close()
+
+    def test_startup_purge_logs_at_info(self, tmp_path, monkeypatch, caplog):
+        """Startup purge must emit an INFO log entry."""
+        import logging
+        db_path = tmp_path / "purge_log.db"
+        _db = Database(db_path)
+        _db.connect()
+        _db.init_schema()
+        _db.close()
+
+        app = self._make_app(db_path, tmp_path, monkeypatch)
+        with caplog.at_level(logging.INFO, logger="worship_catalog.web"):
+            with TestClient(app):
+                pass
+        assert any("purge" in r.message.lower() for r in caplog.records)

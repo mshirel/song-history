@@ -11,7 +11,8 @@ import re
 import secrets
 import threading
 import uuid
-from collections.abc import Generator
+from collections.abc import AsyncGenerator, Generator
+from contextlib import asynccontextmanager
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -38,7 +39,22 @@ from worship_catalog.services.report_service import compute_stats_data
 _setup_logging()
 _log = logging.getLogger("worship_catalog.web")
 
-app = FastAPI(title="Worship Catalog")
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+    """Run startup tasks before the app begins serving requests."""
+    db = _get_db()
+    try:
+        db.purge_old_import_jobs(days=90)
+        _log.info("Startup purge: removed import_jobs older than 90 days")
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("Startup purge failed", extra={"error": str(exc)})
+    finally:
+        db.close()
+    yield
+
+
+app = FastAPI(title="Worship Catalog", lifespan=_lifespan)
 
 # CSRF protection — must be added BEFORE RequestLoggingMiddleware so that 403
 # responses are logged correctly. Secret is read from env; a random value is
