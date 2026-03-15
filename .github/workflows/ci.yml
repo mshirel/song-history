@@ -66,6 +66,19 @@ jobs:
       - name: Static security scan (bandit)
         run: python3 -m bandit -r src/ -ll -c pyproject.toml
 
+      # --- SBOM / dependency baseline validation ---------------------------
+      - name: Validate dependency baseline
+        run: |
+          pip list --format=freeze | sort > /tmp/current-deps.txt
+          # New packages not in baseline are flagged (removed packages are OK)
+          NEW_PKGS=$(comm -23 /tmp/current-deps.txt sbom-baseline.txt | grep -v "^#" | grep -v "^$" || true)
+          if [ -n "$NEW_PKGS" ]; then
+            echo "New packages detected not in sbom-baseline.txt:"
+            echo "$NEW_PKGS"
+            exit 1
+          fi
+          echo "Dependency baseline check passed — no unexpected new packages."
+
   publish:
     needs: [test, security]
     # Only publish on pushes to main or the weekly scheduled run — not on PRs
