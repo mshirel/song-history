@@ -14,6 +14,15 @@
 
 set -eu
 
+# Trap EXIT to guarantee temp file cleanup even on unexpected exits or signals
+_TMPFILE=""
+_cleanup() {
+    if [ -n "$_TMPFILE" ]; then
+        rm -f "$_TMPFILE"
+    fi
+}
+trap '_cleanup' EXIT
+
 DB_PATH="${1:-}"
 BACKUP_DIR="${2:-}"
 
@@ -28,24 +37,23 @@ if [ ! -f "$DB_PATH" ]; then
 fi
 
 STAMP="$(date +%Y%m%d-%H%M%S)"
-TMP_FILE="$(mktemp /tmp/backup-XXXXXX.sql.gz)"
+_TMPFILE="$(mktemp /tmp/backup-XXXXXX.sql.gz)"
 
 # Dump + compress into a temp file so a partial write is never mistaken for valid
-if ! sqlite3 "$DB_PATH" '.dump' | gzip > "$TMP_FILE"; then
+if ! sqlite3 "$DB_PATH" '.dump' | gzip > "$_TMPFILE"; then
     echo "[backup] ERROR: dump/compress failed for $DB_PATH" >&2
-    rm -f "$TMP_FILE"
     exit 1
 fi
 
 # Integrity check before promoting to the final location
-if ! gzip -t "$TMP_FILE"; then
-    echo "[backup] ERROR: integrity check failed — discarding $TMP_FILE" >&2
-    rm -f "$TMP_FILE"
+if ! gzip -t "$_TMPFILE"; then
+    echo "[backup] ERROR: integrity check failed — discarding $_TMPFILE" >&2
     exit 1
 fi
 
 FINAL="$BACKUP_DIR/worship-${STAMP}.sql.gz"
-mv "$TMP_FILE" "$FINAL"
+mv "$_TMPFILE" "$FINAL"
+_TMPFILE=""  # file promoted — no cleanup needed
 
 # Record timestamp of last successful backup for healthcheck monitoring
 echo "$STAMP" > "$BACKUP_DIR/.last_success"

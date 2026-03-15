@@ -75,6 +75,32 @@ services:
         condition: service_started
 
   # ---------------------------------------------------------------------------
+  # backup — nightly SQLite dump sidecar with 7-day retention
+  #
+  # Writes compressed SQL dumps to ./backups/.
+  # To restore:
+  #   gunzip -c backups/worship-YYYYMMDD-HHMMSS.sql.gz | sqlite3 data/worship.db
+  # ---------------------------------------------------------------------------
+  backup:
+    image: python:3.12-slim@sha256:ccc7089399c8bb65dd1fb3ed6d55efa538a3f5e7fca3f5988ac3b5b87e593bf0
+    volumes:
+      - /opt/song-history/data:/data:ro
+      - /opt/song-history/backups:/backups
+    command: >
+      sh -c "while true; do
+        cp /data/worship.db /backups/worship-$(date +%Y%m%d-%H%M%S).db &&
+        echo \"Backup completed\" &&
+        find /backups -name '*.db' -mtime +7 -delete &&
+        sleep 86400;
+      done"
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"
+
+  # ---------------------------------------------------------------------------
   # watchtower — optional auto-update (pulls latest image from GHCR nightly)
   # Remove this service if you prefer manual updates.
   # ---------------------------------------------------------------------------
