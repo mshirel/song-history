@@ -7,13 +7,18 @@ import io
 import logging
 import math
 import os
+import re
+import secrets
+from collections.abc import Generator
+from datetime import date
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, Form, HTTPException, Query, Request
+from fastapi import FastAPI, Form, HTTPException, Query, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette_csrf import CSRFMiddleware  # type: ignore[attr-defined]
 
 from worship_catalog.db import Database
 from worship_catalog.log_config import RequestLoggingMiddleware
@@ -23,6 +28,16 @@ _setup_logging()
 _log = logging.getLogger("worship_catalog.web")
 
 app = FastAPI(title="Worship Catalog")
+
+# CSRF protection — must be added BEFORE RequestLoggingMiddleware so that 403
+# responses are logged correctly. Secret is read from env; a random value is
+# generated on first start (sufficient for a single-process deployment).
+_CSRF_SECRET = os.environ.get("CSRF_SECRET") or secrets.token_hex(32)
+app.add_middleware(
+    CSRFMiddleware,
+    secret=_CSRF_SECRET,
+    exempt_urls=[re.compile(r"^/health$")],
+)
 app.add_middleware(RequestLoggingMiddleware)
 
 _TEMPLATES_DIR = Path(__file__).parent / "templates"
@@ -48,6 +63,31 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> HTMLR
     )
 
 
+_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _validate_date_range(start_date: str, end_date: str) -> None:
+    """Raise HTTPException 422 if dates are not valid ISO-8601 or range is inverted."""
+    for label, val in (("start_date", start_date), ("end_date", end_date)):
+        if not _DATE_RE.match(val):
+            raise HTTPException(
+                status_code=422,
+                detail=f"Invalid {label}: '{val}' — expected YYYY-MM-DD",
+            )
+        try:
+            date.fromisoformat(val)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Invalid {label}: '{val}' — not a real calendar date",
+            ) from exc
+    if start_date > end_date:
+        raise HTTPException(
+            status_code=422,
+            detail=f"start_date ({start_date}) must not be after end_date ({end_date})",
+        )
+
+
 def _get_db() -> Database:
     db_path = Path(os.environ.get("DB_PATH", "data/worship.db"))
     db = Database(db_path)
@@ -56,14 +96,32 @@ def _get_db() -> Database:
     return db
 
 
+def get_db() -> Generator[Database, None, None]:
+    """FastAPI dependency that always closes the DB connection (issue #21)."""
+    db = _get_db()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
 
 
 @app.get("/health")
-async def health() -> dict[str, str]:
-    return {"status": "ok"}
+async def health(response: Response) -> dict[str, str]:
+    """Return 200 if DB is reachable; 503 otherwise (issue #31)."""
+    try:
+        db = _get_db()
+        db.cursor().execute("SELECT 1")
+        db.close()
+        return {"status": "ok", "db": "connected"}
+    except Exception as exc:
+        _log.warning("Health check DB failure", extra={"error": str(exc)})
+        response.status_code = 503
+        return {"status": "error", "db": "unavailable"}
 
 
 @app.get("/", response_class=RedirectResponse)
@@ -113,6 +171,7 @@ async def reports_ccli(
     start_date: str = Form(...),
     end_date: str = Form(...),
 ) -> StreamingResponse:
+    _validate_date_range(start_date, end_date)
     db = _get_db()
     events = db.query_copy_events(start_date, end_date)
     db.close()
@@ -215,6 +274,7 @@ async def reports_stats(
     leader: str = Form(default=""),
     all_songs: bool = Form(default=False),
 ) -> HTMLResponse:
+    _validate_date_range(start_date, end_date)
     db = _get_db()
     data = _compute_stats(db, start_date, end_date, leader, all_songs)
     db.close()
@@ -244,6 +304,7 @@ async def reports_stats_csv(
     leader: str = Form(default=""),
     all_songs: bool = Form(default=False),
 ) -> StreamingResponse:
+    _validate_date_range(start_date, end_date)
     db = _get_db()
     data = _compute_stats(db, start_date, end_date, leader, all_songs)
     db.close()
@@ -270,6 +331,7 @@ async def reports_stats_xlsx(
     leader: str = Form(default=""),
     all_songs: bool = Form(default=False),
 ) -> StreamingResponse:
+    _validate_date_range(start_date, end_date)
     try:
         import openpyxl
         from openpyxl.styles import Font

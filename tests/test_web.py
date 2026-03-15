@@ -12,11 +12,46 @@ from starlette.testclient import TestClient
 from worship_catalog.db import Database
 
 
+class _CsrfAwareClient:
+    """Wraps TestClient to automatically include the CSRF token on POST requests."""
+
+    def __init__(self, inner: TestClient) -> None:
+        self._inner = inner
+        self._csrf_token: str | None = None
+
+    def _ensure_token(self) -> str:
+        if self._csrf_token is None:
+            resp = self._inner.get("/songs")
+            self._csrf_token = resp.cookies.get("csrftoken", "")
+        return self._csrf_token or ""
+
+    def get(self, *args, **kwargs):
+        return self._inner.get(*args, **kwargs)
+
+    def post(self, *args, **kwargs):
+        token = self._ensure_token()
+        headers = dict(kwargs.pop("headers", {}) or {})
+        headers.setdefault("X-CSRFToken", token)
+        return self._inner.post(*args, headers=headers, **kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+
 @pytest.fixture
 def client(db_with_songs, monkeypatch):
-    """TestClient with DB_PATH env var pointed at the test DB."""
+    """TestClient with DB_PATH env var pointed at the test DB (CSRF-aware)."""
     monkeypatch.setenv("DB_PATH", str(db_with_songs))
-    from worship_catalog.web import app as web_app
+    from importlib import reload
+    import worship_catalog.web.app as app_module
+    reload(app_module)
+    return _CsrfAwareClient(TestClient(app_module.app))
+
+
+@pytest.fixture
+def raw_client(db_with_songs, monkeypatch):
+    """Plain TestClient without CSRF token injection — for CSRF security tests."""
+    monkeypatch.setenv("DB_PATH", str(db_with_songs))
     from importlib import reload
     import worship_catalog.web.app as app_module
     reload(app_module)
@@ -637,3 +672,134 @@ class TestErrorPages:
     def test_health_endpoint(self, client):
         response = client.get("/health")
         assert response.status_code == 200
+
+
+class TestHealthEndpointDb:
+    """Tests for health endpoint with DB connectivity check — issue #31."""
+
+    def test_health_returns_200_with_connected_db(self, client):
+        """When DB is reachable, /health returns 200."""
+        response = client.get("/health")
+        assert response.status_code == 200
+
+    def test_health_returns_db_status_in_body(self, client):
+        """Health response includes db status field."""
+        response = client.get("/health")
+        data = response.json()
+        assert data.get("status") == "ok"
+        assert "db" in data
+
+    def test_health_returns_503_when_db_unavailable(self, monkeypatch, tmp_path):
+        """When DB raises on execute, /health returns 503."""
+        from unittest.mock import patch, MagicMock
+
+        # Patch _get_db to raise so we can test the error path
+        def broken_get_db():
+            raise OSError("simulated DB failure")
+
+        import worship_catalog.web.app as app_module
+        from importlib import reload
+        monkeypatch.setenv("DB_PATH", str(tmp_path / "worship.db"))
+        reload(app_module)
+        from starlette.testclient import TestClient
+        c = TestClient(app_module.app, raise_server_exceptions=False)
+
+        with patch.object(app_module, "_get_db", broken_get_db):
+            response = c.get("/health")
+        assert response.status_code == 503
+
+
+class TestDateValidation:
+    """Tests for ISO-8601 date validation in web form endpoints — issue #17."""
+
+    def test_invalid_start_date_returns_422(self, client):
+        """Non-ISO date string in start_date returns a validation error."""
+        response = client.post(
+            "/reports/ccli",
+            data={"start_date": "Jan 2026", "end_date": "2026-12-31"},
+        )
+        assert response.status_code == 422
+
+    def test_invalid_end_date_returns_422(self, client):
+        """Non-ISO date string in end_date returns a validation error."""
+        response = client.post(
+            "/reports/ccli",
+            data={"start_date": "2026-01-01", "end_date": "December 2026"},
+        )
+        assert response.status_code == 422
+
+    def test_start_after_end_returns_422(self, client):
+        """start_date > end_date returns a validation error."""
+        response = client.post(
+            "/reports/ccli",
+            data={"start_date": "2026-12-31", "end_date": "2026-01-01"},
+        )
+        assert response.status_code == 422
+
+    def test_valid_dates_are_accepted(self, client):
+        """Well-formed ISO dates proceed normally."""
+        response = client.post(
+            "/reports/ccli",
+            data={"start_date": "2026-01-01", "end_date": "2026-12-31"},
+        )
+        assert response.status_code == 200
+
+    def test_stats_invalid_date_returns_422(self, client):
+        """Stats endpoint also validates dates."""
+        response = client.post(
+            "/reports/stats",
+            data={"start_date": "bad-date", "end_date": "2026-12-31"},
+        )
+        assert response.status_code == 422
+
+
+class TestCSRFProtection:
+    """Tests for CSRF protection on POST report endpoints — issue #39."""
+
+    def test_post_without_csrf_token_is_rejected(self, raw_client):
+        """POST to report endpoint without CSRF token returns 403."""
+        response = raw_client.post(
+            "/reports/ccli",
+            data={"start_date": "2026-01-01", "end_date": "2026-12-31"},
+        )
+        assert response.status_code == 403
+
+    def test_post_with_valid_csrf_token_succeeds(self, raw_client):
+        """POST with a valid CSRF token is accepted."""
+        get_resp = raw_client.get("/reports")
+        token = get_resp.cookies.get("csrftoken")
+        assert token is not None, "CSRF cookie should be set on GET"
+
+        response = raw_client.post(
+            "/reports/ccli",
+            data={"start_date": "2026-01-01", "end_date": "2026-12-31"},
+            headers={"X-CSRFToken": token},
+        )
+        assert response.status_code == 200
+
+    def test_post_with_wrong_csrf_token_is_rejected(self, raw_client):
+        """POST with wrong X-CSRFToken value returns 403."""
+        raw_client.get("/reports")  # set cookie
+        response = raw_client.post(
+            "/reports/ccli",
+            data={"start_date": "2026-01-01", "end_date": "2026-12-31"},
+            headers={"X-CSRFToken": "wrong-token"},
+        )
+        assert response.status_code == 403
+
+    def test_all_report_post_endpoints_require_csrf(self, raw_client):
+        """All report POST endpoints reject requests without CSRF token."""
+        endpoints = [
+            "/reports/ccli",
+            "/reports/stats",
+            "/reports/stats/csv",
+            "/reports/stats/xlsx",
+        ]
+        for endpoint in endpoints:
+            resp = raw_client.post(
+                endpoint,
+                data={"start_date": "2026-01-01", "end_date": "2026-12-31"},
+            )
+            assert resp.status_code == 403, (
+                f"{endpoint} accepted POST without CSRF token (got {resp.status_code})"
+            )
