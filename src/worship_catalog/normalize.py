@@ -211,6 +211,37 @@ def parse_credits(text: str) -> dict[str, str | None]:
     - "Words & Music: Traditional / Arr.: Pam Stephenson"
     - "Words by: ..., Music by: ..., Arrangement by: ..."
 
+    Regex pipeline — order matters:
+    -----------------------------------
+    1. **Combined "Words and Music" / "Words & Music"** — tried FIRST so that a
+       single attribution line (e.g. "Words and Music by: Twila Paris") populates
+       both ``words_by`` and ``music_by`` in one pass.  If this pattern were
+       checked after the standalone "Words by" / "Music by" patterns it would
+       sometimes be skipped because one of those fields would already be populated.
+       The pattern deliberately stops at ``/`` or ``, Arr`` so the arranger is
+       not swallowed into the combined value.
+
+    2. **Standalone "Words by:" / "Words:"** — only attempted when ``words_by``
+       is still None after step 1.  Stopping at ``/`` and ``,`` prevents
+       accidentally consuming the music credit on the same line.
+
+    3. **Standalone "Music by:" / "Music:"** — symmetric to step 2, only when
+       ``music_by`` is still None.
+
+    4. **Arranger patterns** — tried in priority order:
+       ``Arrangement by:`` → ``Arr. by`` → ``Arr.:`` / ``Arr:`` → ``Arr. Name``
+       The final pattern excludes ``Arr. Copyright`` lines (copyright notices
+       that start with "Arr." but are not arranger credits).
+
+    Why the scripture guard runs FIRST (in ``_is_invalid_line`` and
+    ``_extract_title_candidates``):
+    -----------------------------------
+    Scripture references such as "John 3:16" or "1 Peter 1:3–4" would otherwise
+    be picked up as title candidates because they are short, properly cased, and
+    contain no copyright/footer markers.  Running ``_SCRIPTURE_RE.match()``
+    before any title-selection logic guarantees they are discarded before they
+    can contaminate the song-grouping pipeline.
+
     Args:
         text: Raw text containing potential credit lines
 
