@@ -497,5 +497,9 @@ def _try_ocr_credits(slides: list[Slide]) -> str | None:
 
     try:
         return extract_credits_via_vision(blob)
-    except Exception:
+    except (OSError, ImportError) as exc:
+        _log.warning("OCR unavailable: %s", exc)
+        return None
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("OCR failed (%s): %s", type(exc).__name__, exc)
         return None

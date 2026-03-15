@@ -387,3 +387,76 @@ class TestExtractionLogging:
 
         messages = [r.message.lower() for r in caplog.records]
         assert any("credit" in m for m in messages)
+
+
+# ---------------------------------------------------------------------------
+# _try_ocr_credits exception handling (#55)
+# ---------------------------------------------------------------------------
+
+class TestTryOcrCreditsExceptionHandling:
+    """_try_ocr_credits() must log on failure, not silently swallow errors (#55)."""
+
+    def _slides_with_image(self):
+        return [make_slide(0, ["Amazing Grace"], image_blobs=[b"\xff\xd8\xff"])]
+
+    def test_os_error_returns_none_and_logs_warning(self, monkeypatch, caplog):
+        import logging
+        from worship_catalog.extractor import _try_ocr_credits
+
+        def _raise(blob):
+            raise OSError("ANTHROPIC_API_KEY is not set")
+
+        monkeypatch.setattr("worship_catalog.extractor.extract_credits_via_vision", _raise)
+
+        with caplog.at_level(logging.WARNING, logger="worship_catalog.extractor"):
+            result = _try_ocr_credits(self._slides_with_image())
+
+        assert result is None
+        assert any(r.levelno >= logging.WARNING for r in caplog.records)
+
+    def test_import_error_returns_none_and_logs_warning(self, monkeypatch, caplog):
+        import logging
+        from worship_catalog.extractor import _try_ocr_credits
+
+        def _raise(blob):
+            raise ImportError("anthropic not installed")
+
+        monkeypatch.setattr("worship_catalog.extractor.extract_credits_via_vision", _raise)
+
+        with caplog.at_level(logging.WARNING, logger="worship_catalog.extractor"):
+            result = _try_ocr_credits(self._slides_with_image())
+
+        assert result is None
+        assert any(r.levelno >= logging.WARNING for r in caplog.records)
+
+    def test_api_error_returns_none_and_logs_warning(self, monkeypatch, caplog):
+        """Any other exception (e.g. SDK API error) must be logged, not silently swallowed."""
+        import logging
+        from worship_catalog.extractor import _try_ocr_credits
+
+        def _raise(blob):
+            raise RuntimeError("connection refused")
+
+        monkeypatch.setattr("worship_catalog.extractor.extract_credits_via_vision", _raise)
+
+        with caplog.at_level(logging.WARNING, logger="worship_catalog.extractor"):
+            result = _try_ocr_credits(self._slides_with_image())
+
+        assert result is None
+        assert any(r.levelno >= logging.WARNING for r in caplog.records)
+
+    def test_error_message_includes_exception_type(self, monkeypatch, caplog):
+        """Log message should include the exception type so it's diagnosable."""
+        import logging
+        from worship_catalog.extractor import _try_ocr_credits
+
+        def _raise(blob):
+            raise ValueError("unexpected response shape")
+
+        monkeypatch.setattr("worship_catalog.extractor.extract_credits_via_vision", _raise)
+
+        with caplog.at_level(logging.WARNING, logger="worship_catalog.extractor"):
+            _try_ocr_credits(self._slides_with_image())
+
+        messages = " ".join(r.message for r in caplog.records)
+        assert "ValueError" in messages or "valueerror" in messages.lower()
