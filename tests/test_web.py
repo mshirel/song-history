@@ -1351,12 +1351,16 @@ class TestUploadConcurrencyLimit:
 
 
 @pytest.mark.integration
+@pytest.mark.slow
 class TestBackgroundImportPersistsSongsToDB:
     """Issue #96 — _run_import_in_background must write songs to the database.
 
     The background worker was updating job status but not calling the extractor
     or persisting any song/service rows.  These tests verify the full E2E path:
     upload a real PPTX → poll until complete → confirm songs exist in the DB.
+
+    Marked ``slow`` because each test builds a PPTX in memory, runs the full
+    background import worker, and polls the DB for results (~200–260 ms each).
     """
 
     @pytest.fixture

@@ -140,8 +140,13 @@ class TestSongExtraction:
 
 
 @pytest.mark.integration
+@pytest.mark.slow
 class TestExtractionAccuracy:
-    """Golden-file accuracy tests — require the real worship PPTX (skip in CI if absent)."""
+    """Golden-file accuracy tests — require the real worship PPTX (skip in CI if absent).
+
+    Marked ``slow`` because the test loads and parses a real multi-slide PPTX
+    via python-pptx, which takes ~180 ms on a developer laptop.
+    """
 
     @pytest.fixture
     def expected_results(self):
