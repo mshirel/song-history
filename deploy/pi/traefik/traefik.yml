@@ -1,0 +1,43 @@
+# Traefik v3 static configuration — Pi deployment
+# docs: https://doc.traefik.io/traefik/
+
+# --- Global -----------------------------------------------------------------
+global:
+  checkNewVersion: false
+  sendAnonymousUsage: false
+
+# --- Entry points -----------------------------------------------------------
+entryPoints:
+  web:
+    address: ":80"
+  websecure:
+    address: ":443"
+
+# --- Certificate resolvers (DNS-01 via Cloudflare) --------------------------
+certificatesResolvers:
+  letsencrypt:
+    acme:
+      email: matt@highland-coc.com
+      storage: /acme.json
+      dnsChallenge:
+        provider: cloudflare          # requires CF_DNS_API_TOKEN env var
+        resolvers:
+          - "1.1.1.1:53"
+          - "8.8.8.8:53"
+
+# --- Providers --------------------------------------------------------------
+providers:
+  docker:
+    exposedByDefault: false           # require traefik.enable=true label
+    network: bridge
+
+# --- API / dashboard (LAN-only, no auth needed) ----------------------------
+api:
+  dashboard: true
+  insecure: true                      # dashboard on :8080, LAN-only
+
+# --- Logging ----------------------------------------------------------------
+log:
+  level: INFO
+
+accessLog: {}

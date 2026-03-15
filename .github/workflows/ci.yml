@@ -119,6 +119,7 @@ jobs:
         with:
           context: .
           push: true
+          platforms: linux/amd64,linux/arm64   # arm64 required for Raspberry Pi 4/5 (#48)
           # SHA tag always; semver tags added when a vX.Y.Z tag is pushed (#36)
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

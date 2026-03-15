@@ -1,0 +1,94 @@
+# Pi production stack — Traefik + song-history
+# Copy this directory to /opt/song-history/ on the Pi.
+# See docs/pi-deploy.md for full setup instructions.
+#
+# Start:  docker compose up -d
+# Update: docker compose pull && docker compose up -d
+# Logs:   docker compose logs -f
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # traefik — reverse proxy + Let's Encrypt DNS-01 via Cloudflare
+  # ---------------------------------------------------------------------------
+  traefik:
+    image: traefik:v3.3
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      # Cloudflare API token — set in .env (never commit)
+      CF_DNS_API_TOKEN: "${CLOUDFLARE_API_TOKEN}"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./traefik/traefik.yml:/etc/traefik/traefik.yml:ro
+      # acme.json must exist and be chmod 600 before first start
+      - ./traefik/acme.json:/acme.json
+    labels:
+      - "traefik.enable=false"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ---------------------------------------------------------------------------
+  # song-history — worship catalog app
+  # ---------------------------------------------------------------------------
+  song-history:
+    image: ghcr.io/mshirel/song-history:latest
+    restart: unless-stopped
+    entrypoint: ["uvicorn", "worship_catalog.web.app:app",
+                 "--host", "0.0.0.0", "--port", "8000"]
+    environment:
+      DB_PATH: /data/worship.db
+      INBOX_DIR: /inbox
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY}"
+    volumes:
+      - /opt/song-history/data:/data
+      - /opt/song-history/inbox:/inbox
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.songs.rule=Host(`songs.highland-coc.com`)"
+      - "traefik.http.routers.songs.entrypoints=websecure"
+      - "traefik.http.routers.songs.tls.certresolver=letsencrypt"
+      - "traefik.http.services.songs.loadbalancer.server.port=8000"
+      # HTTP → HTTPS redirect
+      - "traefik.http.routers.songs-http.rule=Host(`songs.highland-coc.com`)"
+      - "traefik.http.routers.songs-http.entrypoints=web"
+      - "traefik.http.routers.songs-http.middlewares=redirect-to-https"
+      - "traefik.http.middlewares.redirect-to-https.redirectscheme.scheme=https"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    depends_on:
+      traefik:
+        condition: service_started
+
+  # ---------------------------------------------------------------------------
+  # watchtower — optional auto-update (pulls latest image from GHCR nightly)
+  # Remove this service if you prefer manual updates.
+  # ---------------------------------------------------------------------------
+  watchtower:
+    image: containrrr/watchtower
+    restart: unless-stopped
+    environment:
+      WATCHTOWER_CLEANUP: "true"
+      WATCHTOWER_SCHEDULE: "0 0 3 * * *"   # 3 AM nightly
+      WATCHTOWER_INCLUDE_STOPPED: "false"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"
