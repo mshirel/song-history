@@ -50,6 +50,8 @@ dev = [
     "pip-audit>=2.7,<3",
     "olefile>=0.47,<1",
     "openpyxl>=3.1,<4",
+    "mutmut>=2.4,<3",
+    "playwright>=1.40,<2",
 ]
 
 [tool.hatch.version]
@@ -128,6 +130,13 @@ target-version = "py310"
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "N", "UP", "B"]
 
+[tool.mutmut]
+paths_to_mutate = [
+    "src/worship_catalog/normalize.py",
+    "src/worship_catalog/extractor.py",
+]
+tests_dir = ["tests/"]
+
 [tool.pytest.ini_options]
 minversion = "7.0"
 testpaths = ["tests"]
@@ -136,4 +145,5 @@ markers = [
     "unit: unit tests",
     "integration: integration tests",
     "slow: slow running tests",
+    "e2e: end-to-end Playwright tests — require a running server; skip with -m 'not e2e'",
 ]
