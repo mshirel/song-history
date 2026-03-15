@@ -13,3 +13,29 @@ repos:
       - id: bandit
         args: ["-r", "src/", "-ll", "-c", "pyproject.toml"]
         pass_filenames: false
+
+  # Type checking — mirrors CI test job (#50)
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: a66e98df7b4aeeb3724184b332785976d062b92e  # v1.19.1
+    hooks:
+      - id: mypy
+        args: [--config-file, pyproject.toml]
+        additional_dependencies:
+          - click>=8.0
+          - fastapi>=0.100
+          - pydantic>=2.0
+          - types-PyYAML
+        pass_filenames: false
+
+  # Secrets scanning — mirrors CI security job (#50)
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: 6eaad039603a4de39fddd1cf5f727391efe9974e  # v8.30.0
+    hooks:
+      - id: gitleaks
+
+  # Dependency CVE audit — mirrors CI security job (#50)
+  - repo: https://github.com/pypa/pip-audit
+    rev: dec21659d132d424d7ee5e21cfd80021097a7251  # v2.10.0
+    hooks:
+      - id: pip-audit
+        args: [--skip-editable]
