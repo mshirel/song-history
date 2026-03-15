@@ -1,4 +1,7 @@
-"""Marker contract tests — verify registered pytest markers are in place (#91)."""
+"""Marker contract tests — verify registered pytest markers are in place (#91).
+
+Also verifies mutation testing tooling is installed (issue #90).
+"""
 
 import subprocess
 import sys
@@ -60,13 +63,38 @@ def test_not_slow_excludes_marked_tests() -> None:
         text=True,
         check=False,
     )
-    # Either 0 tests collected ("no tests ran") or the output says "deselected"
-    collected_lines = [
-        line for line in result.stdout.splitlines()
-        if line.strip() and not line.startswith("=")
-    ]
     # All backup tests are marked slow, so none should appear in the collected list
     assert "test_backup" not in result.stdout or "deselected" in result.stdout, (
         "Expected all backup tests to be deselected by -m 'not slow'. "
         f"Output:\n{result.stdout}"
+    )
+
+
+def test_e2e_marker_is_registered() -> None:
+    """The 'e2e' marker must be registered so that -m 'not e2e' works without warnings (#83)."""
+    result = subprocess.run(
+        [sys.executable, "-m", "pytest", "--markers"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0
+    assert "e2e" in result.stdout, (
+        "The 'e2e' marker is not registered in [tool.pytest.ini_options] markers. "
+        "Add it to pyproject.toml so that -m 'not e2e' works without warnings."
+    )
+
+
+def test_mutmut_is_installed() -> None:
+    """mutmut must be installed as a dev dependency and runnable (issue #90)."""
+    result = subprocess.run(
+        [sys.executable, "-m", "mutmut", "--version"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, (
+        "mutmut is not installed. Add 'mutmut' to [project.optional-dependencies] dev "
+        f"in pyproject.toml and run: pip install -e '.[dev]'\n"
+        f"stderr: {result.stderr}"
     )
