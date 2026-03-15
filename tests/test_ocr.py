@@ -370,3 +370,35 @@ class TestRetryLogic:
                 extract_credits_via_vision(b"\xff\xd8\x00\x00")
 
         assert mock_sleep.call_count == 1
+
+
+class TestOcrModelConstant:
+    """OCR model is a named constant overridable via env var (#22)."""
+
+    def test_ocr_model_default_constant_exists(self):
+        """_OCR_MODEL_DEFAULT is defined as a non-empty string."""
+        from worship_catalog.ocr import _OCR_MODEL_DEFAULT
+
+        assert isinstance(_OCR_MODEL_DEFAULT, str)
+        assert len(_OCR_MODEL_DEFAULT) > 0
+
+    def test_get_ocr_model_returns_default_when_env_not_set(self, monkeypatch):
+        """_get_ocr_model() returns _OCR_MODEL_DEFAULT when env var is absent."""
+        import worship_catalog.ocr as ocr_module
+
+        monkeypatch.delenv("WORSHIP_OCR_MODEL", raising=False)
+        assert ocr_module._get_ocr_model() == ocr_module._OCR_MODEL_DEFAULT
+
+    def test_get_ocr_model_returns_env_var_when_set(self, monkeypatch):
+        """_get_ocr_model() returns the WORSHIP_OCR_MODEL env var value when set."""
+        import worship_catalog.ocr as ocr_module
+
+        monkeypatch.setenv("WORSHIP_OCR_MODEL", "claude-custom-model")
+        assert ocr_module._get_ocr_model() == "claude-custom-model"
+
+    def test_max_ocr_tokens_constant_exists(self):
+        """_MAX_OCR_TOKENS is defined as a positive integer."""
+        from worship_catalog.ocr import _MAX_OCR_TOKENS
+
+        assert isinstance(_MAX_OCR_TOKENS, int)
+        assert _MAX_OCR_TOKENS > 0

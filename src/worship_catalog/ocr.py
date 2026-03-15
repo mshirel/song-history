@@ -6,9 +6,16 @@ import os
 import re
 import time
 
-_OCR_MODEL: str = "claude-haiku-4-5-20251001"
+# Default model; override by setting WORSHIP_OCR_MODEL env var.
+_OCR_MODEL_DEFAULT: str = "claude-haiku-4-5-20251001"
+_MAX_OCR_TOKENS: int = 200  # Sufficient for a single credits line
 _MAX_RETRIES: int = 3
 _RETRY_BASE_DELAY: float = 1.0  # seconds; doubles on each retry
+
+
+def _get_ocr_model() -> str:
+    """Return the OCR model name, honouring the WORSHIP_OCR_MODEL env var."""
+    return os.environ.get("WORSHIP_OCR_MODEL", _OCR_MODEL_DEFAULT)
 
 _log = logging.getLogger(__name__)
 
@@ -71,8 +78,8 @@ def extract_credits_via_vision(image_bytes: bytes) -> str | None:
     client = anthropic.Anthropic(api_key=api_key)
 
     request_kwargs = {
-        "model": _OCR_MODEL,
-        "max_tokens": 200,
+        "model": _get_ocr_model(),
+        "max_tokens": _MAX_OCR_TOKENS,
         "messages": [
             {
                 "role": "user",

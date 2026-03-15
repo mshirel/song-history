@@ -1052,3 +1052,26 @@ class TestResolveLibraryIndex:
         result = _resolve_library_index(str(nonexistent))
         # Should return the original path (doesn't crash)
         assert isinstance(result, Path)
+
+
+class TestCliNamedConstants:
+    """Named constants replace magic numbers in cli.py (#22)."""
+
+    def test_report_date_min_constant_exists(self):
+        """_REPORT_DATE_MIN is defined as the open-ended start sentinel."""
+        from worship_catalog.cli import _REPORT_DATE_MIN
+
+        assert _REPORT_DATE_MIN == "0000-01-01"
+
+    def test_report_date_max_constant_exists(self):
+        """_REPORT_DATE_MAX is defined as the open-ended end sentinel."""
+        from worship_catalog.cli import _REPORT_DATE_MAX
+
+        assert _REPORT_DATE_MAX == "9999-12-31"
+
+    def test_stats_top_songs_constant_exists_and_is_20(self):
+        """_STATS_TOP_SONGS is defined as a positive integer."""
+        from worship_catalog.cli import _STATS_TOP_SONGS
+
+        assert isinstance(_STATS_TOP_SONGS, int)
+        assert _STATS_TOP_SONGS == 20

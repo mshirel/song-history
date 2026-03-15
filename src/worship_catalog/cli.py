@@ -15,6 +15,9 @@ from worship_catalog.log_config import setup as _setup_logging
 _log = logging.getLogger("worship_catalog.cli")
 
 _DEFAULT_MAX_OCR_CALLS: int = 25
+_REPORT_DATE_MIN: str = "0000-01-01"  # open-ended start sentinel for date range queries
+_REPORT_DATE_MAX: str = "9999-12-31"  # open-ended end sentinel for date range queries
+_STATS_TOP_SONGS: int = 20  # number of top songs shown in stats report
 
 
 def _resolve_library_index(path_arg: str) -> Path:
@@ -437,9 +440,9 @@ def ccli(start_date: str, end_date: str, out: str, db: str) -> None:
 
         # Use broad date range if not specified
         if not start_date:
-            start_date = "0000-01-01"
+            start_date = _REPORT_DATE_MIN
         if not end_date:
-            end_date = "9999-12-31"
+            end_date = _REPORT_DATE_MAX
 
         # Query copy events
         events = database.query_copy_events(start_date, end_date)
@@ -534,9 +537,9 @@ def stats(
 
         # Use broad date range if not specified
         if not start_date:
-            start_date = "0000-01-01"
+            start_date = _REPORT_DATE_MIN
         if not end_date:
-            end_date = "9999-12-31"
+            end_date = _REPORT_DATE_MAX
 
         # Query services (with optional leader filter) then scope events to those services
         services = database.query_services(start_date, end_date, song_leader=leader)
@@ -614,7 +617,7 @@ def stats(
             f.write(f"- Total Copy Events: {len(events)}\n\n")
 
             heading = "All Songs" if all_songs else "Most Frequent Songs"
-            songs_to_show = sorted_songs if all_songs else sorted_songs[:20]
+            songs_to_show = sorted_songs if all_songs else sorted_songs[:_STATS_TOP_SONGS]
             f.write(f"## {heading}\n\n")
             f.write("| Song | Credits | Count |\n")
             f.write("|------|---------|-------|\n")

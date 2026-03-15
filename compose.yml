@@ -142,16 +142,23 @@ services:
     command: >
       -c "apk add --no-cache sqlite > /dev/null 2>&1;
           while true; do
-            STAMP=$$(date +%Y%m%d-%H%M%S);
-            sqlite3 /data/worship.db '.dump' | gzip > /backup/worship-$$STAMP.sql.gz
-            && echo \"[$$STAMP] Backup written: worship-$$STAMP.sql.gz\"
-            || echo \"[$$STAMP] Backup FAILED\";
+            /scripts/backup.sh /data/worship.db /backup;
             find /backup -name 'worship-*.sql.gz' -mtime +30 -delete;
             sleep 86400;
           done"
+    # Healthcheck: fail if .last_success is older than 25 hours (#28)
+    healthcheck:
+      test: ["CMD", "sh", "-c",
+             "test -f /backup/.last_success && \
+              find /backup/.last_success -mmin -1500 | grep -q ."]
+      interval: 1h
+      timeout: 10s
+      retries: 1
+      start_period: 2h
     volumes:
       - ./data:/data:ro
       - ./backups:/backup
+      - ./scripts:/scripts:ro
     restart: unless-stopped
     stop_grace_period: 60s            # allow active dump to finish before SIGKILL (#29)
     logging:                          # cap log disk usage (#30)
