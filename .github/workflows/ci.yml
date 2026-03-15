@@ -167,7 +167,30 @@ jobs:
         with:
           sarif_file: trivy-results.sarif
 
-      # Build and push multi-platform only after the CVE scan passes (#66).
+      # Smoke-test the local image before pushing (#88).
+      # Reuses local-scan:latest built above — no extra docker build needed.
+      - name: Smoke test image
+        if: steps.changes.outputs.app == 'true' || github.event_name == 'schedule'
+        run: |
+          docker run -d --name smoke-test \
+            -e DB_PATH=/tmp/test.db \
+            -p 8765:8000 \
+            local-scan:latest
+          # Wait for the server to start (max 15s)
+          for i in $(seq 1 15); do
+            if curl -sf http://localhost:8765/health; then
+              echo "Smoke test passed"
+              docker stop smoke-test
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Smoke test FAILED — server did not start within 15s"
+          docker logs smoke-test
+          docker stop smoke-test
+          exit 1
+
+      # Build and push multi-platform only after the CVE scan and smoke test pass (#66, #88).
       # GHA cache from the local build above makes this fast (no layer re-download).
       - name: Build and push (multi-platform)
         if: steps.changes.outputs.app == 'true' || github.event_name == 'schedule'
