@@ -15,7 +15,7 @@ jobs:
       contents: read
 
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
 
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
         with:
@@ -40,7 +40,7 @@ jobs:
       pull-requests: read  # gitleaks needs this to scan PR commits
 
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
           fetch-depth: 0  # gitleaks needs full history to scan all commits
 
@@ -93,7 +93,7 @@ jobs:
       security-events: write   # required to upload Trivy SARIF results (#81)
 
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
           fetch-tags: true   # required for docker/metadata-action semver tagging (#36)
 
@@ -118,7 +118,7 @@ jobs:
 
       - name: Log in to GitHub Container Registry
         if: steps.changes.outputs.app == 'true' || github.event_name == 'schedule'
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9  # v3
+        uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2  # v4.0.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -163,7 +163,7 @@ jobs:
 
       - name: Upload Trivy results to GitHub Security tab
         if: (steps.changes.outputs.app == 'true' || github.event_name == 'schedule') && always()
-        uses: github/codeql-action/upload-sarif@820e3160e279568db735cee8ed8f8e77a6da7818  # v3
+        uses: github/codeql-action/upload-sarif@0d579ffd059c29b07949a3cce3983f0780820c98  # v4.32.6
         with:
           sarif_file: trivy-results.sarif
 
