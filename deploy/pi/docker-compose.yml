@@ -12,7 +12,7 @@ services:
   # traefik — reverse proxy + Let's Encrypt DNS-01 via Cloudflare
   # ---------------------------------------------------------------------------
   traefik:
-    image: traefik:v3.3
+    image: traefik:v3.3@sha256:8884ac1939c29f829857dd35229aec4d070a9bd8551c56aee9b81e9df137512e
     restart: unless-stopped
     ports:
       - "80:80"
@@ -79,7 +79,7 @@ services:
   # Remove this service if you prefer manual updates.
   # ---------------------------------------------------------------------------
   watchtower:
-    image: containrrr/watchtower
+    image: containrrr/watchtower:1.7.1@sha256:f9086bfda061100361fc2bacf069585678d760d705cf390918ccdbda8a00980b
     restart: unless-stopped
     environment:
       WATCHTOWER_CLEANUP: "true"
