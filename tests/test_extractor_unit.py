@@ -4,6 +4,8 @@ import io
 import zipfile
 from pathlib import Path
 
+import pytest
+
 from worship_catalog.extractor import (
     _create_song_occurrence,
     _extract_title_candidates,
@@ -264,3 +266,45 @@ class TestExtractSongsFileHash:
         result_a = extract_songs(path_a)
         result_b = extract_songs(path_b)
         assert result_a.file_hash != result_b.file_hash
+
+
+class TestPptxSizeLimits:
+    """Tests for PPTX pre-flight size and slide-count checks — issue #40."""
+
+    def test_file_larger_than_limit_is_rejected(self, tmp_path: Path) -> None:
+        """Files above MAX_PPTX_SIZE_BYTES are rejected before loading."""
+        large_file = tmp_path / "big.pptx"
+        # 60 MB — over any sane limit
+        large_file.write_bytes(b"PK" + b"\x00" * (60 * 1024 * 1024))
+        with pytest.raises(ValueError, match="(?i)exceeds maximum"):
+            extract_songs(large_file)
+
+    def test_file_within_limit_is_accepted(self, tmp_path: Path) -> None:
+        """A small PPTX within size limit is not rejected by size check."""
+        from tests.test_extractor_unit import TestExtractSongsFileHash
+        pptx_bytes = TestExtractSongsFileHash()._minimal_pptx()
+        small_file = tmp_path / "small.pptx"
+        small_file.write_bytes(pptx_bytes)
+        # Should not raise a ValueError about size
+        try:
+            extract_songs(small_file)
+        except ValueError as exc:
+            assert "exceeds maximum" not in str(exc), f"Unexpected size error: {exc}"
+
+    def test_presentation_with_too_many_slides_is_rejected(
+        self, tmp_path: Path
+    ) -> None:
+        """Presentations with more than MAX_SLIDES slides are rejected."""
+        # Build a minimal PPTX then monkey-patch load_pptx to return a mock
+        from unittest.mock import MagicMock, patch
+
+        mock_prs = MagicMock()
+        # Simulate 1001 slides
+        mock_prs.slides = [MagicMock()] * 1001
+
+        pptx_path = tmp_path / "big_slide_count.pptx"
+        pptx_path.write_bytes(b"PK\x03\x04")  # minimal ZIP magic
+
+        with patch("worship_catalog.extractor.load_pptx", return_value=mock_prs):
+            with pytest.raises(ValueError, match="(?i)too many slides"):
+                extract_songs(pptx_path)

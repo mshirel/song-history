@@ -10,6 +10,27 @@ import time
 from pathlib import Path
 from typing import Any
 
+# Query-string sanitization (issue #41 — CWE-532 log information exposure)
+_SENSITIVE_PARAMS = frozenset({"q", "token", "key", "secret", "api_key", "password"})
+_MAX_QS_LOG_LENGTH = 100
+
+
+def _sanitize_query_string(qs: str) -> str:
+    """Redact sensitive params and truncate long query strings before logging."""
+    if not qs:
+        return ""
+    parts = []
+    for part in qs.split("&"):
+        name = part.split("=", 1)[0].lower()
+        if name in _SENSITIVE_PARAMS:
+            parts.append(f"{name}=[redacted]")
+        else:
+            parts.append(part)
+    result = "&".join(parts)
+    if len(result) > _MAX_QS_LOG_LENGTH:
+        result = result[:_MAX_QS_LOG_LENGTH] + "\u2026"
+    return result
+
 
 class _JsonFormatter(logging.Formatter):
     """Emit each log record as a single-line JSON object."""
@@ -103,7 +124,7 @@ class RequestLoggingMiddleware:
         start = time.monotonic()
         method = scope.get("method", "?")
         path = scope.get("path", "?")
-        qs = scope.get("query_string", b"").decode()
+        qs = _sanitize_query_string(scope.get("query_string", b"").decode())
         full_path = f"{path}?{qs}" if qs else path
 
         status_code: list[int] = []

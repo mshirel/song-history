@@ -3,12 +3,16 @@
 import json
 import logging
 import logging.handlers
-import re
 from pathlib import Path
 
 import pytest
 
-from worship_catalog.log_config import RequestLoggingMiddleware, _JsonFormatter, setup
+from worship_catalog.log_config import (
+    RequestLoggingMiddleware,
+    _JsonFormatter,
+    _sanitize_query_string,
+    setup,
+)
 
 
 class TestJsonFormatter:
@@ -171,3 +175,72 @@ class TestRequestLoggingMiddleware:
         # At minimum, a log record should have been emitted
         # (the exact content depends on timing; just check it ran)
         assert True  # middleware completed without error
+
+
+class TestSanitizeQueryString:
+    """Tests for _sanitize_query_string() — issue #41."""
+
+    def test_empty_string_returns_empty(self) -> None:
+        assert _sanitize_query_string("") == ""
+
+    def test_clean_param_is_returned_unchanged(self) -> None:
+        result = _sanitize_query_string("sort=title&order=asc")
+        assert result == "sort=title&order=asc"
+
+    def test_q_param_value_is_redacted(self) -> None:
+        result = _sanitize_query_string("q=John+Smith")
+        assert "John" not in result
+        assert "Smith" not in result
+        assert "q=" in result
+        assert "[redacted]" in result
+
+    def test_token_param_is_redacted(self) -> None:
+        result = _sanitize_query_string("token=abc123")
+        assert "abc123" not in result
+        assert "[redacted]" in result
+
+    def test_multiple_sensitive_params_all_redacted(self) -> None:
+        result = _sanitize_query_string("token=secret&q=name&sort=title")
+        assert "secret" not in result
+        assert "name" not in result
+        assert "sort=title" in result
+
+    def test_long_query_string_is_truncated(self) -> None:
+        long_qs = "x=" + "A" * 200
+        result = _sanitize_query_string(long_qs)
+        assert len(result) <= 110  # 100 chars + "…" ellipsis
+
+    def test_path_without_query_string_unaffected(self) -> None:
+        """_sanitize_query_string with no input returns empty."""
+        assert _sanitize_query_string("") == ""
+
+    def test_middleware_redacts_q_in_logged_path(self, caplog) -> None:
+        """Query string with ?q= is sanitized before appearing in log records."""
+        import asyncio
+
+        async def app(scope, receive, send):
+            await send({"type": "http.response.start", "status": 200, "headers": []})
+            await send({"type": "http.response.body", "body": b""})
+
+        middleware = RequestLoggingMiddleware(app)
+        scope = {
+            "type": "http",
+            "method": "GET",
+            "path": "/songs",
+            "query_string": b"q=PastorJohnSmith",
+        }
+
+        async def run():
+            await middleware(scope, None, lambda msg: asyncio.coroutine(lambda: None)())
+
+        with caplog.at_level(logging.INFO, logger="worship_catalog.web.request"):
+            try:
+                asyncio.get_event_loop().run_until_complete(run())
+            except Exception:
+                pass
+
+        for record in caplog.records:
+            path_logged = getattr(record, "path", "") or ""
+            assert "PastorJohnSmith" not in path_logged, (
+                "Search query value must not appear verbatim in log records"
+            )

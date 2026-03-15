@@ -2,6 +2,28 @@
 
 import base64
 import os
+import re
+
+# Output validation (issue #42 — CWE-94 prompt injection hardening)
+_CREDITS_RE = re.compile(
+    r"\b(words|music|arr|arrangement|lyrics|composer)\b",
+    re.IGNORECASE,
+)
+_MAX_OCR_OUTPUT_LENGTH = 300
+
+
+def _validate_ocr_output(text: str) -> str | None:
+    """Return text if it looks like credits; None otherwise.
+
+    Rejects output that:
+    - Exceeds _MAX_OCR_OUTPUT_LENGTH characters (likely injected content)
+    - Contains no recognizable credits keywords (not a credits line at all)
+    """
+    if len(text) > _MAX_OCR_OUTPUT_LENGTH:
+        return None
+    if not _CREDITS_RE.search(text):
+        return None
+    return text
 
 
 def extract_credits_via_vision(image_bytes: bytes) -> str | None:
@@ -74,7 +96,7 @@ def extract_credits_via_vision(image_bytes: bytes) -> str | None:
     raw = message.content[0].text.strip()
     if raw.lower() == "none" or not raw:
         return None
-    return raw
+    return _validate_ocr_output(raw)
 
 
 def _detect_media_type(image_bytes: bytes) -> str:

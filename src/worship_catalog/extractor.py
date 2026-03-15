@@ -21,6 +21,10 @@ from worship_catalog.pptx_reader import (
     parse_all_slides,
 )
 
+# Pre-flight guards (issue #40 — CWE-400 resource exhaustion)
+_MAX_PPTX_SIZE_BYTES: int = 50 * 1024 * 1024  # 50 MB
+_MAX_SLIDE_COUNT: int = 500
+
 
 @dataclass
 class OcrBudget:
@@ -127,8 +131,25 @@ def extract_songs(
     """
     file_path = Path(file_path)
 
+    # Pre-flight: reject oversized files before loading into memory (CWE-400)
+    size = file_path.stat().st_size
+    if size > _MAX_PPTX_SIZE_BYTES:
+        raise ValueError(
+            f"{file_path.name} exceeds maximum allowed size "
+            f"({size // (1024 * 1024)} MB > {_MAX_PPTX_SIZE_BYTES // (1024 * 1024)} MB)"
+        )
+
     # Step 1: Load presentation
     prs = load_pptx(file_path)
+
+    # Pre-flight: reject presentations with too many slides (CWE-400)
+    slide_count = len(prs.slides)  # type: ignore[attr-defined]
+    if slide_count > _MAX_SLIDE_COUNT:
+        raise ValueError(
+            f"{file_path.name} has too many slides "
+            f"({slide_count} > {_MAX_SLIDE_COUNT})"
+        )
+
     slides = parse_all_slides(prs)
 
     # Step 2: Extract metadata
