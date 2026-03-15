@@ -25,6 +25,19 @@ class TestDockerfileCMD:
             "and immediately exit without serving traffic"
         )
 
+    def test_dockerfile_upgrades_pip(self):
+        """Dockerfile must upgrade pip to clear known pip CVEs.
+
+        pip 25.x ships with CVE-2026-1703 and CVE-2025-8869; upgrading pip
+        to the latest version removes these findings from the Trivy CVE scan
+        and prevents the publish CI job from failing.
+        """
+        content = self._dockerfile_content()
+        assert "pip install" in content and "upgrade pip" in content, (
+            "Dockerfile must run 'pip install --upgrade pip' to clear pip CVEs "
+            "that cause the Trivy CVE scan to fail (CVE-2026-1703, CVE-2025-8869)"
+        )
+
     def test_dockerfile_entrypoint_or_cmd_starts_web_server(self):
         """Dockerfile ENTRYPOINT+CMD combination must start the uvicorn web server.
 

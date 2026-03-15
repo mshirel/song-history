@@ -1,5 +1,6 @@
 # Pin base image to exact digest to prevent supply-chain drift (#26)
-FROM python:3.14-slim@sha256:6a27522252aef8432841f224d9baaa6e9fce07b07584154fa0b9a96603af7456
+# python:3.12-slim — stable LTS; 3.14 bumped by Dependabot introduced CRITICAL/HIGH CVEs (reverted)
+FROM python:3.12-slim@sha256:ccc7089399c8bb65dd1fb3ed6d55efa538a3f5e7fca3f5988ac3b5b87e593bf0
 
 WORKDIR /app
 
@@ -12,6 +13,9 @@ RUN apt-get update \
         libxml2 \
         libxslt1.1 \
     && rm -rf /var/lib/apt/lists/*
+
+# Upgrade pip to latest to clear pip CVEs (CVE-2026-1703, CVE-2025-8869 fixed in pip>=26.0)
+RUN pip install --no-cache-dir --upgrade pip
 
 # Copy package files first (for layer caching)
 COPY pyproject.toml README.md ./
