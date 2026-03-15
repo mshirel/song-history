@@ -852,6 +852,70 @@ class TestLeaderTopSongs:
 
 
 @pytest.mark.integration
+class TestTransactionBoundary:
+    """Tests for Database.transaction() context manager (#14)."""
+
+    @pytest.fixture
+    def temp_db(self, tmp_path):
+        db = Database(tmp_path / "txn_test.db")
+        db.connect()
+        db.init_schema()
+        yield db
+        db.close()
+
+    def test_transaction_commits_on_success(self, temp_db):
+        """All inserts inside transaction() are visible after the block exits normally."""
+        with temp_db.transaction():
+            song_id = temp_db.insert_or_get_song("amazing grace", "Amazing Grace")
+            temp_db.insert_or_get_song("holy holy holy", "Holy Holy Holy")
+
+        cursor = temp_db.conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM songs")
+        assert cursor.fetchone()[0] == 2
+
+    def test_transaction_rolls_back_on_exception(self, temp_db):
+        """If an exception is raised inside transaction(), no changes are persisted."""
+        with pytest.raises(ValueError):
+            with temp_db.transaction():
+                temp_db.insert_or_get_song("amazing grace", "Amazing Grace")
+                raise ValueError("simulated failure mid-import")
+
+        cursor = temp_db.conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM songs")
+        assert cursor.fetchone()[0] == 0
+
+    def test_transaction_restores_pre_import_state(self, temp_db):
+        """A failed import inside transaction() leaves the DB exactly as it was before."""
+        # Pre-existing data
+        temp_db.insert_or_get_song("pre-existing song", "Pre-Existing Song")
+
+        with pytest.raises(RuntimeError):
+            with temp_db.transaction():
+                temp_db.insert_or_get_song("new song", "New Song")
+                raise RuntimeError("import error")
+
+        cursor = temp_db.conn.cursor()
+        cursor.execute("SELECT canonical_title FROM songs ORDER BY id")
+        rows = [r[0] for r in cursor.fetchall()]
+        assert rows == ["pre-existing song"]
+
+    def test_nested_individual_commits_outside_transaction(self, temp_db):
+        """Without transaction(), each DB call commits independently."""
+        temp_db.insert_or_get_song("song one", "Song One")
+        temp_db.insert_or_get_song("song two", "Song Two")
+
+        cursor = temp_db.conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM songs")
+        assert cursor.fetchone()[0] == 2
+
+    def test_transaction_exception_is_reraised(self, temp_db):
+        """The exception that caused rollback is propagated to the caller."""
+        with pytest.raises(KeyError, match="test-key"):
+            with temp_db.transaction():
+                raise KeyError("test-key")
+
+
+@pytest.mark.integration
 class TestDatabaseConnect:
     """Tests for Database.connect() pragma configuration."""
 

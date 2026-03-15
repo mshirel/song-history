@@ -1,6 +1,8 @@
 """SQLite database schema and operations."""
 
 import sqlite3
+from collections.abc import Generator
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -14,6 +16,7 @@ class Database:
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.conn: sqlite3.Connection | None = None
+        self._in_transaction: bool = False
 
     def connect(self) -> sqlite3.Connection:
         """Connect to database."""
@@ -37,6 +40,28 @@ class Database:
         """Close database connection."""
         if self.conn:
             self.conn.close()
+
+    @contextmanager
+    def transaction(self) -> Generator[None, None, None]:
+        """Context manager that wraps multiple DB calls in a single transaction.
+
+        On success: commits once when the block exits.
+        On exception: rolls back all changes and re-raises.
+        """
+        self._in_transaction = True
+        try:
+            yield
+            self._conn.commit()
+        except Exception:
+            self._conn.rollback()
+            raise
+        finally:
+            self._in_transaction = False
+
+    def _maybe_commit(self) -> None:
+        """Commit only when not inside an explicit transaction() block."""
+        if not self._in_transaction:
+            self._conn.commit()
 
     def init_schema(self) -> None:
         """Create database schema."""
@@ -134,7 +159,7 @@ class Database:
             """
         )
 
-        self._conn.commit()
+        self._maybe_commit()
 
     def insert_or_get_song(
         self, canonical_title: str, display_title: str
@@ -155,7 +180,7 @@ class Database:
             "INSERT INTO songs (canonical_title, display_title) VALUES (?, ?)",
             (canonical_title, display_title),
         )
-        self._conn.commit()
+        self._maybe_commit()
         return cursor.lastrowid
 
     def insert_or_get_song_edition(
@@ -205,7 +230,7 @@ class Database:
             """,
             (song_id, publisher, words_by, music_by, arranger, copyright_notice),
         )
-        self._conn.commit()
+        self._maybe_commit()
         return cursor.lastrowid
 
     def insert_or_update_service(
@@ -266,7 +291,7 @@ class Database:
             )
             service_id = cursor.lastrowid
 
-        self._conn.commit()
+        self._maybe_commit()
         return service_id
 
     def insert_service_song(
@@ -299,7 +324,7 @@ class Database:
                 occurrences,
             ),
         )
-        self._conn.commit()
+        self._maybe_commit()
         return cursor.lastrowid
 
     def insert_copy_event(
@@ -322,7 +347,7 @@ class Database:
             """,
             (service_id, song_id, song_edition_id, reproduction_type, count, int(reportable)),
         )
-        self._conn.commit()
+        self._maybe_commit()
         return cursor.lastrowid
 
     def insert_or_get_copy_event(
@@ -359,7 +384,7 @@ class Database:
             """,
             (service_id, song_id, song_edition_id, reproduction_type, count, int(reportable)),
         )
-        self._conn.commit()
+        self._maybe_commit()
         return cursor.lastrowid
 
     def query_services(
@@ -511,7 +536,7 @@ class Database:
             (edition_id, song_id),
         )
 
-        self._conn.commit()
+        self._maybe_commit()
 
     def query_leader_top_songs(
         self, leader: str, min_count: int = 2
@@ -576,4 +601,4 @@ class Database:
         # Delete service
         cursor.execute("DELETE FROM services WHERE id = ?", (service_id,))
 
-        self._conn.commit()
+        self._maybe_commit()

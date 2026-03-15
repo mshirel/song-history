@@ -267,78 +267,79 @@ def import_cmd(
                 )
                 existing_service = cursor.fetchone()
 
-                # If it exists, delete old data for clean re-import (idempotent re-import)
-                if existing_service:
-                    existing_id = existing_service[0]
-                    database.delete_service_data(existing_id)
+                with database.transaction():
+                    # If it exists, delete old data for clean re-import (idempotent re-import)
+                    if existing_service:
+                        existing_id = existing_service[0]
+                        database.delete_service_data(existing_id)
 
-                service_id = database.insert_or_update_service(
-                    service_date=result.service_date or "0000-00-00",
-                    service_name=result.service_name or "Unknown",
-                    source_file=str(pptx_file),
-                    source_hash=service_hash,
-                    song_leader=result.song_leader,
-                    preacher=result.preacher,
-                    sermon_title=result.sermon_title,
-                )
-
-                # Insert songs and service songs
-                for song in result.songs:
-                    song_id = database.insert_or_get_song(
-                        song.canonical_title,
-                        song.display_title,
+                    service_id = database.insert_or_update_service(
+                        service_date=result.service_date or "0000-00-00",
+                        service_name=result.service_name or "Unknown",
+                        source_file=str(pptx_file),
+                        source_hash=service_hash,
+                        song_leader=result.song_leader,
+                        preacher=result.preacher,
+                        sermon_title=result.sermon_title,
                     )
 
-                    # Fill missing credits from library if available
-                    words_by = song.words_by
-                    music_by = song.music_by
-                    arranger = song.arranger
-                    if lib_index and not any([words_by, music_by, arranger]):
-                        lib_credits = lookup_song_credits(song.canonical_title, lib_index)
-                        if lib_credits:
-                            words_by = lib_credits.get("words_by")
-                            music_by = lib_credits.get("music_by")
-                            arranger = lib_credits.get("arranger")
-
-                    edition_id = None
-                    if song.publisher or words_by or music_by or arranger:
-                        edition_id = database.insert_or_get_song_edition(
-                            song_id=song_id,
-                            publisher=song.publisher,
-                            words_by=words_by,
-                            music_by=music_by,
-                            arranger=arranger,
+                    # Insert songs and service songs
+                    for song in result.songs:
+                        song_id = database.insert_or_get_song(
+                            song.canonical_title,
+                            song.display_title,
                         )
 
-                    database.insert_service_song(
-                        service_id=service_id,
-                        song_id=song_id,
-                        ordinal=song.ordinal,
-                        song_edition_id=edition_id,
-                        first_slide_index=song.first_slide_index,
-                        last_slide_index=song.last_slide_index,
-                        occurrences=1,
-                    )
+                        # Fill missing credits from library if available
+                        words_by = song.words_by
+                        music_by = song.music_by
+                        arranger = song.arranger
+                        if lib_index and not any([words_by, music_by, arranger]):
+                            lib_credits = lookup_song_credits(song.canonical_title, lib_index)
+                            if lib_credits:
+                                words_by = lib_credits.get("words_by")
+                                music_by = lib_credits.get("music_by")
+                                arranger = lib_credits.get("arranger")
 
-                    # Create copy events (default: projection and recording)
-                    # Use insert_or_get to handle songs that appear multiple times in same service
-                    database.insert_or_get_copy_event(
-                        service_id=service_id,
-                        song_id=song_id,
-                        song_edition_id=edition_id,
-                        reproduction_type="projection",
-                        count=1,
-                        reportable=True,
-                    )
+                        edition_id = None
+                        if song.publisher or words_by or music_by or arranger:
+                            edition_id = database.insert_or_get_song_edition(
+                                song_id=song_id,
+                                publisher=song.publisher,
+                                words_by=words_by,
+                                music_by=music_by,
+                                arranger=arranger,
+                            )
 
-                    database.insert_or_get_copy_event(
-                        service_id=service_id,
-                        song_id=song_id,
-                        song_edition_id=edition_id,
-                        reproduction_type="recording",
-                        count=1,
-                        reportable=True,
-                    )
+                        database.insert_service_song(
+                            service_id=service_id,
+                            song_id=song_id,
+                            ordinal=song.ordinal,
+                            song_edition_id=edition_id,
+                            first_slide_index=song.first_slide_index,
+                            last_slide_index=song.last_slide_index,
+                            occurrences=1,
+                        )
+
+                        # Create copy events (default: projection and recording)
+                        # Use insert_or_get for songs appearing multiple times in same service
+                        database.insert_or_get_copy_event(
+                            service_id=service_id,
+                            song_id=song_id,
+                            song_edition_id=edition_id,
+                            reproduction_type="projection",
+                            count=1,
+                            reportable=True,
+                        )
+
+                        database.insert_or_get_copy_event(
+                            service_id=service_id,
+                            song_id=song_id,
+                            song_edition_id=edition_id,
+                            reproduction_type="recording",
+                            count=1,
+                            reportable=True,
+                        )
 
                 total_songs += len(result.songs)
                 _log.info(
