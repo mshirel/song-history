@@ -8,11 +8,14 @@
 <input type="hidden" name="sort_dir" value="{{ sort_dir }}">
 
 <div class="search-row">
+  <label for="q" class="sr-only">Search songs</label>
   <input
     type="text"
+    id="q"
     name="q"
     value="{{ q }}"
     placeholder="Search by title or credits…"
+    aria-label="Search songs"
     hx-get="/songs"
     hx-trigger="input changed delay:300ms, search"
     hx-target="#song-tbody"
