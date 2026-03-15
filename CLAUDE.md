@@ -99,3 +99,46 @@ CI config changes and documentation-only changes are exempt, but any change touc
 Run a specific file: `python3 -m pytest tests/test_web.py -v`
 Run with coverage: `python3 -m pytest --cov=worship_catalog`
 Run only fast tests: `python3 -m pytest -m "not integration"`
+
+---
+
+## GitHub Issue Labels
+
+Every issue should carry at least one **topic label** and, where applicable, one or more **qualifier labels**.
+
+### Topic labels (what area the issue is in)
+
+| Label | Use when |
+|---|---|
+| `bug` | Something that was working is broken |
+| `regression` | Behavior that previously worked is now broken (subset of bug) |
+| `enhancement` | New feature or improvement |
+| `security` | Security vulnerability or hardening |
+| `performance` | Speed, memory, or resource usage |
+| `architecture` | System design, abstractions, coupling |
+| `code-quality` | Readability, patterns, maintainability |
+| `devops` | CI/CD, Docker, deployment, observability |
+| `devsecops` | Supply chain, scanning, dependency management |
+| `infrastructure` | Infrastructure and deployment config |
+| `web-ui` | Web routes, templates, HTMX behaviour, forms |
+| `cli-contract` | CLI command interface, flags, or output format |
+| `ux` | User experience — flows, copy, layout, usability |
+| `accessibility` | ARIA, keyboard navigation, screen reader, contrast |
+| `documentation` | Docs-only changes |
+
+### Qualifier labels (lifecycle / process)
+
+| Label | Use when |
+|---|---|
+| `qa-found` | Issue was identified during QA or automated testing |
+| `uat` | Issue requires user acceptance testing before closing |
+| `deferred` | Intentionally out of scope — do not pick up until re-prioritized |
+| `wontfix` | Will not be worked, ever |
+| `good first issue` | Low complexity, safe starting point for new contributors |
+| `help wanted` | Needs extra attention or outside input |
+
+### Filtering deferred issues
+
+```bash
+gh issue list --state open --label "!deferred"
+```
