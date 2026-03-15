@@ -809,6 +809,19 @@ class TestCSRFProtection:
                 f"{endpoint} accepted POST without CSRF token (got {resp.status_code})"
             )
 
+    def test_upload_without_csrf_token_returns_403(self, raw_client):
+        """/upload must be protected by CSRF — no token → 403. (#59)"""
+        resp = raw_client.post(
+            "/upload",
+            files={"file": ("sunday.pptx", io.BytesIO(SMALL_PPTX_BYTES), VALID_PPTX_MIME)},
+        )
+        assert resp.status_code == 403
+
+    def test_upload_with_valid_csrf_token_is_not_rejected_for_csrf(self, client):
+        """/upload with a valid CSRF token must not return 403. (#59)"""
+        resp = _upload(client, SMALL_PPTX_BYTES, "sunday.pptx", VALID_PPTX_MIME)
+        assert resp.status_code != 403
+
 
 class TestCcliStreamingResponse:
     """POST /reports/ccli uses iter_copy_events (streaming) not query_copy_events (#27)."""

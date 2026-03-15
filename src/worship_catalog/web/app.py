@@ -63,7 +63,7 @@ _CSRF_SECRET = os.environ.get("CSRF_SECRET") or secrets.token_hex(32)
 app.add_middleware(
     CSRFMiddleware,
     secret=_CSRF_SECRET,
-    exempt_urls=[re.compile(r"^/health$"), re.compile(r"^/upload$")],
+    exempt_urls=[re.compile(r"^/health$")],
 )
 app.add_middleware(RequestLoggingMiddleware)
 
