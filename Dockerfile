@@ -14,6 +14,8 @@ COPY pyproject.toml README.md ./
 COPY src/ ./src/
 COPY config/ ./config/
 COPY scripts/ ./scripts/
+# Bundled credit index (#47)
+COPY data/library_index.json /app/data/library_index.json
 
 RUN chmod +x scripts/import-new.sh
 

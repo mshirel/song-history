@@ -16,8 +16,9 @@ venv/
 .venv/
 env/
 
-# Data (mounted as volumes at runtime)
+# Data (mounted as volumes at runtime — keep the bundled library index #47)
 data/
+!data/library_index.json
 inbox/
 
 # Library symlink (large, not needed in image — bundled index is used)

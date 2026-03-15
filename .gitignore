@@ -6,7 +6,7 @@ data/*.db
 data/*.db-journal
 data/*.db-wal
 data/*.db-shm
-data/library_index.json
+# data/library_index.json is intentionally tracked — baked into Docker image (#47)
 
 # Backups (created by the backup service in compose.yml)
 backups/
