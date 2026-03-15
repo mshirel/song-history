@@ -495,3 +495,110 @@ class TestExtractionTimeout:
         # Should not raise — returns ExtractionResult normally
         result = extract_songs(pptx_path)
         assert result is not None
+
+
+# ---------------------------------------------------------------------------
+# CreditResolver abstraction (#53)
+# ---------------------------------------------------------------------------
+
+
+class TestCreditResolver:
+    """CreditResolver encapsulates the three-step credit cascade (#53)."""
+
+    def _make_slides(self, image_blob: bytes | None = None) -> list:
+        images = [image_blob] if image_blob is not None else []
+        return [make_slide(index=0, lines=["Amazing Grace"], image_blobs=images)]
+
+    def test_returns_parsed_credits_when_complete(self):
+        """If parsed credits already contain words_by, the resolver returns them immediately."""
+        from worship_catalog.extractor import CreditResolver, OcrBudget
+
+        resolver = CreditResolver(library_index=None, ocr_budget=None)
+        # Pre-parsed credits that are already complete
+        complete = {"words_by": "John Newton", "music_by": None, "arranger": None}
+        slides = self._make_slides()
+        result = resolver.resolve(slides, complete, canonical_title="amazing grace")
+        assert result["words_by"] == "John Newton"
+
+    def test_falls_through_to_library_when_parsed_incomplete(self):
+        """When parsed credits are empty, the resolver tries the library index."""
+        from worship_catalog.extractor import CreditResolver, OcrBudget
+
+        library = {"amazing grace": {"words_by": "John Newton", "music_by": None, "arranger": None}}
+        resolver = CreditResolver(library_index=library, ocr_budget=None)
+        empty_credits: dict = {"words_by": None, "music_by": None, "arranger": None}
+        slides = self._make_slides()
+        result = resolver.resolve(slides, empty_credits, canonical_title="amazing grace")
+        assert result["words_by"] == "John Newton"
+
+    def test_library_miss_leaves_credits_empty_when_no_ocr(self):
+        """When library misses and no OCR is configured, credits remain empty."""
+        from worship_catalog.extractor import CreditResolver
+
+        resolver = CreditResolver(library_index={}, ocr_budget=None)
+        empty_credits: dict = {"words_by": None, "music_by": None, "arranger": None}
+        slides = self._make_slides()
+        result = resolver.resolve(slides, empty_credits, canonical_title="unknown song")
+        assert result["words_by"] is None
+        assert result["music_by"] is None
+
+    def test_falls_through_to_ocr_when_library_misses(self, monkeypatch):
+        """When library has no match, OCR is attempted if budget allows."""
+        from worship_catalog.extractor import CreditResolver, OcrBudget
+        import worship_catalog.extractor as ext_module
+
+        ocr_calls: list[bytes] = []
+
+        def fake_try_ocr(slides):
+            ocr_calls.append(b"called")
+            return "Words: Anne Steele"
+
+        monkeypatch.setattr(ext_module, "_try_ocr_credits", fake_try_ocr)
+
+        budget = OcrBudget(max_calls=5)
+        resolver = CreditResolver(library_index={}, ocr_budget=budget, use_ocr=True)
+        empty_credits: dict = {"words_by": None, "music_by": None, "arranger": None}
+        slides = self._make_slides(image_blob=b"\x89PNG\r\n")
+        result = resolver.resolve(slides, empty_credits, canonical_title="blest are the pure")
+        assert len(ocr_calls) == 1
+        assert result["words_by"] == "Anne Steele"
+
+    def test_ocr_not_called_when_budget_exhausted(self, monkeypatch):
+        """OCR must not be called when the OcrBudget is exhausted."""
+        from worship_catalog.extractor import CreditResolver, OcrBudget
+        import worship_catalog.extractor as ext_module
+
+        ocr_calls: list[bytes] = []
+
+        def fake_try_ocr(slides):
+            ocr_calls.append(b"called")
+            return "Words: Somebody"
+
+        monkeypatch.setattr(ext_module, "_try_ocr_credits", fake_try_ocr)
+
+        budget = OcrBudget(max_calls=0)  # budget already exhausted
+        resolver = CreditResolver(library_index={}, ocr_budget=budget, use_ocr=True)
+        empty_credits: dict = {"words_by": None, "music_by": None, "arranger": None}
+        slides = self._make_slides(image_blob=b"\x89PNG\r\n")
+        resolver.resolve(slides, empty_credits, canonical_title="some song")
+        assert len(ocr_calls) == 0
+
+    def test_ocr_not_called_when_use_ocr_false(self, monkeypatch):
+        """OCR must not be called when use_ocr=False even if budget is available."""
+        from worship_catalog.extractor import CreditResolver, OcrBudget
+        import worship_catalog.extractor as ext_module
+
+        ocr_calls: list[bytes] = []
+
+        def fake_try_ocr(slides):
+            ocr_calls.append(b"called")
+            return "Words: Somebody"
+
+        monkeypatch.setattr(ext_module, "_try_ocr_credits", fake_try_ocr)
+
+        budget = OcrBudget(max_calls=10)
+        resolver = CreditResolver(library_index={}, ocr_budget=budget, use_ocr=False)
+        empty_credits: dict = {"words_by": None, "music_by": None, "arranger": None}
+        slides = self._make_slides(image_blob=b"\x89PNG\r\n")
+        resolver.resolve(slides, empty_credits, canonical_title="some song")
+        assert len(ocr_calls) == 0
