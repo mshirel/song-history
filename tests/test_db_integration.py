@@ -1294,3 +1294,177 @@ class TestDatabaseConnectionLifecycle:
         # closed, so any cursor() call must raise (not silently fail).
         with pytest.raises(Exception):
             db.insert_or_get_song("test title", "Test Title")
+
+
+# ---------------------------------------------------------------------------
+# Issue #100 — update_import_job must not build SQL via f-string with
+# user-controlled field names.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+class TestUpdateImportJobSQLSafety:
+    """Whitelist validation on update_import_job fields — issue #100."""
+
+    @pytest.fixture
+    def temp_db(self, tmp_path: Path) -> Database:
+        db = Database(tmp_path / "test.db")
+        db.connect()
+        db.init_schema()
+        return db
+
+    def test_update_with_valid_status_succeeds(self, temp_db: Database) -> None:
+        job_id = "valid-job-001"
+        temp_db.create_import_job(job_id, filename="test.pptx")
+        temp_db.update_import_job(job_id, status="running")
+        row = temp_db.get_import_job(job_id)
+        assert row is not None
+        assert row["status"] == "running"
+        temp_db.close()
+
+    def test_update_with_valid_songs_imported_succeeds(self, temp_db: Database) -> None:
+        job_id = "valid-job-002"
+        temp_db.create_import_job(job_id, filename="test.pptx")
+        temp_db.update_import_job(job_id, songs_imported=5)
+        row = temp_db.get_import_job(job_id)
+        assert row is not None
+        assert row["songs_imported"] == 5
+        temp_db.close()
+
+    def test_update_with_unknown_field_raises_value_error(self, tmp_path: Path) -> None:
+        db = Database(tmp_path / "test2.db")
+        db.connect()
+        db.init_schema()
+        job_id = "evil-job-001"
+        db.create_import_job(job_id, filename="test.pptx")
+        with pytest.raises(ValueError, match="(?i)unknown field"):
+            db.update_import_job(job_id, **{"'; DROP TABLE import_jobs; --": "evil"})  # type: ignore[arg-type]
+        db.close()
+
+
+# ---------------------------------------------------------------------------
+# Issue #98 — all timestamps must be UTC-aware ISO strings.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+class TestTimestampConsistency:
+    """Timestamps produced by db methods must be timezone-aware UTC — issue #98."""
+
+    @pytest.fixture
+    def temp_db(self, tmp_path: Path) -> Database:
+        db = Database(tmp_path / "ts_test.db")
+        db.connect()
+        db.init_schema()
+        return db
+
+    def test_import_job_started_at_is_utc_aware(self, temp_db: Database) -> None:
+        from datetime import datetime, timezone
+
+        job_id = "ts-job-001"
+        temp_db.create_import_job(job_id, filename="test.pptx")
+        row = temp_db.get_import_job(job_id)
+        temp_db.close()
+        assert row is not None
+        ts = datetime.fromisoformat(row["started_at"])
+        assert ts.tzinfo is not None, (
+            f"started_at '{row['started_at']}' must be timezone-aware"
+        )
+
+    def test_import_job_completed_at_is_utc_aware_when_set(self, temp_db: Database) -> None:
+        from datetime import datetime, timezone
+
+        job_id = "ts-job-002"
+        temp_db.create_import_job(job_id, filename="test.pptx")
+        temp_db.update_import_job(job_id, status="complete")
+        row = temp_db.get_import_job(job_id)
+        temp_db.close()
+        assert row is not None
+        assert row["completed_at"] is not None, "completed_at must be set for 'complete' status"
+        ts = datetime.fromisoformat(row["completed_at"])
+        assert ts.tzinfo is not None, (
+            f"completed_at '{row['completed_at']}' must be timezone-aware"
+        )
+
+    def test_insert_or_update_service_imported_at_is_utc_aware(
+        self, temp_db: Database
+    ) -> None:
+        from datetime import datetime, timezone
+
+        temp_db.insert_or_update_service(
+            service_date="2026-01-01",
+            service_name="AM Worship",
+            source_file="file.pptx",
+            source_hash="abc",
+        )
+        rows = temp_db.query_services("2026-01-01", "2026-01-01")
+        temp_db.close()
+        assert rows, "Service should have been inserted"
+        ts = datetime.fromisoformat(rows[0]["imported_at"])
+        assert ts.tzinfo is not None, (
+            f"imported_at '{rows[0]['imported_at']}' must be timezone-aware"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Issue #56 — insert_copy_event() must emit DeprecationWarning.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+class TestInsertCopyEventDeprecation:
+    """insert_copy_event() must warn callers to use insert_or_get_copy_event() — issue #56."""
+
+    @pytest.fixture
+    def temp_db(self, tmp_path: Path) -> Database:
+        db = Database(tmp_path / "dep_test.db")
+        db.connect()
+        db.init_schema()
+        return db
+
+    def test_insert_copy_event_emits_deprecation_warning(self, temp_db: Database) -> None:
+        import warnings
+
+        service_id = temp_db.insert_or_update_service(
+            service_date="2026-01-01",
+            service_name="AM Worship",
+            source_file="file.pptx",
+            source_hash="dep-hash",
+        )
+        song_id = temp_db.insert_or_get_song("amazing grace", "Amazing Grace")
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            temp_db.insert_copy_event(
+                service_id=service_id,
+                song_id=song_id,
+                reproduction_type="projection",
+            )
+        temp_db.close()
+
+        assert any(
+            issubclass(warning.category, DeprecationWarning) for warning in w
+        ), f"Expected DeprecationWarning, got: {[str(warning.category) for warning in w]}"
+
+    def test_insert_copy_event_still_inserts_row(self, temp_db: Database) -> None:
+        """Despite the deprecation, the insert must still succeed."""
+        import warnings
+
+        service_id = temp_db.insert_or_update_service(
+            service_date="2026-01-02",
+            service_name="AM Worship",
+            source_file="file2.pptx",
+            source_hash="dep-hash2",
+        )
+        song_id = temp_db.insert_or_get_song("how great thou art", "How Great Thou Art")
+
+        with warnings.catch_warnings(record=True):
+            warnings.simplefilter("always")
+            event_id = temp_db.insert_copy_event(
+                service_id=service_id,
+                song_id=song_id,
+                reproduction_type="projection",
+            )
+        temp_db.close()
+
+        assert event_id > 0

@@ -142,6 +142,12 @@ class CreditResolver:
                     _log.debug("OCR returned no credits for '%s'", canonical_title)
                     if self.ocr_budget is not None:
                         self.ocr_budget.refund()
+                        _log.debug(
+                            "OCR budget refunded for '%s' — no credits extracted "
+                            "(remaining budget: %s)",
+                            canonical_title,
+                            self.ocr_budget.remaining,
+                        )
 
         return credits
 
