@@ -1004,3 +1004,59 @@ class TestServiceCleanup:
         # Song should still exist (not deleted)
         cursor.execute("SELECT COUNT(*) FROM songs WHERE id = ?", (song_id,))
         assert cursor.fetchone()[0] == 1
+
+
+@pytest.mark.integration
+class TestSchemaVersioning:
+    """Tests for schema version detection and enforcement (#19)."""
+
+    @pytest.fixture
+    def temp_db(self, tmp_path):
+        db = Database(tmp_path / "schema_test.db")
+        db.connect()
+        db.init_schema()
+        yield db
+        db.close()
+
+    def test_init_schema_sets_user_version(self, temp_db):
+        """init_schema() sets PRAGMA user_version to _SCHEMA_VERSION."""
+        from worship_catalog.db import _SCHEMA_VERSION
+
+        cursor = temp_db.conn.cursor()
+        cursor.execute("PRAGMA user_version")
+        version = cursor.fetchone()[0]
+        assert version == _SCHEMA_VERSION
+        assert _SCHEMA_VERSION >= 1
+
+    def test_fresh_db_version_matches_expected(self, tmp_path):
+        """A fresh DB after init_schema has the expected schema version."""
+        from worship_catalog.db import _SCHEMA_VERSION
+
+        db = Database(tmp_path / "fresh.db")
+        db.connect()
+        db.init_schema()
+        cursor = db.conn.cursor()
+        cursor.execute("PRAGMA user_version")
+        assert cursor.fetchone()[0] == _SCHEMA_VERSION
+        db.close()
+
+    def test_connect_raises_on_newer_schema_version(self, tmp_path):
+        """Connecting to a DB with a newer schema version raises SchemaVersionError."""
+        from worship_catalog.db import SchemaVersionError, _SCHEMA_VERSION
+
+        db_path = tmp_path / "newer.db"
+        # Create a DB with a higher schema version than we support
+        import sqlite3
+        conn = sqlite3.connect(db_path)
+        conn.execute(f"PRAGMA user_version = {_SCHEMA_VERSION + 10}")
+        conn.close()
+
+        db = Database(db_path)
+        with pytest.raises(SchemaVersionError):
+            db.connect()
+
+    def test_schema_version_constant_is_positive(self):
+        """_SCHEMA_VERSION must be a positive integer."""
+        from worship_catalog.db import _SCHEMA_VERSION
+        assert isinstance(_SCHEMA_VERSION, int)
+        assert _SCHEMA_VERSION >= 1

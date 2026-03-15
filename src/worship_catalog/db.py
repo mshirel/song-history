@@ -7,6 +7,15 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+# Bump this integer whenever the schema changes in a backwards-incompatible way.
+# connect() will raise SchemaVersionError if the on-disk version is higher than
+# this value (i.e. the DB was created by a newer version of the code).
+_SCHEMA_VERSION: int = 1
+
+
+class SchemaVersionError(RuntimeError):
+    """Raised when the database schema version is incompatible with this code."""
+
 
 class Database:
     """SQLite database interface for worship catalog."""
@@ -19,11 +28,26 @@ class Database:
         self._in_transaction: bool = False
 
     def connect(self) -> sqlite3.Connection:
-        """Connect to database."""
+        """Connect to database.
+
+        Raises SchemaVersionError if the on-disk schema version is newer than
+        the version this code supports (i.e. DB created by a newer release).
+        """
         self.conn = sqlite3.connect(self.db_path)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA foreign_keys=ON")
+        cursor = self.conn.cursor()
+        cursor.execute("PRAGMA user_version")
+        on_disk_version: int = cursor.fetchone()[0]
+        if on_disk_version > _SCHEMA_VERSION:
+            self.conn.close()
+            self.conn = None
+            raise SchemaVersionError(
+                f"Database schema version {on_disk_version} is newer than this "
+                f"version of worship-catalog supports (max {_SCHEMA_VERSION}). "
+                "Upgrade the application or restore an older database."
+            )
         return self.conn
 
     @property
@@ -159,6 +183,7 @@ class Database:
             """
         )
 
+        self._conn.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
         self._maybe_commit()
 
     def insert_or_get_song(
