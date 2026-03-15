@@ -53,6 +53,7 @@ services:
   watcher:
     image: ghcr.io/mshirel/song-history:latest
     # build: .                        # ← uncomment for local development
+    init: true                        # tini as PID 1 — forwards SIGTERM to children (#29)
     entrypoint: /bin/sh
     command: >
       -c "while true;
@@ -71,6 +72,11 @@ services:
       - INBOX_DIR=/inbox
     restart: unless-stopped
     stop_grace_period: 30s
+    logging:                          # cap log disk usage (#30)
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     deploy:
       resources:
         limits:
@@ -106,6 +112,11 @@ services:
       timeout: 5s
       retries: 3
       start_period: 10s
+    logging:                          # cap log disk usage (#30)
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     deploy:
       resources:
         limits:
@@ -125,6 +136,7 @@ services:
   # ---------------------------------------------------------------------------
   backup:
     image: alpine
+    init: true                        # tini as PID 1 — forwards SIGTERM to children (#29)
     entrypoint: /bin/sh
     command: >
       -c "apk add --no-cache sqlite > /dev/null 2>&1;
@@ -140,6 +152,12 @@ services:
       - ./data:/data:ro
       - ./backups:/backup
     restart: unless-stopped
+    stop_grace_period: 60s            # allow active dump to finish before SIGKILL (#29)
+    logging:                          # cap log disk usage (#30)
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     deploy:
       resources:
         limits:
