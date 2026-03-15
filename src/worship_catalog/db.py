@@ -2,9 +2,10 @@
 
 import logging
 import sqlite3
+import warnings
 from collections.abc import Generator
 from contextlib import contextmanager
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +15,13 @@ _log = logging.getLogger("worship_catalog.db")
 # connect() will raise SchemaVersionError if the on-disk version is higher than
 # this value (i.e. the DB was created by a newer version of the code).
 _SCHEMA_VERSION: int = 1
+
+# Whitelist of column names that update_import_job is allowed to SET.
+# Any key not in this set will raise ValueError — prevents SQL injection
+# via dynamic field names (issue #100).
+_IMPORT_JOB_MUTABLE_FIELDS: frozenset[str] = frozenset(
+    {"status", "completed_at", "songs_imported", "error_message"}
+)
 
 
 def _safe_order_by(col: str, whitelist: frozenset[str]) -> str:
@@ -317,7 +325,7 @@ class Database:
         )
         row = cursor.fetchone()
 
-        imported_at = datetime.now().isoformat()
+        imported_at = datetime.now(timezone.utc).isoformat()
 
         if row:
             # Update existing
@@ -401,7 +409,17 @@ class Database:
         reportable: bool = True,
         song_edition_id: int | None = None,
     ) -> int:
-        """Insert copy event. Returns event_id."""
+        """Insert copy event. Returns event_id.
+
+        .. deprecated::
+            Use :meth:`insert_or_get_copy_event` instead, which is idempotent
+            and safe for duplicate inserts (issue #56).
+        """
+        warnings.warn(
+            "insert_copy_event() is deprecated; use insert_or_get_copy_event() instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         cursor = self._conn.cursor()
 
         cursor.execute(
@@ -729,7 +747,7 @@ class Database:
         started_at: str | None = None,
     ) -> None:
         """Insert a new import job record with status='pending'."""
-        ts = started_at if started_at is not None else datetime.utcnow().isoformat()
+        ts = started_at if started_at is not None else datetime.now(timezone.utc).isoformat()
         self._conn.execute(
             """
             INSERT INTO import_jobs (job_id, filename, status, started_at)
@@ -754,8 +772,20 @@ class Database:
         status: str | None = None,
         songs_imported: int | None = None,
         error_message: str | None = None,
+        **_extra_kwargs: Any,
     ) -> None:
-        """Update mutable fields on an import job record."""
+        """Update mutable fields on an import job record.
+
+        Raises ValueError if any unexpected field name is passed via **kwargs
+        so that callers cannot inject arbitrary SQL column names (issue #100).
+        """
+        for field_name in _extra_kwargs:
+            if field_name not in _IMPORT_JOB_MUTABLE_FIELDS:
+                raise ValueError(
+                    f"Unknown field for update_import_job: {field_name!r}. "
+                    f"Allowed fields: {sorted(_IMPORT_JOB_MUTABLE_FIELDS)}"
+                )
+
         sets: list[str] = []
         params: list[Any] = []
         if status is not None:
@@ -763,7 +793,7 @@ class Database:
             params.append(status)
             if status in ("complete", "failed"):
                 sets.append("completed_at = ?")
-                params.append(datetime.utcnow().isoformat())
+                params.append(datetime.now(timezone.utc).isoformat())
         if songs_imported is not None:
             sets.append("songs_imported = ?")
             params.append(songs_imported)
@@ -772,9 +802,13 @@ class Database:
             params.append(error_message)
         if not sets:
             return
+        # Build the SET clause from whitelisted column names only.
+        # Each entry in `sets` is a hardcoded literal like "status = ?" —
+        # never derived from user input — so this join is safe.
+        set_clause = ", ".join(sets)
         params.append(job_id)
         self._conn.execute(
-            f"UPDATE import_jobs SET {', '.join(sets)} WHERE job_id = ?",
+            "UPDATE import_jobs SET " + set_clause + " WHERE job_id = ?",
             params,
         )
         self._maybe_commit()
@@ -788,7 +822,7 @@ class Database:
 
     def purge_old_import_jobs(self, days: int = 90) -> None:
         """Delete import job records whose started_at date is older than *days* days."""
-        threshold = (datetime.utcnow() - timedelta(days=days)).strftime("%Y-%m-%d")
+        threshold = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d")
         self._conn.execute(
             "DELETE FROM import_jobs WHERE date(started_at) < ?",
             (threshold,),
