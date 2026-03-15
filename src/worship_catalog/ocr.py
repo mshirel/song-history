@@ -24,6 +24,9 @@ _CREDITS_RE = re.compile(
     r"\b(words|music|arr|arrangement|lyrics|composer)\b",
     re.IGNORECASE,
 )
+# Issue #61 — require at least one "First Last" name pattern so that hallucinated
+# phrases like "Words by the congregation" are rejected.
+_NAME_RE = re.compile(r"\b[A-Z][a-z]+\s+[A-Z][a-z]+")
 _MAX_OCR_OUTPUT_LENGTH = 300
 
 
@@ -33,10 +36,13 @@ def _validate_ocr_output(text: str) -> str | None:
     Rejects output that:
     - Exceeds _MAX_OCR_OUTPUT_LENGTH characters (likely injected content)
     - Contains no recognizable credits keywords (not a credits line at all)
+    - Contains credit keywords but no "First Last" name-like pattern (issue #61)
     """
     if len(text) > _MAX_OCR_OUTPUT_LENGTH:
         return None
     if not _CREDITS_RE.search(text):
+        return None
+    if not _NAME_RE.search(text):
         return None
     return text
 

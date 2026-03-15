@@ -279,6 +279,87 @@ class TestOcrOutputValidation:
         assert "Chris Tomlin" in result
 
 
+class TestOcrNamePatternValidation:
+    """Tests for tighter OCR validation requiring a name-like pattern — issue #61."""
+
+    def test_keywords_but_no_name_is_rejected(self):
+        """OCR text with keywords but no 'First Last' name is rejected."""
+        from worship_catalog.ocr import _validate_ocr_output
+
+        raw = "Words by the congregation"
+        result = _validate_ocr_output(raw)
+        assert result is None
+
+    def test_keywords_and_valid_name_is_accepted(self):
+        """OCR text with keywords AND a proper name is accepted."""
+        from worship_catalog.ocr import _validate_ocr_output
+
+        raw = "Words and Music by John Smith"
+        result = _validate_ocr_output(raw)
+        assert result is not None
+
+    def test_no_keywords_is_rejected(self):
+        """OCR text with no credit keywords is rejected regardless of names."""
+        from worship_catalog.ocr import _validate_ocr_output
+
+        raw = "This is a song title"
+        result = _validate_ocr_output(raw)
+        assert result is None
+
+    def test_multiple_names_accepted(self):
+        """Multiple names alongside keywords passes validation."""
+        from worship_catalog.ocr import _validate_ocr_output
+
+        raw = "Words: John Newton / Music: William Walker"
+        result = _validate_ocr_output(raw)
+        assert result is not None
+
+    def test_hyphenated_name_accepted(self):
+        """Hyphenated surnames like 'Mary-Jane Smith' pass validation."""
+        from worship_catalog.ocr import _validate_ocr_output
+
+        raw = "Words and Music by Chris Tomlin"
+        result = _validate_ocr_output(raw)
+        assert result is not None
+
+    def test_congregation_generic_phrase_rejected(self):
+        """'Words by the church' — no capitalized First Last name — is rejected."""
+        from worship_catalog.ocr import _validate_ocr_output
+
+        raw = "Words by the church"
+        result = _validate_ocr_output(raw)
+        assert result is None
+
+    def test_keywords_with_single_word_name_rejected(self):
+        """A single capitalized word after keyword is not sufficient."""
+        from worship_catalog.ocr import _validate_ocr_output
+
+        raw = "Words by Madonna"
+        result = _validate_ocr_output(raw)
+        assert result is None
+
+    def test_arr_keyword_with_name_accepted(self):
+        """'Arr' keyword counts; name must still be present."""
+        from worship_catalog.ocr import _validate_ocr_output
+
+        raw = "Words & Music: Chris Tomlin / Arr. Ryan Dan"
+        result = _validate_ocr_output(raw)
+        assert result is not None
+
+    def test_end_to_end_keywords_no_name_returns_none_from_api(self, monkeypatch):
+        """Full pipeline: API returns keywords-only text → extract_credits_via_vision returns None."""
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        mock_anthropic = MagicMock()
+        mock_client = MagicMock()
+        mock_client.messages.create.return_value.content = [
+            MagicMock(text="Words by the congregation")
+        ]
+        mock_anthropic.Anthropic.return_value = mock_client
+        with patch.dict(sys.modules, {"anthropic": mock_anthropic}):
+            result = extract_credits_via_vision(b"\xff\xd8\x00\x00")
+        assert result is None
+
+
 class TestRetryLogic:
     """Tests for exponential backoff retry on transient API failures (#20)."""
 
