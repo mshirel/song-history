@@ -86,9 +86,12 @@ def test_e2e_marker_is_registered() -> None:
 
 
 def test_mutmut_is_installed() -> None:
-    """mutmut must be installed as a dev dependency and runnable (issue #90)."""
+    """mutmut must be installed as a dev dependency and importable (issue #90).
+
+    mutmut does not support --version; use --help (exits 0) to verify it runs.
+    """
     result = subprocess.run(
-        [sys.executable, "-m", "mutmut", "--version"],
+        [sys.executable, "-m", "mutmut", "--help"],
         capture_output=True,
         text=True,
         check=False,
@@ -96,5 +99,5 @@ def test_mutmut_is_installed() -> None:
     assert result.returncode == 0, (
         "mutmut is not installed. Add 'mutmut' to [project.optional-dependencies] dev "
         f"in pyproject.toml and run: pip install -e '.[dev]'\n"
-        f"stderr: {result.stderr}"
+        f"stdout: {result.stdout}\nstderr: {result.stderr}"
     )
