@@ -16,6 +16,19 @@ _log = logging.getLogger("worship_catalog.db")
 _SCHEMA_VERSION: int = 1
 
 
+def _safe_order_by(col: str, whitelist: frozenset[str]) -> str:
+    """Validate *col* against *whitelist* and return it if safe.
+
+    Raises ValueError with "Invalid sort column" if *col* is not in the
+    whitelist or is empty/whitespace-only.  This eliminates the need for
+    f-string SQL that triggers S608 (SQL injection via format string).
+    """
+    stripped = col.strip()
+    if not stripped or stripped not in whitelist:
+        raise ValueError(f"Invalid sort column: {col!r}")
+    return stripped
+
+
 class SchemaVersionError(RuntimeError):
     """Raised when the database schema version is incompatible with this code."""
 
@@ -761,7 +774,7 @@ class Database:
             return
         params.append(job_id)
         self._conn.execute(
-            f"UPDATE import_jobs SET {', '.join(sets)} WHERE job_id = ?",  # noqa: S608
+            f"UPDATE import_jobs SET {', '.join(sets)} WHERE job_id = ?",
             params,
         )
         self._maybe_commit()

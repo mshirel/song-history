@@ -1230,6 +1230,43 @@ class TestStatsReportCountsUniqueServiceSongPairs:
 
 
 # ---------------------------------------------------------------------------
+# _safe_order_by helper (#75)
+# ---------------------------------------------------------------------------
+
+
+class TestSafeOrderBy:
+    """_safe_order_by must whitelist valid columns and reject injection attempts."""
+
+    def test_valid_column_returns_col(self):
+        from worship_catalog.db import _safe_order_by
+        assert _safe_order_by("title", frozenset({"title", "date"})) == "title"
+
+    def test_another_valid_column_returns_col(self):
+        from worship_catalog.db import _safe_order_by
+        assert _safe_order_by("date", frozenset({"title", "date"})) == "date"
+
+    def test_invalid_column_raises_value_error(self):
+        from worship_catalog.db import _safe_order_by
+        with pytest.raises(ValueError, match="Invalid sort column"):
+            _safe_order_by("'; DROP TABLE songs; --", frozenset({"title"}))
+
+    def test_empty_col_raises(self):
+        from worship_catalog.db import _safe_order_by
+        with pytest.raises(ValueError):
+            _safe_order_by("", frozenset({"title"}))
+
+    def test_whitespace_only_col_raises(self):
+        from worship_catalog.db import _safe_order_by
+        with pytest.raises(ValueError):
+            _safe_order_by("   ", frozenset({"title"}))
+
+    def test_sql_injection_attempt_raises(self):
+        from worship_catalog.db import _safe_order_by
+        with pytest.raises(ValueError, match="Invalid sort column"):
+            _safe_order_by("1; DROP TABLE songs", frozenset({"title", "date"}))
+
+
+# ---------------------------------------------------------------------------
 # Database connection lifecycle (#95)
 # ---------------------------------------------------------------------------
 
