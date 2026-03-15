@@ -41,9 +41,27 @@ CI config changes and documentation-only changes are exempt, but any change touc
 4. Run full suite: python3 -m pytest
 5. Run linter: python3 -m ruff check src/
 6. Run type check: python3 -m mypy src/
-7. Commit and push
-8. Confirm CI passes before closing the issue
+7. Run QA agents (see below)
+8. Commit and push
+9. Confirm CI passes before closing the issue
 ```
+
+## Agent Workflow
+
+Implementation must follow this sequence:
+
+```
+developer → senior-qa-engineer → specialized QA agents
+```
+
+Specialized QA agents (invoke when relevant):
+- `cli-contract-tester` — CLI commands, flags, exit codes, help output, JSON output
+- `web-ux-tester` — FastAPI routes, templates, HTMX, forms, filters, sorting, downloads
+
+**QA agent rules:**
+- May modify tests only.
+- May not modify production source code (`src/`).
+- Must open a GitHub issue for every defect found — leave failing tests in place, do not patch code.
 
 ---
 
@@ -99,3 +117,46 @@ CI config changes and documentation-only changes are exempt, but any change touc
 Run a specific file: `python3 -m pytest tests/test_web.py -v`
 Run with coverage: `python3 -m pytest --cov=worship_catalog`
 Run only fast tests: `python3 -m pytest -m "not integration"`
+
+---
+
+## GitHub Issue Labels
+
+Every issue should carry at least one **topic label** and, where applicable, one or more **qualifier labels**.
+
+### Topic labels (what area the issue is in)
+
+| Label | Use when |
+|---|---|
+| `bug` | Something that was working is broken |
+| `regression` | Behavior that previously worked is now broken (subset of bug) |
+| `enhancement` | New feature or improvement |
+| `security` | Security vulnerability or hardening |
+| `performance` | Speed, memory, or resource usage |
+| `architecture` | System design, abstractions, coupling |
+| `code-quality` | Readability, patterns, maintainability |
+| `devops` | CI/CD, Docker, deployment, observability |
+| `devsecops` | Supply chain, scanning, dependency management |
+| `infrastructure` | Infrastructure and deployment config |
+| `web-ui` | Web routes, templates, HTMX behaviour, forms |
+| `cli-contract` | CLI command interface, flags, or output format |
+| `ux` | User experience — flows, copy, layout, usability |
+| `accessibility` | ARIA, keyboard navigation, screen reader, contrast |
+| `documentation` | Docs-only changes |
+
+### Qualifier labels (lifecycle / process)
+
+| Label | Use when |
+|---|---|
+| `qa-found` | Issue was identified during QA or automated testing |
+| `uat` | Issue requires user acceptance testing before closing |
+| `deferred` | Intentionally out of scope — do not pick up until re-prioritized |
+| `wontfix` | Will not be worked, ever |
+| `good first issue` | Low complexity, safe starting point for new contributors |
+| `help wanted` | Needs extra attention or outside input |
+
+### Filtering deferred issues
+
+```bash
+gh issue list --state open --label "!deferred"
+```
