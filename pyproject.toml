@@ -73,10 +73,10 @@ warn_return_any = true
 warn_unused_configs = true
 
 [[tool.mypy.overrides]]
-# anthropic SDK uses deeply nested union types that aren't worth fighting;
-# the code is correct at runtime — suppress all mypy errors in this module
+# anthropic is an optional runtime dependency; import-not-found suppressed per line
+# All other errors resolved with targeted suppressions in ocr.py (#71)
 module = "worship_catalog.ocr"
-ignore_errors = true
+disable_error_code = ["import-not-found"]
 
 [[tool.mypy.overrides]]
 # sqlite3.Row/cursor.lastrowid typing is imprecise; relax return checks in db layer
@@ -85,9 +85,10 @@ warn_return_any = false
 disable_error_code = ["return-value", "type-arg"]
 
 [[tool.mypy.overrides]]
-# python-pptx has no type stubs; all errors in this module are pptx-related cascades
+# python-pptx has no type stubs; pptx.* cascade errors handled with targeted
+# type: ignore comments in pptx_reader.py (#71)
 module = "worship_catalog.pptx_reader"
-ignore_errors = true
+disable_error_code = ["import-untyped"]
 
 [[tool.mypy.overrides]]
 module = ["pptx", "pptx.*"]

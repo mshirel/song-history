@@ -33,6 +33,9 @@ jobs:
 
   security:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read  # gitleaks needs this to scan PR commits
 
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
@@ -67,7 +70,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write         # required to push to ghcr.io
+      packages: write          # required to push to ghcr.io
+      security-events: write   # required to upload Trivy SARIF results (#81)
 
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
@@ -112,7 +116,41 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
 
-      - name: Build and push
+      # --- Container image vulnerability scanning (#32, #66) ---------------
+      # Build locally first so Trivy scans BEFORE anything is pushed.
+      # A vulnerable image is never published — CVEs block the push step (#66).
+      - name: Build image (local, for CVE scan)
+        if: steps.changes.outputs.app == 'true' || github.event_name == 'schedule'
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25  # v5
+        with:
+          context: .
+          push: false
+          load: true            # load into local Docker daemon for scanning
+          platforms: linux/amd64
+          tags: local-scan:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Scan image for CVEs
+        if: steps.changes.outputs.app == 'true' || github.event_name == 'schedule'
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1  # v0.35.0
+        with:
+          image-ref: local-scan:latest
+          format: sarif
+          output: trivy-results.sarif
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true   # only fail on CVEs that have an available fix (actionable)
+          exit-code: 1
+
+      - name: Upload Trivy results to GitHub Security tab
+        if: (steps.changes.outputs.app == 'true' || github.event_name == 'schedule') && always()
+        uses: github/codeql-action/upload-sarif@820e3160e279568db735cee8ed8f8e77a6da7818  # v3
+        with:
+          sarif_file: trivy-results.sarif
+
+      # Build and push multi-platform only after the CVE scan passes (#66).
+      # GHA cache from the local build above makes this fast (no layer re-download).
+      - name: Build and push (multi-platform)
         if: steps.changes.outputs.app == 'true' || github.event_name == 'schedule'
         uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25  # v5
         with:
@@ -126,18 +164,3 @@ jobs:
           cache-to: type=gha,mode=max
           sbom: true
           provenance: true
-
-      # --- Container image vulnerability scanning (#32) -------------------
-      - name: Scan image for CVEs
-        if: steps.changes.outputs.app == 'true' || github.event_name == 'schedule'
-        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1  # v0.35.0
-        with:
-          image-ref: ghcr.io/${{ github.repository }}:sha-${{ github.sha }}
-          format: sarif
-          output: trivy-results.sarif
-          severity: CRITICAL,HIGH
-          ignore-unfixed: true   # only fail on CVEs that have an available fix (actionable)
-          exit-code: 1
-
-      # NOTE: upload-sarif to GitHub Security tab requires GitHub Advanced Security
-      # (public repo or paid org plan). Removed — results are visible in CI logs.

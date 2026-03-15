@@ -3,6 +3,7 @@
 import hashlib
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from pptx import Presentation
 
@@ -65,12 +66,12 @@ def compute_file_hash(file_path: Path | str) -> str:
     return sha256_hash.hexdigest()
 
 
-def load_pptx(file_path: Path | str) -> Presentation:
+def load_pptx(file_path: Path | str) -> Presentation:  # type: ignore[valid-type]
     """Load a PPTX file."""
-    return Presentation(file_path)
+    return Presentation(file_path)  # type: ignore[arg-type]
 
 
-def extract_metadata_from_file(file_path: Path | str) -> dict:
+def extract_metadata_from_file(file_path: Path | str) -> dict[str, str]:
     """Extract core metadata from PPTX file path and structure."""
     file_path = Path(file_path)
     return {
@@ -79,17 +80,17 @@ def extract_metadata_from_file(file_path: Path | str) -> dict:
     }
 
 
-def is_slide_hidden(slide) -> bool:
+def is_slide_hidden(slide: Any) -> bool:
     """Check if slide has hidden attribute set."""
     try:
         # Access the slide's XML to check the show attribute
         slide_elem = slide.element
-        return slide_elem.get("show") == "0"
+        return bool(slide_elem.get("show") == "0")
     except (AttributeError, KeyError):
         return False
 
 
-def extract_text_from_slide(slide) -> SlideText:
+def extract_text_from_slide(slide: Any) -> SlideText:
     """Extract all text from a slide's text frames and tables."""
     text_lines = []
 
@@ -113,7 +114,7 @@ def extract_text_from_slide(slide) -> SlideText:
     return SlideText(text_lines=text_lines)
 
 
-def extract_images_from_slide(slide) -> list[SlideImage]:
+def extract_images_from_slide(slide: Any) -> list[SlideImage]:
     """Extract image/picture shape information from slide, including raw bytes."""
     images = []
 
@@ -128,7 +129,7 @@ def extract_images_from_slide(slide) -> list[SlideImage]:
     return images
 
 
-def parse_slide(slide, index: int) -> Slide:
+def parse_slide(slide: Any, index: int) -> Slide:
     """Parse a single slide into structured format."""
     return Slide(
         index=index,
@@ -138,10 +139,10 @@ def parse_slide(slide, index: int) -> Slide:
     )
 
 
-def parse_all_slides(prs: Presentation) -> list[Slide]:
+def parse_all_slides(prs: Presentation) -> list[Slide]:  # type: ignore[valid-type]
     """Parse all slides from presentation."""
     slides = []
-    for i, slide in enumerate(prs.slides):
+    for i, slide in enumerate(prs.slides):  # type: ignore[attr-defined]
         slides.append(parse_slide(slide, i))
     return slides
 
