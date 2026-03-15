@@ -1,0 +1,17 @@
+title = "Highland Song History — gitleaks config"
+
+[extend]
+# Extend the default ruleset rather than replacing it
+useDefault = true
+
+[[rules]]
+id = "worship-catalog-db-path"
+description = "Hardcoded database path that might indicate a real deployment path"
+regex = '''DB_PATH\s*=\s*["\']\/(?!data\/worship\.db)[^"\']+\.db["\']'''
+tags = ["config", "path"]
+
+[[rules]]
+id = "worship-catalog-api-key"
+description = "Anthropic API key pattern"
+regex = '''sk-ant-[a-zA-Z0-9\-_]{32,}'''
+tags = ["key", "anthropic"]
