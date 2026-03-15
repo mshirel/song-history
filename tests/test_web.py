@@ -687,12 +687,40 @@ class TestHealthEndpointDb:
         response = client.get("/health")
         assert response.status_code == 200
 
-    def test_health_returns_db_status_in_body(self, client):
-        """Health response includes db status field."""
+    def test_health_returns_status_ok_in_body(self, client):
+        """Health response includes status: ok."""
         response = client.get("/health")
         data = response.json()
         assert data.get("status") == "ok"
-        assert "db" in data
+
+    def test_health_does_not_expose_db_backend_details(self, client):
+        """Health response must not leak DB backend info (#62)."""
+        response = client.get("/health")
+        data = response.json()
+        assert "db" not in data, "Response must not expose DB backend details"
+
+    def test_health_error_response_is_generic(self, monkeypatch, tmp_path):
+        """503 response must not expose backend details (#62)."""
+        import worship_catalog.web.app as app_module
+        from importlib import reload
+        from unittest.mock import patch
+
+        inbox = tmp_path / "inbox"
+        inbox.mkdir()
+        monkeypatch.setenv("DB_PATH", str(tmp_path / "worship.db"))
+        monkeypatch.setenv("INBOX_DIR", str(inbox))
+        reload(app_module)
+
+        def broken_get_db():
+            raise OSError("simulated DB failure")
+
+        from starlette.testclient import TestClient
+        c = TestClient(app_module.app, raise_server_exceptions=False)
+        with patch.object(app_module, "_get_db", broken_get_db):
+            response = c.get("/health")
+        assert response.status_code == 503
+        data = response.json()
+        assert "db" not in data, "Error response must not expose DB backend details"
 
     def test_health_returns_503_when_db_unavailable(self, monkeypatch, tmp_path):
         """When DB raises on execute, /health returns 503."""
@@ -861,7 +889,18 @@ class TestUploadEndpoint:
         assert resp.status_code == 202
         body = resp.json()
         assert "job_id" in body
-        _uuid_mod.UUID(body["job_id"])  # must be a valid UUID
+        job_id = body["job_id"]
+        # Must be a URL-safe string of sufficient length (≥ 32 URL-safe chars)
+        # secrets.token_urlsafe(32) produces 43 chars; uuid4 would only be 36
+        assert len(job_id) >= 32, "job_id must have sufficient entropy"
+        import re as _re
+        assert _re.fullmatch(r"[A-Za-z0-9_\-]+", job_id), "job_id must be URL-safe"
+
+    def test_upload_job_id_is_not_sequential(self, client):
+        """Two uploads must produce different, unrelated job IDs (#60)."""
+        id1 = _upload(client, SMALL_PPTX_BYTES, "a.pptx", VALID_PPTX_MIME).json()["job_id"]
+        id2 = _upload(client, SMALL_PPTX_BYTES, "b.pptx", VALID_PPTX_MIME).json()["job_id"]
+        assert id1 != id2
 
     def test_upload_non_pptx_mime_returns_400(self, client):
         resp = _upload(client, b"hello", "notes.pdf", "application/pdf")

@@ -10,7 +10,6 @@ import os
 import re
 import secrets
 import threading
-import uuid
 from collections.abc import AsyncGenerator, Generator
 from contextlib import asynccontextmanager
 from datetime import date
@@ -150,11 +149,11 @@ async def health(response: Response) -> dict[str, str]:
         db = _get_db()
         db.cursor().execute("SELECT 1")
         db.close()
-        return {"status": "ok", "db": "connected"}
+        return {"status": "ok"}
     except Exception as exc:
         _log.warning("Health check DB failure", extra={"error": str(exc)})
         response.status_code = 503
-        return {"status": "error", "db": "unavailable"}
+        return {"status": "error"}
 
 
 @app.get("/", response_class=RedirectResponse)
@@ -559,7 +558,7 @@ async def upload(request: Request, file: UploadFile) -> JSONResponse:
         )
     # Save to inbox
     inbox = _get_inbox_dir()
-    job_id = str(uuid.uuid4())
+    job_id = secrets.token_urlsafe(32)
     dest = inbox / f"{job_id}_{filename}"
     dest.write_bytes(content)
     # Create pending job record
