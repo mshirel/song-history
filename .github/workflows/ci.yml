@@ -121,6 +121,7 @@ jobs:
           format: sarif
           output: trivy-results.sarif
           severity: CRITICAL,HIGH
+          ignore-unfixed: true   # only fail on CVEs that have an available fix (actionable)
           exit-code: 1
 
       - name: Upload Trivy results to GitHub Security tab
