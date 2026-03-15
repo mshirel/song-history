@@ -19,6 +19,15 @@
 set -euo pipefail
 
 # ---------------------------------------------------------------------------
+# Graceful shutdown — trap SIGTERM/SIGINT so Docker stop doesn't SIGKILL mid-import
+# ---------------------------------------------------------------------------
+_shutdown() {
+    echo "[import-new] Received shutdown signal — exiting gracefully" >&2
+    exit 0
+}
+trap _shutdown SIGTERM SIGINT
+
+# ---------------------------------------------------------------------------
 # Configuration — override any of these via environment variables
 # ---------------------------------------------------------------------------
 INBOX_DIR="${INBOX_DIR:-./inbox}"
