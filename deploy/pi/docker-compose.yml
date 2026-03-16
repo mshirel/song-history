@@ -41,6 +41,27 @@ services:
   # song-history — worship catalog web app
   # Image is pulled from GHCR — no source code needed on the Pi.
   # ---------------------------------------------------------------------------
+  watcher:
+    image: ghcr.io/mshirel/song-history:latest
+    restart: unless-stopped
+    init: true
+    entrypoint: /bin/sh
+    command: >
+      -c "while true; do /app/scripts/import-new.sh; sleep 300; done"
+    environment:
+      DB_PATH: /data/worship.db
+      INBOX_DIR: /inbox
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+    volumes:
+      - /opt/song-history/data:/data
+      - /opt/song-history/inbox:/inbox
+    stop_grace_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
   song-history:
     image: ghcr.io/mshirel/song-history:latest
     restart: unless-stopped

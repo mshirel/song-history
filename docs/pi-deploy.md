@@ -233,7 +233,7 @@ Once the Let's Encrypt cert is issued, `https://songs.highland-coc.com` will be 
 ```bash
 # 1. All containers running
 docker compose ps
-# Expected: traefik and song-history both running/healthy
+# Expected: traefik, watcher, and song-history all running/healthy
 
 # 2. Health endpoint
 curl -s http://localhost:8000/health
@@ -256,7 +256,7 @@ curl -sf https://songs.highland-coc.com/health | grep -q "ok" && echo "PASS" || 
 
 | Check | Expected |
 |---|---|
-| `docker compose ps` | traefik + song-history running |
+| `docker compose ps` | traefik + watcher + song-history running |
 | `GET /health` | `{"status":"ok"}` |
 | `/songs` page | loads with song data |
 | Backup file | `worship-YYYYMMDD-HHMMSS.sql.gz` present |
