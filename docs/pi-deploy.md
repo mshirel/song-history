@@ -76,7 +76,8 @@ Required values:
 |---|---|
 | `CLOUDFLARE_API_TOKEN` | API token with `highland-coc.com` Zone:DNS:Edit |
 | `ANTHROPIC_API_KEY` | Only needed for `--ocr`; leave blank to disable |
-| `BACKUP_HEALTHCHECK_URL` | Optional: ping URL (healthchecks.io etc.) for backup alerting — see [Backup Alerting](#backup-alerting) |
+| `PUSHOVER_APP_TOKEN` | Optional: Pushover app token for backup failure alerts — see [Backup Alerting](#backup-alerting) |
+| `PUSHOVER_USER_KEY` | Optional: Pushover user/group key — required alongside `PUSHOVER_APP_TOKEN` |
 
 ---
 
@@ -162,8 +163,7 @@ Update the backup cron to write to the USB mount:
 
 ```bash
 # crontab -e
-0 2 * * * BACKUP_HEALTHCHECK_URL=https://hc-ping.com/<your-uuid> \
-    /opt/song-history/scripts/backup.sh \
+0 2 * * * /opt/song-history/scripts/backup.sh \
     /opt/song-history/data/worship.db \
     /opt/song-history/backups-usb
 ```
@@ -268,8 +268,7 @@ The backup service in `compose.yml` runs nightly and writes compressed SQL dumps
 
 ```bash
 # Add to crontab (crontab -e):
-0 2 * * * BACKUP_HEALTHCHECK_URL=https://hc-ping.com/<your-uuid> \
-    /opt/song-history/scripts/backup.sh \
+0 2 * * * /opt/song-history/scripts/backup.sh \
     /opt/song-history/data/worship.db \
     /opt/song-history/backups-usb
 ```
@@ -280,17 +279,17 @@ Mount `/opt/song-history/backups-usb` to a USB thumbdrive — see [USB Thumbdriv
 
 ## Backup Alerting
 
-Set `BACKUP_HEALTHCHECK_URL` in `.env` (or in the cron job) to receive alerts when backups stop arriving:
+`backup.sh` sends a Pushover notification directly to your phone when a backup fails. Set both variables in `.env`:
 
-1. Create a free check at [healthchecks.io](https://healthchecks.io) — set period to 25h
-2. Copy the ping URL (e.g. `https://hc-ping.com/your-uuid-here`)
+1. In the [Pushover dashboard](https://pushover.net), create an application — copy the **App API Token**
+2. Copy your **User Key** from the Pushover home screen
 3. Add to `.env`:
    ```
-   BACKUP_HEALTHCHECK_URL=https://hc-ping.com/your-uuid-here
+   PUSHOVER_APP_TOKEN=your-app-token-here
+   PUSHOVER_USER_KEY=your-user-key-here
    ```
-4. If a backup doesn't ping within 25 hours, healthchecks.io emails you an alert
 
-The `backup.sh` script automatically skips the ping when `BACKUP_HEALTHCHECK_URL` is not set.
+`backup.sh` sends a notification only on failure — a successful backup is silent. If both variables are unset, alerting is disabled and the script runs normally.
 
 ---
 

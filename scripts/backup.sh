@@ -10,15 +10,34 @@
 #
 # On failure (missing DB, failed dump, failed integrity check):
 #   - Prints an error message to stderr
+#   - Sends a Pushover notification if PUSHOVER_APP_TOKEN + PUSHOVER_USER_KEY are set
 #   - Exits non-zero; does NOT write .last_success
+#
+# Pushover alerting (optional):
+#   Set PUSHOVER_APP_TOKEN and PUSHOVER_USER_KEY in the environment.
+#   PUSHOVER_API_URL overrides the endpoint (used in tests).
 
 set -eu
 
-# Trap EXIT to guarantee temp file cleanup even on unexpected exits or signals
+# Trap EXIT to guarantee temp file cleanup and Pushover failure notifications.
 _TMPFILE=""
 _cleanup() {
+    _rc=$?
     if [ -n "$_TMPFILE" ]; then
         rm -f "$_TMPFILE"
+    fi
+    if [ "${_rc}" -ne 0 ] \
+       && [ -n "${PUSHOVER_APP_TOKEN:-}" ] \
+       && [ -n "${PUSHOVER_USER_KEY:-}" ]; then
+        _api_url="${PUSHOVER_API_URL:-https://api.pushover.net/1/messages.json}"
+        _host="$(hostname 2>/dev/null || echo unknown)"
+        curl -fsS --retry 3 \
+            --form-string "token=${PUSHOVER_APP_TOKEN}" \
+            --form-string "user=${PUSHOVER_USER_KEY}" \
+            --form-string "title=Song History: Backup Failed" \
+            --form-string "message=Backup failed on ${_host} for ${DB_PATH}" \
+            "${_api_url}" > /dev/null 2>&1 || \
+            echo "[backup] WARNING: Pushover notification failed" >&2
     fi
 }
 trap '_cleanup' EXIT
@@ -55,15 +74,7 @@ FINAL="$BACKUP_DIR/worship-${STAMP}.sql.gz"
 mv "$_TMPFILE" "$FINAL"
 _TMPFILE=""  # file promoted — no cleanup needed
 
-# Record timestamp of last successful backup for healthcheck monitoring
+# Record timestamp of last successful backup
 echo "$STAMP" > "$BACKUP_DIR/.last_success"
 
 echo "[backup] OK: $FINAL"
-
-# Optional healthcheck ping — set BACKUP_HEALTHCHECK_URL to a ping-style URL
-# (healthchecks.io, UptimeRobot, or any HTTP endpoint).  Failure to ping is
-# non-fatal: we log a warning but do not change the exit code.
-if [ -n "${BACKUP_HEALTHCHECK_URL:-}" ]; then
-    curl -fsS --retry 3 "${BACKUP_HEALTHCHECK_URL}" > /dev/null 2>&1 || \
-        echo "[backup] WARNING: healthcheck ping failed for ${BACKUP_HEALTHCHECK_URL}" >&2
-fi

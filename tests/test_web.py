@@ -970,12 +970,17 @@ class TestJobAutoPurge:
         assert db.get_import_job(recent_id) is not None
 
     def test_purge_keeps_records_exactly_at_boundary(self, db):
-        # 2025-12-15 is exactly 90 days before 2026-03-15
+        # Compute the boundary date dynamically so the test stays correct
+        # regardless of when it runs.  A job started exactly 90 days ago
+        # must NOT be deleted by purge_old_import_jobs(days=90).
+        from datetime import datetime, timedelta, timezone
+        boundary_dt = datetime.now(timezone.utc) - timedelta(days=90)
+        boundary_started_at = boundary_dt.strftime("%Y-%m-%dT00:00:00")
         boundary_id = str(_uuid_mod.uuid4())
         db.create_import_job(
             boundary_id,
             filename="boundary.pptx",
-            started_at="2025-12-15T00:00:00",
+            started_at=boundary_started_at,
         )
         db.purge_old_import_jobs(days=90)
         assert db.get_import_job(boundary_id) is not None

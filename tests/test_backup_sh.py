@@ -172,28 +172,65 @@ def _make_db(tmp_path: Path) -> Path:
 
 
 @pytest.mark.slow
-class TestBackupHealthcheckPing:
-    """backup.sh must send a healthcheck ping on success — closes #136."""
+class TestBackupPushoverNotification:
+    """backup.sh sends a Pushover notification on failure — closes #136."""
 
-    def test_ping_sent_on_success_when_url_configured(self, tmp_path: Path) -> None:
-        """When BACKUP_HEALTHCHECK_URL is set, backup.sh must curl it after a successful backup."""
+    def _make_post_server(self) -> tuple["http.server.HTTPServer", "list[dict[str, str]]"]:
+        """Start a local HTTP server that records POST requests."""
         import http.server
-        import threading
 
-        # Start a minimal HTTP server to capture the ping
-        ping_received: list[bool] = []
+        posts_received: list[dict[str, str]] = []
 
         class _Handler(http.server.BaseHTTPRequestHandler):
-            def do_GET(self) -> None:
-                ping_received.append(True)
+            def do_POST(self) -> None:
+                length = int(self.headers.get("Content-Length", 0))
+                body = self.rfile.read(length).decode()
+                posts_received.append({"path": self.path, "body": body})
                 self.send_response(200)
                 self.end_headers()
+                self.wfile.write(b'{"status":1}')
 
             def log_message(self, *args: object) -> None:
-                pass  # silence server logs during tests
+                pass
 
         server = http.server.HTTPServer(("127.0.0.1", 0), _Handler)
+        return server, posts_received
+
+    def test_pushover_post_sent_on_failure(self, tmp_path: Path) -> None:
+        """When both Pushover env vars are set, a POST is sent on backup failure."""
+        import threading
+
+        server, posts_received = self._make_post_server()
         port = server.server_address[1]
+        t = threading.Thread(target=server.handle_request, daemon=True)
+        t.start()
+
+        db_path = tmp_path / "nonexistent.db"
+        backup_dir = tmp_path / "backups"
+        backup_dir.mkdir()
+
+        result = _run_backup_with_env(
+            db_path,
+            backup_dir,
+            extra_env={
+                "PUSHOVER_APP_TOKEN": "faketoken",
+                "PUSHOVER_USER_KEY": "fakeuser",
+                "PUSHOVER_API_URL": f"http://127.0.0.1:{port}/messages.json",
+            },
+        )
+        t.join(timeout=3)
+        server.server_close()
+
+        assert result.returncode != 0
+        assert posts_received, "backup.sh must POST to Pushover when backup fails"
+        assert "faketoken" in posts_received[0]["body"]
+        assert "fakeuser" in posts_received[0]["body"]
+
+    def test_no_notification_on_success(self, tmp_path: Path) -> None:
+        """A successful backup must NOT send a Pushover notification."""
+        import threading
+
+        server, posts_received = self._make_post_server()
         t = threading.Thread(target=server.handle_request, daemon=True)
         t.start()
 
@@ -204,65 +241,95 @@ class TestBackupHealthcheckPing:
         result = _run_backup_with_env(
             db_path,
             backup_dir,
-            extra_env={"BACKUP_HEALTHCHECK_URL": f"http://127.0.0.1:{port}/ping"},
+            extra_env={
+                "PUSHOVER_APP_TOKEN": "faketoken",
+                "PUSHOVER_USER_KEY": "fakeuser",
+            },
         )
-        t.join(timeout=3)
+        t.join(timeout=0.5)
         server.server_close()
 
         assert result.returncode == 0, result.stderr
-        assert ping_received, (
-            "backup.sh did not send a GET request to BACKUP_HEALTHCHECK_URL on success"
-        )
+        assert not posts_received, "backup.sh must NOT notify Pushover on success"
 
-    def test_no_ping_when_url_not_set(self, tmp_path: Path) -> None:
-        """When BACKUP_HEALTHCHECK_URL is unset, backup.sh must not curl anything."""
-        import http.server
+    def test_no_notification_when_vars_unset(self, tmp_path: Path) -> None:
+        """When Pushover env vars are absent, no HTTP request is made on failure."""
+        import os
         import threading
 
-        # Start a server to detect any unexpected pings
-        ping_received: list[bool] = []
-
-        class _Handler(http.server.BaseHTTPRequestHandler):
-            def do_GET(self) -> None:
-                ping_received.append(True)
-                self.send_response(200)
-                self.end_headers()
-
-            def log_message(self, *args: object) -> None:
-                pass
-
-        server = http.server.HTTPServer(("127.0.0.1", 0), _Handler)
+        server, posts_received = self._make_post_server()
         t = threading.Thread(target=server.handle_request, daemon=True)
         t.start()
 
-        db_path = _make_db(tmp_path)
+        db_path = tmp_path / "nonexistent.db"
         backup_dir = tmp_path / "backups"
         backup_dir.mkdir()
 
-        import os
         env = os.environ.copy()
-        env.pop("BACKUP_HEALTHCHECK_URL", None)  # ensure not set
+        env.pop("PUSHOVER_APP_TOKEN", None)
+        env.pop("PUSHOVER_USER_KEY", None)
         result = subprocess.run(
             ["bash", str(BACKUP_SCRIPT), str(db_path), str(backup_dir)],
             capture_output=True,
             text=True,
             env=env,
         )
-        # Give a moment for any stray requests, then shut down
         t.join(timeout=0.5)
         server.server_close()
 
-        assert result.returncode == 0, result.stderr
-        assert not ping_received, (
-            "backup.sh must not send any ping when BACKUP_HEALTHCHECK_URL is unset"
-        )
+        assert result.returncode != 0
+        assert not posts_received, "backup.sh must not notify when Pushover vars are unset"
 
-    def test_backup_script_contains_healthcheck_url_logic(self) -> None:
-        """backup.sh source must include BACKUP_HEALTHCHECK_URL env-var guard."""
-        content = BACKUP_SCRIPT.read_text()
-        assert "BACKUP_HEALTHCHECK_URL" in content, (
-            "backup.sh must support the BACKUP_HEALTHCHECK_URL env var"
+    def test_only_token_set_does_not_notify(self, tmp_path: Path) -> None:
+        """Setting only PUSHOVER_APP_TOKEN without USER_KEY must skip notification."""
+        import os
+        import threading
+
+        server, posts_received = self._make_post_server()
+        t = threading.Thread(target=server.handle_request, daemon=True)
+        t.start()
+
+        db_path = tmp_path / "nonexistent.db"
+        backup_dir = tmp_path / "backups"
+        backup_dir.mkdir()
+
+        env = os.environ.copy()
+        env["PUSHOVER_APP_TOKEN"] = "faketoken"
+        env.pop("PUSHOVER_USER_KEY", None)
+        result = subprocess.run(
+            ["bash", str(BACKUP_SCRIPT), str(db_path), str(backup_dir)],
+            capture_output=True,
+            text=True,
+            env=env,
         )
+        t.join(timeout=0.5)
+        server.server_close()
+
+        assert result.returncode != 0
+        assert not posts_received, "backup.sh must not notify when USER_KEY is missing"
+
+    def test_notification_failure_is_non_fatal(self, tmp_path: Path) -> None:
+        """If the Pushover POST fails, backup.sh exits with the backup exit code, not a curl error."""
+        db_path = tmp_path / "nonexistent.db"
+        backup_dir = tmp_path / "backups"
+        backup_dir.mkdir()
+
+        result = _run_backup_with_env(
+            db_path,
+            backup_dir,
+            extra_env={
+                "PUSHOVER_APP_TOKEN": "faketoken",
+                "PUSHOVER_USER_KEY": "fakeuser",
+                "PUSHOVER_API_URL": "http://127.0.0.1:19999/messages.json",
+            },
+        )
+        assert result.returncode != 0  # backup failed, not curl failure
+
+    def test_backup_script_contains_pushover_logic(self) -> None:
+        """backup.sh source must reference both PUSHOVER_APP_TOKEN and PUSHOVER_USER_KEY."""
+        content = BACKUP_SCRIPT.read_text()
+        assert "PUSHOVER_APP_TOKEN" in content
+        assert "PUSHOVER_USER_KEY" in content
 
     def test_failure_logs_error_to_stderr(self, tmp_path: Path) -> None:
         """When backup fails, an ERROR line must be printed to stderr."""
