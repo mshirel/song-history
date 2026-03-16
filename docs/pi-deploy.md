@@ -4,10 +4,6 @@ Deploy song-history on a Raspberry Pi in the church dmarc rack.
 Traefik handles HTTPS termination via Let's Encrypt DNS-01 (Cloudflare).
 The site is LAN-only — no public internet exposure, no port forwarding required.
 
-> **Note on compose.yml location:** The `compose.yml` file is in the root of the
-> repository (not under `deploy/pi/`).  When you clone the repo on the Pi, run
-> `docker compose` from `/opt/song-history` where the file lives.
-
 ---
 
 ## Architecture
@@ -41,28 +37,50 @@ Install **Raspberry Pi OS Lite 64-bit** (no desktop). Enable SSH during flash wi
 sudo apt-get update && sudo apt-get upgrade -y
 curl -fsSL https://get.docker.com | sh
 sudo usermod -aG docker $USER
-# Log out and back in for group change to take effect
+sudo apt-get install -y sqlite3   # needed by backup.sh
+# Log out and back in for docker group change to take effect
 ```
 
 ---
 
-## 2. Copy Deployment Files
+## 2. Transfer Deployment Files
+
+**No repo clone needed on the Pi.** The app runs entirely from the Docker image pulled from GHCR.
+Only a handful of config files are needed on the host.
+
+**From your dev machine** (run from the repo root):
 
 ```bash
-sudo mkdir -p /opt/song-history/traefik
-sudo chown $USER /opt/song-history
+# Create the deployment directory on the Pi
+ssh pi@<PI_IP> "sudo mkdir -p /opt/song-history/traefik && sudo chown \$USER /opt/song-history"
 
-# Clone the repo directly onto the Pi (recommended):
-git clone https://github.com/mshirel/song-history /opt/song-history
+# Copy the deployment config — this is everything the Pi needs
+rsync -av deploy/pi/ pi@<PI_IP>:/opt/song-history/
+
+# Make backup script executable
+ssh pi@<PI_IP> "chmod +x /opt/song-history/scripts/backup.sh"
 ```
 
-The `compose.yml` at the root of the repo is the deployment file — use it directly from `/opt/song-history`.
+**What gets transferred:**
+
+```
+/opt/song-history/
+├── docker-compose.yml       # Pi-specific stack (Traefik + app)
+├── .env.example             # template — copy to .env and fill in
+├── traefik/
+│   └── traefik.yml          # Traefik static config (Cloudflare DNS-01)
+└── scripts/
+    └── backup.sh            # nightly backup script (run via cron)
+```
+
+That's it. No source code, no tests, no docs on the Pi.
 
 ---
 
 ## 3. Create the .env File
 
 ```bash
+ssh pi@<PI_IP>
 cd /opt/song-history
 cp .env.example .env
 nano .env   # fill in real values
@@ -75,9 +93,10 @@ Required values:
 | Variable | Value |
 |---|---|
 | `CLOUDFLARE_API_TOKEN` | API token with `highland-coc.com` Zone:DNS:Edit |
+| `CSRF_SECRET` | Stable random string — generate with `python3 -c "import secrets; print(secrets.token_hex(32))"` |
 | `ANTHROPIC_API_KEY` | Only needed for `--ocr`; leave blank to disable |
-| `PUSHOVER_APP_TOKEN` | Optional: Pushover app token for backup failure alerts — see [Backup Alerting](#backup-alerting) |
-| `PUSHOVER_USER_KEY` | Optional: Pushover user/group key — required alongside `PUSHOVER_APP_TOKEN` |
+| `PUSHOVER_APP_TOKEN` | Optional: Pushover app token for backup failure alerts |
+| `PUSHOVER_USER_KEY` | Optional: Pushover user key — required alongside `PUSHOVER_APP_TOKEN` |
 
 ---
 
@@ -101,94 +120,103 @@ chmod 600 /opt/song-history/traefik/acme.json
 
 ---
 
-## 6. Create Data Directories and Seed the Database
+## 6. Create Data Directories
 
 ```bash
-mkdir -p /opt/song-history/data /opt/song-history/inbox /opt/song-history/backups
+mkdir -p /opt/song-history/data \
+         /opt/song-history/inbox \
+         /opt/song-history/inbox/archive \
+         /opt/song-history/inbox/quarantine \
+         /opt/song-history/backups
 ```
 
-### 6a. Seed the Database (Option C — copy dev DB)
+---
 
-The Pi is treated as authoritative from first boot.  Copy your dev `worship.db`
-to the Pi using the seed script:
+## 7. Seed the Database
+
+Copy your dev `worship.db` to the Pi using the seed script. Run from your **dev machine**:
 
 ```bash
-# From your dev machine — run from the repo root:
 ./scripts/seed-pi-db.sh pi@<PI_IP> data/worship.db
 ```
 
 The script will:
 1. Run `PRAGMA integrity_check` and `PRAGMA foreign_key_check` on the source DB
-2. Show the service count and date range so you can confirm the right DB is being copied
+2. Show the service count and date range — confirm this is the right DB
 3. Prompt for confirmation before copying
 4. Copy via `scp` to `/opt/song-history/data/worship.db`
 5. Verify the copy with `PRAGMA integrity_check` on the Pi
 
-If the integrity check fails, the script exits 1 — fix the DB first.
+**After seeding, the Pi DB is authoritative. Do not overwrite it with an older dev copy.**
 
-**After seeding, the Pi DB is authoritative.  Do not overwrite it with an older dev copy.**
+---
 
-### 6b. USB Thumbdrive Backup Setup
+## 8. USB Thumbdrive Backup Setup
 
-For offsite protection, mount a USB drive for backups:
+A USB thumbdrive is the simplest offsite backup. Plug one in and:
 
 ```bash
-# Find the USB device
+# Find the device
 lsblk
 
-# Format if needed (only once)
+# Format if needed (only on first use)
 sudo mkfs.ext4 /dev/sda1
 
 # Create mount point
 sudo mkdir -p /opt/song-history/backups-usb
 
-# Get the UUID
+# Get the UUID for fstab
 sudo blkid /dev/sda1
 ```
 
-Add to `/etc/fstab` for auto-mount on boot (replace UUID with the one from blkid):
+Add to `/etc/fstab` for auto-mount on boot:
 
 ```
 UUID=<your-uuid>  /opt/song-history/backups-usb  ext4  defaults,nofail  0  2
 ```
-
-Mount now:
 
 ```bash
 sudo mount -a
 sudo chown $USER /opt/song-history/backups-usb
 ```
 
-Update the backup cron to write to the USB mount:
+---
+
+## 9. Configure Backup Cron
+
+Backups run via a host cron job — no sidecar container needed.
 
 ```bash
-# crontab -e
-0 2 * * * /opt/song-history/scripts/backup.sh \
+crontab -e
+```
+
+Add:
+```
+# Nightly backup at 2 AM — writes to USB drive
+0 2 * * * PUSHOVER_APP_TOKEN=your-token PUSHOVER_USER_KEY=your-key \
+    /opt/song-history/scripts/backup.sh \
     /opt/song-history/data/worship.db \
     /opt/song-history/backups-usb
 ```
 
-If you prefer the compose backup service, update the `backup` volume in `compose.yml`:
+Or set `PUSHOVER_APP_TOKEN` and `PUSHOVER_USER_KEY` in `/etc/environment` and simplify the cron line:
 
-```yaml
-    volumes:
-      - ./data:/data:ro
-      - /opt/song-history/backups-usb:/backup   # ← point at USB mount
-      - ./scripts:/scripts:ro
 ```
+0 2 * * * /opt/song-history/scripts/backup.sh /opt/song-history/data/worship.db /opt/song-history/backups-usb
+```
+
+`backup.sh` sends a Pushover notification if the backup fails. Success is silent.
 
 ---
 
-## 7. UniFi DNS Override
+## 10. UniFi DNS Override
 
 In UniFi Network → Settings → Networks → DNS:
 - Add a local DNS record: `songs.highland-coc.com` → `<Pi LAN IP>`
 
-This ensures the domain resolves to the Pi on the church LAN without leaving the building.
-
 ---
 
-## 8. Start the Stack
+## 11. Start the Stack
 
 ```bash
 cd /opt/song-history
@@ -200,51 +228,48 @@ Once the Let's Encrypt cert is issued, `https://songs.highland-coc.com` will be 
 
 ---
 
-## 9. Go/No-Go Verification Checklist
-
-Run these checks after first deployment.  All must pass before declaring the Pi live.
+## 12. Go/No-Go Verification Checklist
 
 ```bash
-# 1. Health endpoint returns {"status":"ok"}
+# 1. All containers running
+docker compose ps
+# Expected: traefik and song-history both running/healthy
+
+# 2. Health endpoint
 curl -s http://localhost:8000/health
 # Expected: {"status":"ok"}
 
-# 2. All containers healthy
-docker compose ps
-# Expected: web, backup (and watcher if enabled) all show "healthy" or "running"
-
-# 3. Songs page loads
+# 3. Songs page loads with data
 curl -sf http://localhost:8000/songs | grep -q "Worship Catalog" && echo "PASS" || echo "FAIL"
 
-# 4. DB has data (should match what you seeded)
-docker compose run --rm cli report stats --all-songs 2>/dev/null | head -5
-
-# 5. Backup runs without error
-docker compose exec backup /scripts/backup.sh /data/worship.db /backup
+# 4. Manual backup test
+PUSHOVER_APP_TOKEN=your-token PUSHOVER_USER_KEY=your-key \
+    /opt/song-history/scripts/backup.sh \
+    /opt/song-history/data/worship.db \
+    /opt/song-history/backups-usb
 ls /opt/song-history/backups-usb/worship-*.sql.gz | tail -1
+# Expected: a .sql.gz file dated today
 
-# 6. HTTPS works (after cert issues)
+# 5. HTTPS cert (check after ~30s)
 curl -sf https://songs.highland-coc.com/health | grep -q "ok" && echo "PASS" || echo "FAIL"
 ```
 
 | Check | Expected |
 |---|---|
+| `docker compose ps` | traefik + song-history running |
 | `GET /health` | `{"status":"ok"}` |
-| `docker compose ps` | all services healthy |
 | `/songs` page | loads with song data |
-| Backup file created | `worship-YYYYMMDD-HHMMSS.sql.gz` present |
+| Backup file | `worship-YYYYMMDD-HHMMSS.sql.gz` present |
 | HTTPS cert | no browser cert warning |
 
 ---
 
-## 10. Update Procedure
+## 13. Update Procedure
 
 ```bash
 cd /opt/song-history
 docker compose pull && docker compose up -d
 ```
-
-Watchtower (if enabled) does this automatically at 3 AM nightly.
 
 ---
 
@@ -257,45 +282,13 @@ Watchtower (if enabled) does this automatically at 3 AM nightly.
 | App not reachable | `docker compose ps` — all services healthy? |
 | Wrong DNS | `nslookup songs.highland-coc.com` from LAN — should return Pi IP |
 | DB permission error | `sudo chown -R 1001:1001 /opt/song-history/data` (matches app UID) |
-
----
-
-## Backup
-
-The backup service in `compose.yml` runs nightly and writes compressed SQL dumps to `./backups/`.
-
-**Alternative: cron job** (simpler for Pi without compose backup service):
-
-```bash
-# Add to crontab (crontab -e):
-0 2 * * * /opt/song-history/scripts/backup.sh \
-    /opt/song-history/data/worship.db \
-    /opt/song-history/backups-usb
-```
-
-Mount `/opt/song-history/backups-usb` to a USB thumbdrive — see [USB Thumbdrive Backup Setup](#6b-usb-thumbdrive-backup-setup).
-
----
-
-## Backup Alerting
-
-`backup.sh` sends a Pushover notification directly to your phone when a backup fails. Set both variables in `.env`:
-
-1. In the [Pushover dashboard](https://pushover.net), create an application — copy the **App API Token**
-2. Copy your **User Key** from the Pushover home screen
-3. Add to `.env`:
-   ```
-   PUSHOVER_APP_TOKEN=your-app-token-here
-   PUSHOVER_USER_KEY=your-user-key-here
-   ```
-
-`backup.sh` sends a notification only on failure — a successful backup is silent. If both variables are unset, alerting is disabled and the script runs normally.
+| Backup fails | Run manually and check stderr; verify `sqlite3` is installed |
 
 ---
 
 ## Graceful Shutdown
 
-The web service shuts down its import thread pool with `wait=True` before the process exits.
-`compose.yml` sets `stop_grace_period: 35s` for the web service so Docker waits up to 35 seconds
-for in-flight import jobs to finish before sending SIGKILL.  This protects SQLite from partial
-writes when running `docker compose down` or restarting the service.
+The web service shuts down its import thread pool before exiting.
+`docker-compose.yml` sets `stop_grace_period: 35s` so Docker waits up to 35 seconds
+for in-flight import jobs to finish before sending SIGKILL. This protects SQLite from
+partial writes when running `docker compose down` or restarting the service.
