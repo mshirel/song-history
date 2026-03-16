@@ -22,40 +22,40 @@ FAIL=0
 run_check() {
     local label="$1"
     shift
-    echo "── $label"
-    if "$@" 2>&1; then
-        echo "   ✓ passed"
+    echo "── $label" >&2
+    if "$@" >&2 2>&1; then
+        echo "   ✓ passed" >&2
     else
-        echo "   ✗ FAILED"
+        echo "   ✗ FAILED" >&2
         FAIL=$(( FAIL + 1 ))
         return 0  # keep running remaining checks
     fi
     PASS=$(( PASS + 1 ))
 }
 
-echo ""
-echo "╔══════════════════════════════════════╗"
-echo "║   QA Gate — pre-stop validation      ║"
-echo "╚══════════════════════════════════════╝"
-echo ""
+echo "" >&2
+echo "╔══════════════════════════════════════╗" >&2
+echo "║   QA Gate — pre-stop validation      ║" >&2
+echo "╚══════════════════════════════════════╝" >&2
+echo "" >&2
 
 run_check "pytest"          python3 -m pytest -q --tb=short --no-header
 run_check "ruff check src/" python3 -m ruff check src/
 run_check "mypy src/"       python3 -m mypy src/
 
-echo ""
-echo "── Results: ${PASS} passed, ${FAIL} failed"
+echo "" >&2
+echo "── Results: ${PASS} passed, ${FAIL} failed" >&2
 
 if [ "$FAIL" -gt 0 ]; then
-    echo ""
-    echo "QA gate BLOCKED — fix the failures above before finishing."
-    echo "If failures are pre-existing defects unrelated to this task,"
-    echo "open a GitHub issue and document why completion is still safe."
-    echo ""
+    echo "" >&2
+    echo "QA gate BLOCKED — fix the failures above before finishing." >&2
+    echo "If failures are pre-existing defects unrelated to this task," >&2
+    echo "open a GitHub issue and document why completion is still safe." >&2
+    echo "" >&2
     exit 2
 fi
 
-echo ""
-echo "QA gate PASSED — task may complete."
-echo ""
+echo "" >&2
+echo "QA gate PASSED — task may complete." >&2
+echo "" >&2
 exit 0
