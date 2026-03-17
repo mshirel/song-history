@@ -122,7 +122,7 @@ jobs:
 
       - name: Set up QEMU
         if: steps.changes.outputs.app == 'true' || github.event_name == 'schedule'
-        uses: docker/setup-qemu-action@49b3bc8e6bdd4a60e6116a5414239cba5943d3cf  # v3.2.0
+        uses: docker/setup-qemu-action@ce360397dd3f832beb865e1373c09c0e9f86d70a  # v4.0.0
 
       - name: Set up Docker Buildx
         if: steps.changes.outputs.app == 'true' || github.event_name == 'schedule'
@@ -175,7 +175,7 @@ jobs:
 
       - name: Upload Trivy results to GitHub Security tab
         if: (steps.changes.outputs.app == 'true' || github.event_name == 'schedule') && always()
-        uses: github/codeql-action/upload-sarif@0d579ffd059c29b07949a3cce3983f0780820c98  # v4.32.6
+        uses: github/codeql-action/upload-sarif@b1bff81932f5cdfc8695c7752dcee935dcd061c8  # v4.33.0
         with:
           sarif_file: trivy-results.sarif
 

@@ -1,10 +1,16 @@
 # Pi production stack — Traefik + song-history
-# Copy this directory to /opt/song-history/ on the Pi.
-# See docs/pi-deploy.md for full setup instructions.
 #
-# Start:  docker compose up -d
-# Update: docker compose pull && docker compose up -d
-# Logs:   docker compose logs -f
+# Transfer this directory to the Pi with:
+#   rsync -av deploy/pi/ pi@<PI_IP>:/opt/song-history/
+#
+# Then on the Pi:
+#   cd /opt/song-history
+#   touch traefik/acme.json && chmod 600 traefik/acme.json
+#   cp .env.example .env && nano .env
+#   docker compose up -d
+#
+# Update:  docker compose pull && docker compose up -d
+# Logs:    docker compose logs -f
 
 services:
 
@@ -18,13 +24,11 @@ services:
       - "80:80"
       - "443:443"
     environment:
-      # Cloudflare API token — set in .env (never commit)
       CF_DNS_API_TOKEN: "${CLOUDFLARE_API_TOKEN}"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - ./traefik/traefik.yml:/etc/traefik/traefik.yml:ro
-      # acme.json must exist and be chmod 600 before first start
-      - ./traefik/acme.json:/acme.json
+      - ./traefik/acme.json:/acme.json   # must exist, chmod 600
     labels:
       - "traefik.enable=false"
     logging:
@@ -34,17 +38,39 @@ services:
         max-file: "3"
 
   # ---------------------------------------------------------------------------
-  # song-history — worship catalog app
+  # song-history — worship catalog web app
+  # Image is pulled from GHCR — no source code needed on the Pi.
   # ---------------------------------------------------------------------------
-  song-history:
+  watcher:
     image: ghcr.io/mshirel/song-history:latest
     restart: unless-stopped
-    entrypoint: ["uvicorn", "worship_catalog.web.app:app",
-                 "--host", "0.0.0.0", "--port", "8000"]
+    init: true
+    entrypoint: /bin/sh
+    command: >
+      -c "while true; do /app/scripts/import-new.sh; sleep 300; done"
     environment:
       DB_PATH: /data/worship.db
       INBOX_DIR: /inbox
-      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY}"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+    volumes:
+      - /opt/song-history/data:/data
+      - /opt/song-history/inbox:/inbox
+    stop_grace_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  song-history:
+    image: ghcr.io/mshirel/song-history:latest
+    restart: unless-stopped
+    stop_grace_period: 35s
+    environment:
+      DB_PATH: /data/worship.db
+      INBOX_DIR: /inbox
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+      CSRF_SECRET: "${CSRF_SECRET}"
     volumes:
       - /opt/song-history/data:/data
       - /opt/song-history/inbox:/inbox
@@ -74,47 +100,5 @@ services:
       traefik:
         condition: service_started
 
-  # ---------------------------------------------------------------------------
-  # backup — nightly SQLite dump sidecar with 7-day retention
-  #
-  # Writes compressed SQL dumps to ./backups/.
-  # To restore:
-  #   gunzip -c backups/worship-YYYYMMDD-HHMMSS.sql.gz | sqlite3 data/worship.db
-  # ---------------------------------------------------------------------------
-  backup:
-    image: python:3.12-slim@sha256:ccc7089399c8bb65dd1fb3ed6d55efa538a3f5e7fca3f5988ac3b5b87e593bf0
-    volumes:
-      - /opt/song-history/data:/data:ro
-      - /opt/song-history/backups:/backups
-    command: >
-      sh -c "while true; do
-        cp /data/worship.db /backups/worship-$(date +%Y%m%d-%H%M%S).db &&
-        echo \"Backup completed\" &&
-        find /backups -name '*.db' -mtime +7 -delete &&
-        sleep 86400;
-      done"
-    restart: unless-stopped
-    logging:
-      driver: json-file
-      options:
-        max-size: "5m"
-        max-file: "2"
-
-  # ---------------------------------------------------------------------------
-  # watchtower — optional auto-update (pulls latest image from GHCR nightly)
-  # Remove this service if you prefer manual updates.
-  # ---------------------------------------------------------------------------
-  watchtower:
-    image: containrrr/watchtower:1.7.1@sha256:6dd50763bbd632a83cb154d5451700530d1e44200b268a4e9488fefdfcf2b038
-    restart: unless-stopped
-    environment:
-      WATCHTOWER_CLEANUP: "true"
-      WATCHTOWER_SCHEDULE: "0 0 3 * * *"   # 3 AM nightly
-      WATCHTOWER_INCLUDE_STOPPED: "false"
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-    logging:
-      driver: json-file
-      options:
-        max-size: "5m"
-        max-file: "2"
+# Backups are handled by a host cron job running scripts/backup.sh — not a
+# sidecar container.  See docs/pi-deploy.md § Backup for setup instructions.
