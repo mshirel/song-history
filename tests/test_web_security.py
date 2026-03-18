@@ -518,3 +518,153 @@ class TestUploadRateLimiting:
         assert resp.status_code == 429
         body = resp.json()
         assert "detail" in body, f"429 body must have 'detail' key, got: {body}"
+
+    def test_upload_rate_limit_retry_after_is_positive_integer(self, client, monkeypatch):
+        """Retry-After header must be a positive integer (seconds)."""
+        monkeypatch.setattr(
+            "worship_catalog.web.app._UPLOAD_RATE_LIMIT", 1,
+        )
+        monkeypatch.setattr(
+            "worship_catalog.web.app._UPLOAD_RATE_WINDOW_SECONDS", 3600,
+        )
+        pptx_data = self._make_pptx_bytes()
+        client.post(
+            "/upload",
+            files={"file": ("first.pptx", io.BytesIO(pptx_data), _PPTX_MIME)},
+        )
+        resp = client.post(
+            "/upload",
+            files={"file": ("second.pptx", io.BytesIO(pptx_data), _PPTX_MIME)},
+        )
+        assert resp.status_code == 429
+        retry_val = resp.headers["retry-after"]
+        retry_int = int(retry_val)
+        assert retry_int > 0, (
+            f"Retry-After must be a positive integer, got: {retry_val}"
+        )
+
+    def test_upload_rate_limit_detail_message_is_user_friendly(self, client, monkeypatch):
+        """429 detail message must tell the user to try again later."""
+        monkeypatch.setattr(
+            "worship_catalog.web.app._UPLOAD_RATE_LIMIT", 1,
+        )
+        pptx_data = self._make_pptx_bytes()
+        client.post(
+            "/upload",
+            files={"file": ("first.pptx", io.BytesIO(pptx_data), _PPTX_MIME)},
+        )
+        resp = client.post(
+            "/upload",
+            files={"file": ("second.pptx", io.BytesIO(pptx_data), _PPTX_MIME)},
+        )
+        assert resp.status_code == 429
+        detail = resp.json()["detail"]
+        # Must mention rate limit and suggest retrying
+        assert "rate limit" in detail.lower() or "too many" in detail.lower(), (
+            f"429 detail should mention rate limit, got: {detail!r}"
+        )
+        assert "later" in detail.lower() or "retry" in detail.lower(), (
+            f"429 detail should suggest retrying, got: {detail!r}"
+        )
+
+
+class TestUploadRateLimiterUnit:
+    """Direct unit tests for the _UploadRateLimiter class — edge cases."""
+
+    def test_different_ips_are_independent(self):
+        """Exhausting one IP's quota must not affect another IP."""
+        from worship_catalog.web.app import _UploadRateLimiter
+        import worship_catalog.web.app as app_module
+
+        original_limit = app_module._UPLOAD_RATE_LIMIT
+        original_window = app_module._UPLOAD_RATE_WINDOW_SECONDS
+        try:
+            app_module._UPLOAD_RATE_LIMIT = 2
+            app_module._UPLOAD_RATE_WINDOW_SECONDS = 3600
+            limiter = _UploadRateLimiter()
+
+            # Exhaust IP-A's quota
+            assert limiter.is_allowed("192.168.1.1")[0] is True
+            assert limiter.is_allowed("192.168.1.1")[0] is True
+            assert limiter.is_allowed("192.168.1.1")[0] is False
+
+            # IP-B must still be allowed
+            allowed, _ = limiter.is_allowed("10.0.0.1")
+            assert allowed is True, (
+                "Different IP was blocked by another IP's exhausted quota"
+            )
+        finally:
+            app_module._UPLOAD_RATE_LIMIT = original_limit
+            app_module._UPLOAD_RATE_WINDOW_SECONDS = original_window
+
+    def test_window_expiry_allows_new_uploads(self, monkeypatch):
+        """After the sliding window elapses, the client should be allowed again."""
+        import time as time_mod
+        from worship_catalog.web.app import _UploadRateLimiter
+        import worship_catalog.web.app as app_module
+
+        original_limit = app_module._UPLOAD_RATE_LIMIT
+        original_window = app_module._UPLOAD_RATE_WINDOW_SECONDS
+        try:
+            app_module._UPLOAD_RATE_LIMIT = 1
+            app_module._UPLOAD_RATE_WINDOW_SECONDS = 10  # 10 second window
+            limiter = _UploadRateLimiter()
+
+            # First upload succeeds
+            assert limiter.is_allowed("1.2.3.4")[0] is True
+            # Second is blocked
+            assert limiter.is_allowed("1.2.3.4")[0] is False
+
+            # Simulate time passing beyond the window by manipulating timestamps
+            # Move all stored timestamps far into the past
+            with limiter._lock:
+                limiter._timestamps["1.2.3.4"] = [
+                    time_mod.monotonic() - 20  # 20s ago, outside 10s window
+                ]
+
+            # Now should be allowed again
+            allowed, _ = limiter.is_allowed("1.2.3.4")
+            assert allowed is True, (
+                "Client should be allowed after sliding window elapses"
+            )
+        finally:
+            app_module._UPLOAD_RATE_LIMIT = original_limit
+            app_module._UPLOAD_RATE_WINDOW_SECONDS = original_window
+
+    def test_unknown_ip_fallback_shares_bucket(self):
+        """When client IP is 'unknown', all such clients share one bucket."""
+        from worship_catalog.web.app import _UploadRateLimiter
+        import worship_catalog.web.app as app_module
+
+        original_limit = app_module._UPLOAD_RATE_LIMIT
+        try:
+            app_module._UPLOAD_RATE_LIMIT = 1
+            limiter = _UploadRateLimiter()
+
+            # First "unknown" client uses the slot
+            assert limiter.is_allowed("unknown")[0] is True
+            # Second "unknown" client is also blocked
+            assert limiter.is_allowed("unknown")[0] is False
+        finally:
+            app_module._UPLOAD_RATE_LIMIT = original_limit
+
+    def test_retry_after_never_exceeds_window(self):
+        """Retry-After value must not exceed the configured window duration."""
+        from worship_catalog.web.app import _UploadRateLimiter
+        import worship_catalog.web.app as app_module
+
+        original_limit = app_module._UPLOAD_RATE_LIMIT
+        original_window = app_module._UPLOAD_RATE_WINDOW_SECONDS
+        try:
+            app_module._UPLOAD_RATE_LIMIT = 1
+            app_module._UPLOAD_RATE_WINDOW_SECONDS = 3600
+            limiter = _UploadRateLimiter()
+
+            limiter.is_allowed("5.6.7.8")
+            _, retry_after = limiter.is_allowed("5.6.7.8")
+            assert 0 < retry_after <= 3600, (
+                f"Retry-After ({retry_after}) should be between 1 and window size (3600)"
+            )
+        finally:
+            app_module._UPLOAD_RATE_LIMIT = original_limit
+            app_module._UPLOAD_RATE_WINDOW_SECONDS = original_window
