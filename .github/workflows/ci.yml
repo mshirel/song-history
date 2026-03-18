@@ -94,8 +94,8 @@ jobs:
 
   publish:
     needs: [test, security]
-    # Only publish on pushes to main or the weekly scheduled run — not on PRs
-    if: github.event_name == 'push' || github.event_name == 'schedule'
+    # Only publish on pushes to main, the weekly scheduled run, or manual dispatch — not on PRs
+    if: github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     permissions:
       contents: read
