@@ -422,3 +422,99 @@ class TestCsrfSecretStartup:
             f"CSRF token was rejected on second request (status={resp2.status_code}). "
             "Token must remain valid across requests when CSRF_SECRET is fixed."
         )
+
+
+# ---------------------------------------------------------------------------
+# Issue #173 — Upload rate limiting
+# ---------------------------------------------------------------------------
+
+
+class TestUploadRateLimiting:
+    """POST /upload must enforce per-client rate limiting — issue #173."""
+
+    def _make_pptx_bytes(self) -> bytes:
+        try:
+            from pptx import Presentation
+            buf = io.BytesIO()
+            Presentation().save(buf)
+            return buf.getvalue()
+        except ImportError:
+            pytest.skip("python-pptx not available")
+            return b""  # unreachable, satisfies type checker
+
+    def test_upload_rate_limit_rejects_burst(self, client, monkeypatch):
+        """Rapid successive uploads from same client should eventually receive 429."""
+        monkeypatch.setattr(
+            "worship_catalog.web.app._UPLOAD_RATE_LIMIT", 5,
+        )
+        monkeypatch.setattr(
+            "worship_catalog.web.app._UPLOAD_RATE_WINDOW_SECONDS", 3600,
+        )
+        pptx_data = self._make_pptx_bytes()
+        responses = []
+        for i in range(10):
+            resp = client.post(
+                "/upload",
+                files={"file": (f"Worship_{i}.pptx", io.BytesIO(pptx_data), _PPTX_MIME)},
+            )
+            responses.append(resp.status_code)
+        assert 429 in responses, (
+            f"No 429 returned after {len(responses)} uploads — rate limiting is not enforced. "
+            f"Got: {responses}"
+        )
+
+    def test_upload_rate_limit_first_request_succeeds(self, client, monkeypatch):
+        """First upload within rate limit window must still succeed (not 429)."""
+        monkeypatch.setattr(
+            "worship_catalog.web.app._UPLOAD_RATE_LIMIT", 5,
+        )
+        pptx_data = self._make_pptx_bytes()
+        resp = client.post(
+            "/upload",
+            files={"file": ("Worship_first.pptx", io.BytesIO(pptx_data), _PPTX_MIME)},
+        )
+        assert resp.status_code in (202, 503), (
+            f"First upload should be accepted (202) or pool-full (503), got {resp.status_code}"
+        )
+
+    def test_upload_rate_limit_429_includes_retry_after(self, client, monkeypatch):
+        """429 response must include a Retry-After header."""
+        monkeypatch.setattr(
+            "worship_catalog.web.app._UPLOAD_RATE_LIMIT", 1,
+        )
+        monkeypatch.setattr(
+            "worship_catalog.web.app._UPLOAD_RATE_WINDOW_SECONDS", 3600,
+        )
+        pptx_data = self._make_pptx_bytes()
+        # First request succeeds
+        client.post(
+            "/upload",
+            files={"file": ("first.pptx", io.BytesIO(pptx_data), _PPTX_MIME)},
+        )
+        # Second request should be rate-limited
+        resp = client.post(
+            "/upload",
+            files={"file": ("second.pptx", io.BytesIO(pptx_data), _PPTX_MIME)},
+        )
+        assert resp.status_code == 429
+        assert "retry-after" in resp.headers, (
+            "429 response must include Retry-After header"
+        )
+
+    def test_upload_rate_limit_429_body_is_json(self, client, monkeypatch):
+        """429 response body must be JSON with a detail message."""
+        monkeypatch.setattr(
+            "worship_catalog.web.app._UPLOAD_RATE_LIMIT", 1,
+        )
+        pptx_data = self._make_pptx_bytes()
+        client.post(
+            "/upload",
+            files={"file": ("first.pptx", io.BytesIO(pptx_data), _PPTX_MIME)},
+        )
+        resp = client.post(
+            "/upload",
+            files={"file": ("second.pptx", io.BytesIO(pptx_data), _PPTX_MIME)},
+        )
+        assert resp.status_code == 429
+        body = resp.json()
+        assert "detail" in body, f"429 body must have 'detail' key, got: {body}"

@@ -10,6 +10,8 @@ import os
 import re
 import secrets
 import threading
+import time
+from collections import defaultdict
 from collections.abc import AsyncGenerator, Generator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
@@ -141,6 +143,42 @@ MAX_UPLOAD_BYTES: int = 50 * 1024 * 1024  # 50 MB
 _PPTX_MIME = (
     "application/vnd.openxmlformats-officedocument.presentationml.presentation"
 )
+
+# Per-client upload rate limiting (#173)
+_UPLOAD_RATE_LIMIT: int = 10  # max uploads per window
+_UPLOAD_RATE_WINDOW_SECONDS: int = 3600  # 1 hour
+
+
+class _UploadRateLimiter:
+    """Thread-safe sliding-window rate limiter keyed by client IP."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._timestamps: dict[str, list[float]] = defaultdict(list)
+
+    def is_allowed(self, client_ip: str) -> tuple[bool, int]:
+        """Check if the client may upload.
+
+        Returns (allowed, retry_after_seconds).
+        """
+        now = time.monotonic()
+        with self._lock:
+            window_start = now - _UPLOAD_RATE_WINDOW_SECONDS
+            # Prune old timestamps
+            timestamps = self._timestamps[client_ip]
+            self._timestamps[client_ip] = [
+                t for t in timestamps if t > window_start
+            ]
+            timestamps = self._timestamps[client_ip]
+            if len(timestamps) >= _UPLOAD_RATE_LIMIT:
+                oldest_in_window = timestamps[0]
+                retry_after = int(oldest_in_window - window_start) + 1
+                return False, max(retry_after, 1)
+            timestamps.append(now)
+            return True, 0
+
+
+_upload_limiter = _UploadRateLimiter()
 
 
 def _validate_date_range(start_date: str, end_date: str) -> None:
@@ -616,6 +654,19 @@ def _run_import_in_background(job_id: str, pptx_path: Path) -> None:
 @app.post("/upload")
 async def upload(request: Request, file: UploadFile) -> JSONResponse:
     """Accept a PPTX file, create an import job, and kick off background import."""
+    # Rate limiting (#173) — check before reading the body to save bandwidth
+    client_ip = request.client.host if request.client else "unknown"
+    allowed, retry_after = _upload_limiter.is_allowed(client_ip)
+    if not allowed:
+        _log.warning(
+            "Upload rate limit exceeded",
+            extra={"client_ip": client_ip, "retry_after": retry_after},
+        )
+        return JSONResponse(
+            content={"detail": "Upload rate limit exceeded — try again later"},
+            status_code=429,
+            headers={"Retry-After": str(retry_after)},
+        )
     # Pre-flight: reject by Content-Length header before reading the body (defence-in-depth)
     cl_header = request.headers.get("content-length")
     if cl_header is not None:
