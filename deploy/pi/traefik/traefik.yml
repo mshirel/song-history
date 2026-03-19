@@ -21,6 +21,8 @@ certificatesResolvers:
       storage: /acme.json
       dnsChallenge:
         provider: cloudflare          # requires CF_DNS_API_TOKEN env var
+        delayBeforeCheck: 30s
+        disablePropagationCheck: true  # skip DNS propagation query — avoids DNS interception issues
         resolvers:
           - "1.1.1.1:53"
           - "8.8.8.8:53"
@@ -29,7 +31,7 @@ certificatesResolvers:
 providers:
   docker:
     exposedByDefault: false           # require traefik.enable=true label
-    network: bridge
+    network: song-history_default
 
 # --- API / dashboard (LAN-only, no auth needed) ----------------------------
 api:

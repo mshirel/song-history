@@ -75,7 +75,7 @@ services:
       - /opt/song-history/data:/data
       - /opt/song-history/inbox:/inbox
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:8000/health"]
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -85,6 +85,8 @@ services:
       - "traefik.http.routers.songs.rule=Host(`songs.highland-coc.com`)"
       - "traefik.http.routers.songs.entrypoints=websecure"
       - "traefik.http.routers.songs.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.songs.tls.domains[0].main=highland-coc.com"
+      - "traefik.http.routers.songs.tls.domains[0].sans=*.highland-coc.com"
       - "traefik.http.services.songs.loadbalancer.server.port=8000"
       # HTTP → HTTPS redirect
       - "traefik.http.routers.songs-http.rule=Host(`songs.highland-coc.com`)"
