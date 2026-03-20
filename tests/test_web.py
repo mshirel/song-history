@@ -11,33 +11,8 @@ from tempfile import TemporaryDirectory
 import pytest
 from starlette.testclient import TestClient
 
+from conftest import CsrfAwareClient
 from worship_catalog.db import Database
-
-
-class _CsrfAwareClient:
-    """Wraps TestClient to automatically include the CSRF token on POST requests."""
-
-    def __init__(self, inner: TestClient) -> None:
-        self._inner = inner
-        self._csrf_token: str | None = None
-
-    def _ensure_token(self) -> str:
-        if self._csrf_token is None:
-            resp = self._inner.get("/songs")
-            self._csrf_token = resp.cookies.get("csrftoken", "")
-        return self._csrf_token or ""
-
-    def get(self, *args, **kwargs):
-        return self._inner.get(*args, **kwargs)
-
-    def post(self, *args, **kwargs):
-        token = self._ensure_token()
-        headers = dict(kwargs.pop("headers", {}) or {})
-        headers.setdefault("X-CSRFToken", token)
-        return self._inner.post(*args, headers=headers, **kwargs)
-
-    def __getattr__(self, name):
-        return getattr(self._inner, name)
 
 
 @pytest.fixture
@@ -50,7 +25,7 @@ def client(db_with_songs, tmp_path, monkeypatch):
     from importlib import reload
     import worship_catalog.web.app as app_module
     reload(app_module)
-    return _CsrfAwareClient(TestClient(app_module.app))
+    return CsrfAwareClient(TestClient(app_module.app))
 
 
 @pytest.fixture
@@ -817,7 +792,7 @@ SMALL_PPTX_BYTES = b"PK\x03\x04" + b"\x00" * 100  # fake PPTX magic bytes
 
 
 def _upload(
-    client: "_CsrfAwareClient",
+    client: "CsrfAwareClient",
     content: bytes,
     filename: str,
     content_type: str,
@@ -1427,7 +1402,7 @@ class TestBackgroundImportPersistsSongsToDB:
         import worship_catalog.web.app as app_module
         from importlib import reload
         reload(app_module)
-        return _CsrfAwareClient(TestClient(app_module.app)), db_path
+        return CsrfAwareClient(TestClient(app_module.app)), db_path
 
     def test_upload_real_pptx_job_reaches_complete_status(self, tmp_path, monkeypatch, minimal_pptx_bytes):
         """A real PPTX uploaded via /upload must drive the job to 'complete' status."""
@@ -1881,7 +1856,7 @@ class TestUploadInboxCleanup:
         import worship_catalog.web.app as app_module
         from importlib import reload
         reload(app_module)
-        return _CsrfAwareClient(TestClient(app_module.app)), inbox
+        return CsrfAwareClient(TestClient(app_module.app)), inbox
 
     def _wait_for_job(self, client, job_id, timeout=5.0):
         import time
@@ -1921,7 +1896,7 @@ class TestUploadInboxCleanup:
         import worship_catalog.web.app as app_module
         from importlib import reload
         reload(app_module)
-        client = _CsrfAwareClient(TestClient(app_module.app))
+        client = CsrfAwareClient(TestClient(app_module.app))
 
         # Upload a garbage PPTX that will fail extraction
         resp = client.post(
