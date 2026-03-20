@@ -1345,3 +1345,16 @@ class TestCcliCsvCommaInTitle:
         data_lines = [l for l in content.splitlines() if l.strip() and not l.startswith("#")]
         rows = list(csv.reader(data_lines))
         assert any("Majesty" in row for row in rows[1:]), f"Majesty not found in {rows}"
+
+
+class TestReportHelpDiscoverability:
+    """Verify report subcommands are discoverable via --help (#178)."""
+
+    def test_ccli_command_visible_in_report_help(self) -> None:
+        """The ccli subcommand must appear in 'report --help' output."""
+        runner = CliRunner()
+        result = runner.invoke(main, ["report", "--help"])
+        assert result.exit_code == 0
+        assert "ccli" in result.output, (
+            f"'ccli' not found in report --help output:\n{result.output}"
+        )
