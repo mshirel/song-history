@@ -1720,12 +1720,13 @@ class TestDownloadFilenameContract:
 
 
 # ---------------------------------------------------------------------------
-# Issue #132 — ORDER BY whitelist guard inside _query_songs / _query_all_services
+# Issue #132 — ORDER BY whitelist guard inside query_songs_paginated / query_all_services_paginated
+# Methods moved from app.py to Database (#166)
 # ---------------------------------------------------------------------------
 
 
 class TestQuerySongsInternalWhitelist:
-    """_query_songs() must validate sort column internally — issue #132."""
+    """Database.query_songs_paginated() must validate sort column — issue #132."""
 
     @pytest.fixture
     def temp_db(self, tmp_path):
@@ -1737,40 +1738,35 @@ class TestQuerySongsInternalWhitelist:
         db.close()
 
     def test_valid_sort_col_works(self, temp_db):
-        """Passing a valid sort column to _query_songs succeeds without error."""
-        from worship_catalog.web.app import _query_songs
-        # Should not raise
-        rows, total = _query_songs(temp_db, sort="display_title", sort_dir="asc")
+        """Passing a valid sort column succeeds without error."""
+        rows, total = temp_db.query_songs_paginated(sort="display_title", sort_dir="asc")
         assert isinstance(rows, list)
 
     def test_invalid_sort_col_raises_value_error(self, temp_db):
-        """Passing an invalid sort column directly to _query_songs raises ValueError."""
-        from worship_catalog.web.app import _query_songs
+        """Invalid sort column raises ValueError."""
         with pytest.raises(ValueError, match="Invalid sort column"):
-            _query_songs(temp_db, sort="not_a_real_column")
+            temp_db.query_songs_paginated(sort="not_a_real_column")
 
     def test_sql_injection_sort_raises_value_error(self, temp_db):
-        """SQL injection string as sort column is rejected by _query_songs."""
-        from worship_catalog.web.app import _query_songs
+        """SQL injection string as sort column is rejected."""
         with pytest.raises(ValueError):
-            _query_songs(temp_db, sort="title; DROP TABLE songs--")
+            temp_db.query_songs_paginated(sort="title; DROP TABLE songs--")
 
     def test_empty_sort_col_raises_value_error(self, temp_db):
         """Empty string sort column is rejected."""
-        from worship_catalog.web.app import _query_songs
         with pytest.raises(ValueError):
-            _query_songs(temp_db, sort="")
+            temp_db.query_songs_paginated(sort="")
 
     def test_all_valid_songs_sort_cols_work(self, temp_db):
         """Every column in _SONGS_SORT_COLS must be accepted without error."""
-        from worship_catalog.web.app import _query_songs, _SONGS_SORT_COLS
-        for col in _SONGS_SORT_COLS:
-            rows, total = _query_songs(temp_db, sort=col)
+        from worship_catalog.db import Database
+        for col in Database._SONGS_SORT_COLS:
+            rows, total = temp_db.query_songs_paginated(sort=col)
             assert isinstance(rows, list), f"Column {col!r} failed unexpectedly"
 
 
 class TestQueryServicesInternalWhitelist:
-    """_query_all_services() must validate sort column internally — issue #132."""
+    """Database.query_all_services_paginated() must validate sort column — issue #132."""
 
     @pytest.fixture
     def temp_db(self, tmp_path):
@@ -1782,28 +1778,25 @@ class TestQueryServicesInternalWhitelist:
         db.close()
 
     def test_valid_sort_col_works(self, temp_db):
-        """Passing a valid sort column to _query_all_services succeeds."""
-        from worship_catalog.web.app import _query_all_services
-        rows, total = _query_all_services(temp_db, sort="service_date", sort_dir="asc")
+        """Passing a valid sort column succeeds."""
+        rows, total = temp_db.query_all_services_paginated(sort="service_date", sort_dir="asc")
         assert isinstance(rows, list)
 
     def test_invalid_sort_col_raises_value_error(self, temp_db):
-        """Invalid sort column to _query_all_services raises ValueError."""
-        from worship_catalog.web.app import _query_all_services
+        """Invalid sort column raises ValueError."""
         with pytest.raises(ValueError, match="Invalid sort column"):
-            _query_all_services(temp_db, sort="not_valid_col")
+            temp_db.query_all_services_paginated(sort="not_valid_col")
 
     def test_sql_injection_sort_raises_value_error(self, temp_db):
-        """SQL injection string as sort column raises ValueError in _query_all_services."""
-        from worship_catalog.web.app import _query_all_services
+        """SQL injection string as sort column raises ValueError."""
         with pytest.raises(ValueError):
-            _query_all_services(temp_db, sort="service_date; DROP TABLE services--")
+            temp_db.query_all_services_paginated(sort="service_date; DROP TABLE services--")
 
     def test_all_valid_services_sort_cols_work(self, temp_db):
         """Every column in _SERVICES_SORT_COLS must be accepted without error."""
-        from worship_catalog.web.app import _query_all_services, _SERVICES_SORT_COLS
-        for col in _SERVICES_SORT_COLS:
-            rows, total = _query_all_services(temp_db, sort=col)
+        from worship_catalog.db import Database
+        for col in Database._SERVICES_SORT_COLS:
+            rows, total = temp_db.query_all_services_paginated(sort=col)
             assert isinstance(rows, list), f"Column {col!r} failed unexpectedly"
 
 
