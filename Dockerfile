@@ -28,7 +28,7 @@ COPY data/library_index.json /app/data/library_index.json
 RUN chmod +x scripts/import-new.sh
 
 # Install the package with web extras
-RUN pip install --no-cache-dir -e ".[web]"
+RUN pip install --no-cache-dir ".[web]"
 
 # Create a non-root user and group for runtime (#26)
 # Fixed UID/GID so host volume permissions can be set to match:
