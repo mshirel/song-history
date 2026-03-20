@@ -1526,6 +1526,123 @@ class TestBackgroundImportPersistsSongsToDB:
             f"found {song_count} song rows after import"
         )
 
+    def test_upload_creates_copy_events(self, tmp_path, monkeypatch, minimal_pptx_bytes):
+        """After a successful upload, projection and recording copy events must exist (#176)."""
+        client, db_path = self._make_upload_client(tmp_path, monkeypatch)
+
+        resp = client.post(
+            "/upload",
+            files={"file": ("AM Worship 2026.01.04.pptx", io.BytesIO(minimal_pptx_bytes), VALID_PPTX_MIME)},
+        )
+        assert resp.status_code == 202
+        job_id = resp.json()["job_id"]
+
+        import time
+        deadline = time.monotonic() + 5.0
+        status = "pending"
+        while time.monotonic() < deadline and status not in ("complete", "failed"):
+            status = client.get(f"/jobs/{job_id}").json()["status"]
+            time.sleep(0.05)
+        assert status == "complete"
+
+        _db = Database(db_path)
+        _db.connect()
+        events = _db.query_copy_events("0000-01-01", "9999-12-31")
+        _db.close()
+        types = {e["reproduction_type"] for e in events}
+        assert "projection" in types, (
+            "Background import must create 'projection' copy events"
+        )
+
+    def test_upload_idempotent_reimport(self, tmp_path, monkeypatch, minimal_pptx_bytes):
+        """Uploading the same PPTX twice must not create duplicate services (#176)."""
+        client, db_path = self._make_upload_client(tmp_path, monkeypatch)
+
+        import time
+
+        def upload_and_wait():
+            resp = client.post(
+                "/upload",
+                files={"file": ("AM Worship 2026.01.04.pptx", io.BytesIO(minimal_pptx_bytes), VALID_PPTX_MIME)},
+            )
+            job_id = resp.json()["job_id"]
+            deadline = time.monotonic() + 5.0
+            status = "pending"
+            while time.monotonic() < deadline and status not in ("complete", "failed"):
+                status = client.get(f"/jobs/{job_id}").json()["status"]
+                time.sleep(0.05)
+            return status
+
+        s1 = upload_and_wait()
+        assert s1 == "complete"
+        s2 = upload_and_wait()
+        assert s2 == "complete"
+
+        _db = Database(db_path)
+        _db.connect()
+        services = _db.query_services("2026-01-01", "2026-12-31")
+        _db.close()
+        assert len(services) == 1, (
+            f"Expected 1 service after idempotent re-import, got {len(services)}"
+        )
+
+    def test_upload_persists_service_songs_join(self, tmp_path, monkeypatch, minimal_pptx_bytes):
+        """service_songs rows must link the imported song to its service (#176)."""
+        client, db_path = self._make_upload_client(tmp_path, monkeypatch)
+
+        resp = client.post(
+            "/upload",
+            files={"file": ("AM Worship 2026.01.04.pptx", io.BytesIO(minimal_pptx_bytes), VALID_PPTX_MIME)},
+        )
+        job_id = resp.json()["job_id"]
+
+        import time
+        deadline = time.monotonic() + 5.0
+        status = "pending"
+        while time.monotonic() < deadline and status not in ("complete", "failed"):
+            status = client.get(f"/jobs/{job_id}").json()["status"]
+            time.sleep(0.05)
+        assert status == "complete"
+
+        _db = Database(db_path)
+        _db.connect()
+        cursor = _db.cursor()
+        cursor.execute("SELECT COUNT(*) FROM service_songs")
+        count = cursor.fetchone()[0]
+        _db.close()
+        assert count > 0, (
+            "service_songs must contain rows linking songs to the service"
+        )
+
+    def test_upload_songs_imported_count_matches_db(self, tmp_path, monkeypatch, minimal_pptx_bytes):
+        """Job record songs_imported must match actual songs in DB (#176)."""
+        client, db_path = self._make_upload_client(tmp_path, monkeypatch)
+
+        resp = client.post(
+            "/upload",
+            files={"file": ("AM Worship 2026.01.04.pptx", io.BytesIO(minimal_pptx_bytes), VALID_PPTX_MIME)},
+        )
+        job_id = resp.json()["job_id"]
+
+        import time
+        deadline = time.monotonic() + 5.0
+        status = "pending"
+        while time.monotonic() < deadline and status not in ("complete", "failed"):
+            status = client.get(f"/jobs/{job_id}").json()["status"]
+            time.sleep(0.05)
+        assert status == "complete"
+
+        job = client.get(f"/jobs/{job_id}").json()
+        _db = Database(db_path)
+        _db.connect()
+        cursor = _db.cursor()
+        cursor.execute("SELECT COUNT(*) FROM songs")
+        song_count = cursor.fetchone()[0]
+        _db.close()
+        assert job["songs_imported"] == song_count, (
+            f"Job says {job['songs_imported']} songs imported but DB has {song_count}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Issue #112: Contract tests for Content-Disposition filename format
