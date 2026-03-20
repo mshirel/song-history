@@ -2091,3 +2091,206 @@ class TestGracefulShutdown:
         source = inspect.getsource(app_module._lifespan)
         assert "shutdown" in source, "lifespan must call executor.shutdown"
         assert "wait=True" in source, "lifespan executor.shutdown must use wait=True"
+
+
+# ---------------------------------------------------------------------------
+# Pushover notification integration in _run_import_in_background
+# ---------------------------------------------------------------------------
+
+
+class TestBackgroundImportNotification:
+    """send_pushover must be called after successful and failed imports,
+    and notification failures must never break the import flow."""
+
+    def test_successful_import_sends_pushover_notification(
+        self, tmp_path, monkeypatch
+    ):
+        """On successful import, send_pushover is called with 'Import complete'."""
+        from worship_catalog.db import Database
+        from worship_catalog.extractor import SongOccurrence, ExtractionResult
+        import worship_catalog.extractor as extractor_mod
+        import worship_catalog.pptx_reader as pptx_reader_mod
+        from unittest.mock import MagicMock
+
+        db_path = tmp_path / "notify_ok.db"
+        _db = Database(db_path)
+        _db.connect()
+        _db.init_schema()
+        job_id = str(_uuid_mod.uuid4())
+        _db.create_import_job(job_id, filename="sunday.pptx")
+        _db.close()
+
+        monkeypatch.setenv("DB_PATH", str(db_path))
+
+        fake_songs = [
+            SongOccurrence(
+                ordinal=i + 1,
+                canonical_title=f"song {i}",
+                display_title=f"Song {i}",
+            )
+            for i in range(2)
+        ]
+        fake_result = ExtractionResult(
+            filename="sunday.pptx",
+            file_hash="fakehash",
+            service_date="2026-01-04",
+            service_name="AM Worship",
+            song_leader=None,
+            preacher=None,
+            sermon_title=None,
+            songs=fake_songs,
+        )
+        monkeypatch.setattr(extractor_mod, "extract_songs", lambda p, **kw: fake_result)
+        monkeypatch.setattr(pptx_reader_mod, "compute_file_hash", lambda p: "fakehash")
+
+        import worship_catalog.web.app as app_module
+        from importlib import reload
+        reload(app_module)
+
+        mock_pushover = MagicMock()
+        monkeypatch.setattr(app_module, "send_pushover", mock_pushover)
+
+        pptx_path = tmp_path / "sunday.pptx"
+        pptx_path.write_bytes(b"fake")
+        app_module._run_import_in_background(job_id, pptx_path)
+
+        mock_pushover.assert_called_once()
+        call_kwargs = mock_pushover.call_args[1]
+        assert call_kwargs["title"] == "Import complete"
+        assert "sunday.pptx" in call_kwargs["message"]
+        assert "2 songs" in call_kwargs["message"]
+
+    def test_failed_import_sends_pushover_notification(
+        self, tmp_path, monkeypatch
+    ):
+        """On failed import, send_pushover is called with 'Import failed'."""
+        from worship_catalog.db import Database
+        from unittest.mock import MagicMock
+
+        db_path = tmp_path / "notify_fail.db"
+        _db = Database(db_path)
+        _db.connect()
+        _db.init_schema()
+        job_id = str(_uuid_mod.uuid4())
+        _db.create_import_job(job_id, filename="bad.pptx")
+        _db.close()
+
+        monkeypatch.setenv("DB_PATH", str(db_path))
+
+        import worship_catalog.web.app as app_module
+        from importlib import reload
+        reload(app_module)
+
+        mock_pushover = MagicMock()
+        monkeypatch.setattr(app_module, "send_pushover", mock_pushover)
+
+        pptx_path = tmp_path / "bad.pptx"
+        pptx_path.write_bytes(b"not a real pptx")
+        app_module._run_import_in_background(job_id, pptx_path)
+
+        mock_pushover.assert_called_once()
+        call_kwargs = mock_pushover.call_args[1]
+        assert call_kwargs["title"] == "Import failed"
+        assert "bad.pptx" in call_kwargs["message"]
+        assert call_kwargs["priority"] == -1
+
+    def test_pushover_exception_does_not_break_successful_import(
+        self, tmp_path, monkeypatch
+    ):
+        """If send_pushover raises, the job must still be marked 'complete'."""
+        from worship_catalog.db import Database
+        from worship_catalog.extractor import SongOccurrence, ExtractionResult
+        import worship_catalog.extractor as extractor_mod
+        import worship_catalog.pptx_reader as pptx_reader_mod
+
+        db_path = tmp_path / "notify_explode.db"
+        _db = Database(db_path)
+        _db.connect()
+        _db.init_schema()
+        job_id = str(_uuid_mod.uuid4())
+        _db.create_import_job(job_id, filename="ok.pptx")
+        _db.close()
+
+        monkeypatch.setenv("DB_PATH", str(db_path))
+
+        fake_songs = [
+            SongOccurrence(
+                ordinal=1,
+                canonical_title="song 0",
+                display_title="Song 0",
+            )
+        ]
+        fake_result = ExtractionResult(
+            filename="ok.pptx",
+            file_hash="fakehash",
+            service_date="2026-01-04",
+            service_name="AM Worship",
+            song_leader=None,
+            preacher=None,
+            sermon_title=None,
+            songs=fake_songs,
+        )
+        monkeypatch.setattr(extractor_mod, "extract_songs", lambda p, **kw: fake_result)
+        monkeypatch.setattr(pptx_reader_mod, "compute_file_hash", lambda p: "fakehash")
+
+        import worship_catalog.web.app as app_module
+        from importlib import reload
+        reload(app_module)
+
+        def _exploding_pushover(**kwargs):
+            raise RuntimeError("network is down")
+
+        monkeypatch.setattr(app_module, "send_pushover", _exploding_pushover)
+
+        pptx_path = tmp_path / "ok.pptx"
+        pptx_path.write_bytes(b"fake")
+        app_module._run_import_in_background(job_id, pptx_path)
+
+        _db2 = Database(db_path)
+        _db2.connect()
+        row = _db2.get_import_job(job_id)
+        _db2.close()
+        # If send_pushover raises after the job is marked complete but before
+        # the except block, the exception could mark the job as 'failed'.
+        # This test catches that regression.
+        assert row["status"] == "complete", (
+            f"Job status should be 'complete' even when send_pushover raises, "
+            f"but got '{row['status']}'"
+        )
+
+    def test_pushover_exception_does_not_break_failed_import(
+        self, tmp_path, monkeypatch
+    ):
+        """If send_pushover raises during a failed import, job must still be 'failed'."""
+        from worship_catalog.db import Database
+
+        db_path = tmp_path / "notify_double_fail.db"
+        _db = Database(db_path)
+        _db.connect()
+        _db.init_schema()
+        job_id = str(_uuid_mod.uuid4())
+        _db.create_import_job(job_id, filename="bad.pptx")
+        _db.close()
+
+        monkeypatch.setenv("DB_PATH", str(db_path))
+
+        import worship_catalog.web.app as app_module
+        from importlib import reload
+        reload(app_module)
+
+        def _exploding_pushover(**kwargs):
+            raise RuntimeError("network is down")
+
+        monkeypatch.setattr(app_module, "send_pushover", _exploding_pushover)
+
+        pptx_path = tmp_path / "bad.pptx"
+        pptx_path.write_bytes(b"not a real pptx")
+        # This must not raise — the import flow must absorb notification errors
+        app_module._run_import_in_background(job_id, pptx_path)
+
+        _db2 = Database(db_path)
+        _db2.connect()
+        row = _db2.get_import_job(job_id)
+        _db2.close()
+        assert row["status"] == "failed"
+        assert row["error_message"] is not None
