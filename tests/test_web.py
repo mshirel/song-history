@@ -2294,3 +2294,41 @@ class TestBackgroundImportNotification:
         _db2.close()
         assert row["status"] == "failed"
         assert row["error_message"] is not None
+
+
+class TestGetDbSchemaInit:
+    """Verify that init_schema() is only called once, not on every request."""
+
+    def test_init_schema_called_once_across_multiple_get_db_calls(self) -> None:
+        """init_schema should run only on the first _get_db call, not every request."""
+        from unittest.mock import patch
+
+        import worship_catalog.web.app as app_module
+
+        app_module._schema_ready = False
+
+        with patch.object(Database, "init_schema") as mock_init:
+            with patch.object(Database, "connect"):
+                app_module._get_db()
+                app_module._get_db()
+                app_module._get_db()
+
+                mock_init.assert_called_once()
+
+        app_module._schema_ready = False
+
+    def test_schema_ready_flag_set_after_first_call(self) -> None:
+        """The _schema_ready flag should be True after first _get_db call."""
+        from unittest.mock import patch
+
+        import worship_catalog.web.app as app_module
+
+        app_module._schema_ready = False
+
+        with patch.object(Database, "init_schema"):
+            with patch.object(Database, "connect"):
+                assert not app_module._schema_ready
+                app_module._get_db()
+                assert app_module._schema_ready
+
+        app_module._schema_ready = False
