@@ -186,23 +186,29 @@ sudo chown $USER /opt/song-history/backups-usb
 
 Backups run via a host cron job — no sidecar container needed.
 
+### Create the Pushover env file
+
+Store the Pushover credentials in a dedicated file so cron can source them
+(cron jobs run with a minimal environment and do not inherit shell exports):
+
+```bash
+cat > /home/songs/.pushover.env << 'EOF'
+export PUSHOVER_APP_TOKEN=<your-app-token>
+export PUSHOVER_USER_KEY=<your-user-key>
+EOF
+chmod 600 /home/songs/.pushover.env
+```
+
+### Add the cron entry
+
 ```bash
 crontab -e
 ```
 
 Add:
 ```
-# Nightly backup at 2 AM — writes to USB drive
-0 2 * * * PUSHOVER_APP_TOKEN=your-token PUSHOVER_USER_KEY=your-key \
-    /opt/song-history/scripts/backup.sh \
-    /opt/song-history/data/worship.db \
-    /opt/song-history/backups-usb
-```
-
-Or set `PUSHOVER_APP_TOKEN` and `PUSHOVER_USER_KEY` in `/etc/environment` and simplify the cron line:
-
-```
-0 2 * * * /opt/song-history/scripts/backup.sh /opt/song-history/data/worship.db /opt/song-history/backups-usb
+# Nightly backup at 2 AM — sources Pushover keys, writes to USB drive
+0 2 * * * . /home/songs/.pushover.env && /opt/song-history/scripts/backup.sh /opt/song-history/data/worship.db /opt/song-history/backups-usb
 ```
 
 `backup.sh` sends a Pushover notification if the backup fails. Success is silent.
@@ -243,8 +249,7 @@ curl -s http://localhost:8000/health
 curl -sf http://localhost:8000/songs | grep -q "Worship Catalog" && echo "PASS" || echo "FAIL"
 
 # 4. Manual backup test
-PUSHOVER_APP_TOKEN=your-token PUSHOVER_USER_KEY=your-key \
-    /opt/song-history/scripts/backup.sh \
+. /home/songs/.pushover.env && /opt/song-history/scripts/backup.sh \
     /opt/song-history/data/worship.db \
     /opt/song-history/backups-usb
 ls /opt/song-history/backups-usb/worship-*.sql.gz | tail -1
