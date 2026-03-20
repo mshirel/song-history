@@ -507,6 +507,92 @@ class TestReportStatsCommand:
             assert result.exit_code == 0
 
 
+class TestStatsOutputFormat:
+    """Contract tests for stats report Markdown output format (#175)."""
+
+    @pytest.fixture
+    def runner(self):
+        return CliRunner()
+
+    def test_stats_markdown_has_required_sections(self, runner, db_with_songs, tmp_path):
+        """Stats report must contain Summary, Most Frequent Songs, Services sections."""
+        out = tmp_path / "stats.md"
+        result = runner.invoke(main, [
+            "report", "stats",
+            "--db", str(db_with_songs),
+            "--from", "0000-01-01", "--to", "9999-12-31",
+            "--out", str(out),
+        ])
+        assert result.exit_code == 0
+        content = out.read_text()
+        assert "# Song Statistics Report" in content
+        assert "## Summary" in content
+        assert "## Most Frequent Songs" in content
+        assert "## Services" in content
+
+    def test_stats_markdown_song_table_columns(self, runner, db_with_songs, tmp_path):
+        """Song frequency table must have Song, Credits, Count columns."""
+        out = tmp_path / "stats.md"
+        runner.invoke(main, [
+            "report", "stats",
+            "--db", str(db_with_songs),
+            "--from", "0000-01-01", "--to", "9999-12-31",
+            "--out", str(out),
+        ])
+        content = out.read_text()
+        assert "| Song |" in content
+        assert "Credits" in content
+        assert "Count" in content
+
+    def test_stats_markdown_includes_known_song(self, runner, db_with_songs, tmp_path):
+        """A song in the DB must appear in the Markdown output."""
+        out = tmp_path / "stats.md"
+        runner.invoke(main, [
+            "report", "stats",
+            "--db", str(db_with_songs),
+            "--from", "0000-01-01", "--to", "9999-12-31",
+            "--out", str(out),
+        ])
+        content = out.read_text()
+        assert "Amazing Grace" in content
+
+    def test_stats_all_songs_flag_overrides_top_20_limit(self, runner, tmp_path):
+        """With --all-songs, the report must include every song, not just top 20."""
+        db_path = tmp_path / "big.db"
+        db = Database(db_path)
+        db.connect()
+        db.init_schema()
+        svc_id = db.insert_or_update_service("2026-01-01", "AM", "f.pptx", "h1")
+        for i in range(25):
+            song_id = db.insert_or_get_song(f"song {i}", f"Song {i}")
+            db.insert_service_song(svc_id, song_id, ordinal=i + 1)
+            db.insert_copy_event(svc_id, song_id, "projection", reportable=True)
+        db.close()
+
+        out = tmp_path / "stats.md"
+        runner.invoke(main, [
+            "report", "stats", "--db", str(db_path),
+            "--from", "0000-01-01", "--to", "9999-12-31",
+            "--out", str(out), "--all-songs",
+        ])
+        content = out.read_text()
+        for i in range(25):
+            assert f"Song {i}" in content, f"Song {i} missing with --all-songs"
+
+    def test_stats_services_table_has_date_and_leader(self, runner, db_with_songs, tmp_path):
+        """Services section must include date and song leader columns."""
+        out = tmp_path / "stats.md"
+        runner.invoke(main, [
+            "report", "stats",
+            "--db", str(db_with_songs),
+            "--from", "0000-01-01", "--to", "9999-12-31",
+            "--out", str(out),
+        ])
+        content = out.read_text()
+        assert "2026-02-15" in content
+        assert "Matt" in content
+
+
 @pytest.mark.integration
 class TestReportStatsLeaderFilter:
     """Tests for report stats --leader option."""
