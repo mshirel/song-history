@@ -36,6 +36,7 @@ from starlette_csrf import CSRFMiddleware  # type: ignore[attr-defined]
 from worship_catalog.db import Database
 from worship_catalog.log_config import RequestLoggingMiddleware
 from worship_catalog.log_config import setup as _setup_logging
+from worship_catalog.notify import send_pushover
 from worship_catalog.services.report_service import compute_stats_data
 
 _setup_logging()
@@ -633,13 +634,28 @@ def _run_import_in_background(job_id: str, pptx_path: Path) -> None:
         db.update_import_job(
             job_id, status="complete", songs_imported=len(result.songs)
         )
+        _notify_title = "Import complete"
+        _notify_message = f"{pptx_path.name} — {len(result.songs)} songs imported"
+        _notify_priority = 0
     except Exception as exc:  # noqa: BLE001
         # update_import_job runs outside the transaction block — commits even on rollback
         db.update_import_job(
             job_id, status="failed", error_message=str(exc)[:500]
         )
+        _notify_title = "Import failed"
+        _notify_message = f"{pptx_path.name} — {exc}"
+        _notify_priority = -1
     finally:
         db.close()
+        # Notification is fire-and-forget — isolated from job status updates (#185)
+        try:
+            send_pushover(
+                title=_notify_title,
+                message=_notify_message,
+                priority=_notify_priority,
+            )
+        except Exception:  # noqa: BLE001
+            _log.warning("Pushover notification could not be sent", exc_info=True)
         # Always clean up the inbox file regardless of success or failure (#138)
         try:
             if pptx_path.exists():
