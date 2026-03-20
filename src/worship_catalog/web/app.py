@@ -203,11 +203,17 @@ def _validate_date_range(start_date: str, end_date: str) -> None:
         )
 
 
+_schema_ready: bool = False
+
+
 def _get_db() -> Database:
+    global _schema_ready  # noqa: PLW0603
     db_path = Path(os.environ.get("DB_PATH", "data/worship.db"))
     db = Database(db_path)
     db.connect()
-    db.init_schema()
+    if not _schema_ready:
+        db.init_schema()
+        _schema_ready = True
     return db
 
 

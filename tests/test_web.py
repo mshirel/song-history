@@ -2091,3 +2091,46 @@ class TestGracefulShutdown:
         source = inspect.getsource(app_module._lifespan)
         assert "shutdown" in source, "lifespan must call executor.shutdown"
         assert "wait=True" in source, "lifespan executor.shutdown must use wait=True"
+
+
+class TestGetDbSchemaInit:
+    """Verify that init_schema() is only called once, not on every request."""
+
+    def test_init_schema_called_once_across_multiple_get_db_calls(self):
+        """init_schema should run only on the first _get_db call, not every request."""
+        from unittest.mock import patch
+
+        import worship_catalog.web.app as app_module
+
+        # Reset the flag for test isolation
+        app_module._schema_ready = False
+
+        with patch.object(Database, "init_schema") as mock_init:
+            with patch.object(Database, "connect"):
+                # First call should trigger init_schema
+                app_module._get_db()
+                # Second call should skip init_schema
+                app_module._get_db()
+                # Third call should also skip
+                app_module._get_db()
+
+                mock_init.assert_called_once()
+
+        # Reset so other tests aren't affected
+        app_module._schema_ready = False
+
+    def test_schema_ready_flag_set_after_first_call(self):
+        """The _schema_ready flag should be True after first _get_db call."""
+        from unittest.mock import patch
+
+        import worship_catalog.web.app as app_module
+
+        app_module._schema_ready = False
+
+        with patch.object(Database, "init_schema"):
+            with patch.object(Database, "connect"):
+                assert not app_module._schema_ready
+                app_module._get_db()
+                assert app_module._schema_ready
+
+        app_module._schema_ready = False
