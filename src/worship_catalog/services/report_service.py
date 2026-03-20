@@ -6,6 +6,8 @@ from typing import Any
 
 from worship_catalog.db import Database
 
+_STATS_TOP_SONGS: int = 20  # number of top songs shown in stats report
+
 
 def compute_stats_data(
     db: Database,
@@ -38,13 +40,20 @@ def compute_stats_data(
         title = e["display_title"]
         song_service_ids.setdefault(title, set()).add(e["service_id"])
         if title not in song_credits:
-            parts = [e.get("words_by") or "", e.get("music_by") or ""]
-            song_credits[title] = " / ".join(p for p in parts if p)
+            parts: list[str] = []
+            if e.get("words_by"):
+                parts.append(f"Words: {e['words_by']}")
+            if e.get("music_by") and e.get("music_by") != e.get("words_by"):
+                parts.append(f"Music: {e['music_by']}")
+            if e.get("arranger"):
+                parts.append(f"Arr: {e['arranger']}")
+            if parts:
+                song_credits[title] = ", ".join(parts)
     song_counts: dict[str, int] = {t: len(sids) for t, sids in song_service_ids.items()}
 
-    sorted_songs = sorted(song_counts.items(), key=lambda x: -x[1])
+    sorted_songs = sorted(song_counts.items(), key=lambda x: (-x[1], x[0].lower()))
     if not all_songs:
-        sorted_songs = sorted_songs[:20]
+        sorted_songs = sorted_songs[:_STATS_TOP_SONGS]
 
     leader_breakdown: dict[str, list[tuple[str, int]]] = {}
     if not leader:
@@ -74,6 +83,7 @@ def compute_stats_data(
 
     return {
         "services": services,
+        "events": events,
         "sorted_songs": sorted_songs,
         "song_credits": song_credits,
         "total_performances": sum(song_counts.values()),
