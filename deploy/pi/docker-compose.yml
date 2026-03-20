@@ -71,6 +71,8 @@ services:
       INBOX_DIR: /inbox
       ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
       CSRF_SECRET: "${CSRF_SECRET}"
+      PUSHOVER_USER_KEY: "${PUSHOVER_USER_KEY:-}"
+      PUSHOVER_APP_TOKEN: "${PUSHOVER_APP_TOKEN:-}"
     volumes:
       - /opt/song-history/data:/data
       - /opt/song-history/inbox:/inbox
