@@ -242,11 +242,18 @@ def extract_service_metadata(
     3. Return result with None for missing fields
     """
     # Try table-based extraction first
+    metadata = ServiceMetadata(
+        date=None, service_name=None, song_leader=None, preacher=None, sermon_title=None,
+    )
     if first_slide.text.text_lines:
         metadata = extract_metadata_from_table_slide(first_slide.text.text_lines)
-        # If we got any data, use it (prefer complete data > partial fallback)
-        if metadata.date or metadata.service_name:
-            return metadata
 
-    # Fallback to filename parsing
-    return parse_filename_for_metadata(filename)
+    # Fill any None fields from filename fallback (#169)
+    if metadata.date is None or metadata.service_name is None:
+        fallback = parse_filename_for_metadata(filename)
+        if metadata.date is None:
+            metadata.date = fallback.date
+        if metadata.service_name is None:
+            metadata.service_name = fallback.service_name
+
+    return metadata
