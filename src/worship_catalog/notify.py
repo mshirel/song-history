@@ -50,6 +50,6 @@ def send_pushover(
     req = urllib.request.Request(_PUSHOVER_API_URL, data=payload, method="POST")
 
     try:
-        urllib.request.urlopen(req)  # noqa: S310
+        urllib.request.urlopen(req)  # noqa: S310  # nosec B310
     except Exception:  # noqa: BLE001
         _log.warning("Pushover notification failed for %r", title, exc_info=True)
