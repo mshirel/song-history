@@ -559,6 +559,11 @@ def _run_import_in_background(job_id: str, pptx_path: Path) -> None:
     so that the inbox is always cleaned up regardless of success or failure.
     """
     db = _get_db()
+    # Initialize notify variables with safe defaults so the finally block never
+    # hits UnboundLocalError if db.update_import_job() raises (#193).
+    _notify_title = "Import failed"
+    _notify_message = f"{pptx_path.name} — unknown error"
+    _notify_priority = -1
     try:
         result = run_import(db, pptx_path)
 

@@ -2295,6 +2295,58 @@ class TestBackgroundImportNotification:
         assert row["status"] == "failed"
         assert row["error_message"] is not None
 
+    def test_notify_vars_safe_when_update_import_job_raises_in_except(
+        self, tmp_path, monkeypatch,
+    ):
+        """If update_import_job raises in the except block, notify vars must not be unbound (#193)."""
+        from unittest.mock import MagicMock
+        from worship_catalog.db import Database
+
+        db_path = tmp_path / "notify_unbound.db"
+        _db = Database(db_path)
+        _db.connect()
+        _db.init_schema()
+        job_id = str(_uuid_mod.uuid4())
+        _db.create_import_job(job_id, filename="crash.pptx")
+        _db.close()
+
+        monkeypatch.setenv("DB_PATH", str(db_path))
+
+        import worship_catalog.web.app as app_module
+        from importlib import reload
+        reload(app_module)
+
+        mock_pushover = MagicMock()
+        monkeypatch.setattr(app_module, "send_pushover", mock_pushover)
+
+        # Make extract_songs raise, then make update_import_job ALSO raise
+        import worship_catalog.extractor as extractor_mod
+        monkeypatch.setattr(
+            extractor_mod, "extract_songs",
+            lambda p, **kw: (_ for _ in ()).throw(ValueError("bad pptx")),
+        )
+
+        monkeypatch.setattr(
+            Database, "update_import_job",
+            lambda self, jid, **kw: (_ for _ in ()).throw(RuntimeError("DB write failed")),
+        )
+
+        pptx_path = tmp_path / "crash.pptx"
+        pptx_path.write_bytes(b"fake")
+
+        # The RuntimeError from update_import_job propagates, but critically
+        # it must NOT be UnboundLocalError — the safe defaults prevent that.
+        # The finally block (including send_pushover) still runs.
+        try:
+            app_module._run_import_in_background(job_id, pptx_path)
+        except RuntimeError:
+            pass  # Expected — update_import_job raised inside except block
+
+        # send_pushover should still be called with the safe defaults
+        mock_pushover.assert_called_once()
+        call_kwargs = mock_pushover.call_args[1]
+        assert "crash.pptx" in call_kwargs["message"]
+
 
 class TestBackgroundImportDelegatesToService:
     """_run_import_in_background should delegate to import_service.run_import."""
