@@ -19,6 +19,7 @@ RUN pip install --no-cache-dir --upgrade pip
 
 # Copy package files first (for layer caching)
 COPY pyproject.toml README.md ./
+COPY requirements.lock ./
 COPY src/ ./src/
 COPY config/ ./config/
 COPY scripts/ ./scripts/
@@ -27,8 +28,9 @@ COPY data/library_index.json /app/data/library_index.json
 
 RUN chmod +x scripts/import-new.sh
 
-# Install the package with web extras
-RUN pip install --no-cache-dir ".[web]"
+# Install pinned dependencies from lockfile for reproducible builds (#174),
+# then install the package itself (editable not needed in prod).
+RUN pip install --no-cache-dir -r requirements.lock && pip install --no-cache-dir --no-deps ".[web]"
 
 # Create a non-root user and group for runtime (#26)
 # Fixed UID/GID so host volume permissions can be set to match:
