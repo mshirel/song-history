@@ -551,6 +551,12 @@ def _run_import_in_background(job_id: str, pptx_path: Path) -> None:
     so that the inbox is always cleaned up regardless of success or failure.
     """
     db = _get_db()
+    # Initialize notify variables with safe defaults so the finally block never
+    # hits UnboundLocalError — even if db.update_import_job() raises in the
+    # except block before these are reassigned.  (#193)
+    _notify_title = "Import failed"
+    _notify_message = f"{pptx_path.name} — unknown error"
+    _notify_priority = -1
     try:
         from worship_catalog.extractor import extract_songs
         from worship_catalog.pptx_reader import compute_file_hash
@@ -633,13 +639,27 @@ def _run_import_in_background(job_id: str, pptx_path: Path) -> None:
         db.update_import_job(
             job_id, status="complete", songs_imported=len(result.songs)
         )
+        _notify_title = "Import complete"
+        _notify_message = f"{pptx_path.name} — {len(result.songs)} songs imported"
+        _notify_priority = -1
     except Exception as exc:  # noqa: BLE001
         # update_import_job runs outside the transaction block — commits even on rollback
         db.update_import_job(
             job_id, status="failed", error_message=str(exc)[:500]
         )
+        _notify_title = "Import failed"
+        _notify_message = f"{pptx_path.name} — {str(exc)[:200]}"
+        _notify_priority = 1
     finally:
         db.close()
+        _log.info(
+            "Import notify metadata",
+            extra={
+                "notify_title": _notify_title,
+                "notify_message": _notify_message,
+                "notify_priority": _notify_priority,
+            },
+        )
         # Always clean up the inbox file regardless of success or failure (#138)
         try:
             if pptx_path.exists():

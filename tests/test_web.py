@@ -2091,3 +2091,78 @@ class TestGracefulShutdown:
         source = inspect.getsource(app_module._lifespan)
         assert "shutdown" in source, "lifespan must call executor.shutdown"
         assert "wait=True" in source, "lifespan executor.shutdown must use wait=True"
+
+
+class TestBackgroundImportNotification:
+    """Verify notify variables are safely initialized to prevent UnboundLocalError."""
+
+    def test_no_unbound_error_when_update_import_job_raises_in_except(
+        self, tmp_path, monkeypatch
+    ):
+        """If update_import_job raises inside the except block, the finally block
+        must not hit UnboundLocalError on the _notify_* variables.
+
+        The finally block logs notification metadata (_notify_title, _notify_message,
+        _notify_priority).  If those variables are only set inside try/except, a
+        failure in the except block before they are assigned would cause
+        UnboundLocalError.  They must be initialized before the try block.
+        """
+        from worship_catalog.db import Database
+        from importlib import reload
+        import logging
+
+        db_path = tmp_path / "notify_test.db"
+        _db = Database(db_path)
+        _db.connect()
+        _db.init_schema()
+        job_id = str(_uuid_mod.uuid4())
+        _db.create_import_job(job_id, filename="crash.pptx")
+        _db.close()
+
+        monkeypatch.setenv("DB_PATH", str(db_path))
+
+        import worship_catalog.web.app as app_module
+        reload(app_module)
+
+        pptx_path = tmp_path / "crash.pptx"
+        pptx_path.write_bytes(b"not a real pptx")
+
+        # Make update_import_job raise so the except block fails before it can
+        # set any notify variables.
+        def exploding_update(self_db, *args, **kwargs):
+            raise RuntimeError("DB connection lost")
+
+        monkeypatch.setattr(Database, "update_import_job", exploding_update)
+
+        # Capture log output from the finally block to confirm the notify
+        # variables were accessible (i.e., initialized before the try block).
+        captured: list[logging.LogRecord] = []
+
+        class _CapturingHandler(logging.Handler):
+            def emit(self, record: logging.LogRecord) -> None:
+                captured.append(record)
+
+        cap_handler = _CapturingHandler()
+        cap_handler.setLevel(logging.DEBUG)
+        # Attach to the exact logger used by the (reloaded) app module
+        app_logger = app_module._log
+        app_logger.addHandler(cap_handler)
+        app_logger.setLevel(logging.DEBUG)
+
+        try:
+            app_module._run_import_in_background(job_id, pptx_path)
+        except RuntimeError:
+            pass  # Expected — the exploding update_import_job propagates
+
+        app_logger.removeHandler(cap_handler)
+
+        # The finally block must have logged a notification message containing
+        # the default _notify_title without raising UnboundLocalError.
+        notify_logs = [
+            r for r in captured
+            if hasattr(r, "msg") and "notify" in r.msg.lower()
+        ]
+        assert len(notify_logs) >= 1, (
+            "Finally block must log notification metadata even when except block raises. "
+            f"All log messages: {[r.msg for r in captured]}"
+        )
