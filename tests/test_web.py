@@ -2295,6 +2295,156 @@ class TestBackgroundImportNotification:
         assert row["status"] == "failed"
         assert row["error_message"] is not None
 
+    def test_notify_vars_safe_when_update_import_job_raises_in_except(
+        self, tmp_path, monkeypatch,
+    ):
+        """If update_import_job raises in the except block, notify vars must not be unbound (#193)."""
+        from unittest.mock import MagicMock
+        from worship_catalog.db import Database
+
+        db_path = tmp_path / "notify_unbound.db"
+        _db = Database(db_path)
+        _db.connect()
+        _db.init_schema()
+        job_id = str(_uuid_mod.uuid4())
+        _db.create_import_job(job_id, filename="crash.pptx")
+        _db.close()
+
+        monkeypatch.setenv("DB_PATH", str(db_path))
+
+        import worship_catalog.web.app as app_module
+        from importlib import reload
+        reload(app_module)
+
+        mock_pushover = MagicMock()
+        monkeypatch.setattr(app_module, "send_pushover", mock_pushover)
+
+        # Make extract_songs raise, then make update_import_job ALSO raise
+        import worship_catalog.extractor as extractor_mod
+        monkeypatch.setattr(
+            extractor_mod, "extract_songs",
+            lambda p, **kw: (_ for _ in ()).throw(ValueError("bad pptx")),
+        )
+
+        monkeypatch.setattr(
+            Database, "update_import_job",
+            lambda self, jid, **kw: (_ for _ in ()).throw(RuntimeError("DB write failed")),
+        )
+
+        pptx_path = tmp_path / "crash.pptx"
+        pptx_path.write_bytes(b"fake")
+
+        # The RuntimeError from update_import_job propagates, but critically
+        # it must NOT be UnboundLocalError — the safe defaults prevent that.
+        # The finally block (including send_pushover) still runs.
+        try:
+            app_module._run_import_in_background(job_id, pptx_path)
+        except RuntimeError:
+            pass  # Expected — update_import_job raised inside except block
+
+        # send_pushover should still be called with the safe defaults
+        mock_pushover.assert_called_once()
+        call_kwargs = mock_pushover.call_args[1]
+        assert "crash.pptx" in call_kwargs["message"]
+
+
+class TestBackgroundImportDelegatesToService:
+    """_run_import_in_background should delegate to import_service.run_import."""
+
+    def test_background_import_delegates_to_import_service(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """_run_import_in_background should call run_import from import_service."""
+        from importlib import reload
+        from unittest.mock import MagicMock
+
+        from worship_catalog.import_service import ImportResult
+
+        db_path = tmp_path / "delegate.db"
+        _db = Database(db_path)
+        _db.connect()
+        _db.init_schema()
+        job_id = "test-delegate-job"
+        _db.create_import_job(job_id, filename="test.pptx")
+        _db.close()
+
+        monkeypatch.setenv("DB_PATH", str(db_path))
+
+        import worship_catalog.web.app as app_module
+
+        reload(app_module)
+
+        fake_result = ImportResult(
+            service_date="2026-01-01",
+            service_name="AM",
+            songs_imported=5,
+        )
+
+        mock_run = MagicMock(return_value=fake_result)
+        monkeypatch.setattr(app_module, "run_import", mock_run)
+
+        mock_pushover = MagicMock()
+        monkeypatch.setattr(app_module, "send_pushover", mock_pushover)
+
+        pptx_path = tmp_path / "test.pptx"
+        pptx_path.write_bytes(b"fake")
+        app_module._run_import_in_background(job_id, pptx_path)
+
+        mock_run.assert_called_once()
+
+        # Verify job was updated with the result from import_service
+        _db2 = Database(db_path)
+        _db2.connect()
+        row = _db2.get_import_job(job_id)
+        _db2.close()
+        assert row["status"] == "complete"
+        assert row["songs_imported"] == 5
+
+    def test_background_import_passes_db_and_path_to_run_import(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """run_import must receive a Database instance and the PPTX path."""
+        from importlib import reload
+        from unittest.mock import MagicMock
+
+        from worship_catalog.import_service import ImportResult
+
+        db_path = tmp_path / "delegate_args.db"
+        _db = Database(db_path)
+        _db.connect()
+        _db.init_schema()
+        job_id = "test-delegate-args-job"
+        _db.create_import_job(job_id, filename="args.pptx")
+        _db.close()
+
+        monkeypatch.setenv("DB_PATH", str(db_path))
+
+        import worship_catalog.web.app as app_module
+
+        reload(app_module)
+
+        fake_result = ImportResult(
+            service_date="2026-01-01",
+            service_name="AM",
+            songs_imported=3,
+        )
+
+        mock_run = MagicMock(return_value=fake_result)
+        monkeypatch.setattr(app_module, "run_import", mock_run)
+
+        mock_pushover = MagicMock()
+        monkeypatch.setattr(app_module, "send_pushover", mock_pushover)
+
+        pptx_path = tmp_path / "args.pptx"
+        pptx_path.write_bytes(b"fake")
+        app_module._run_import_in_background(job_id, pptx_path)
+
+        call_args = mock_run.call_args
+        # First positional arg should be a Database instance
+        assert isinstance(call_args[0][0], Database)
+        # Second positional arg should be the pptx_path
+        assert call_args[0][1] == pptx_path
+
 
 class TestGetDbSchemaInit:
     """Verify that init_schema() is only called once, not on every request."""

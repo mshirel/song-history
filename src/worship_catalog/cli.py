@@ -404,7 +404,7 @@ def report() -> None:
     pass
 
 
-@report.command(hidden=True)
+@report.command()
 @click.option(
     "--from",
     "start_date",
