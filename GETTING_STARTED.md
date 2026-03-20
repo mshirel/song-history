@@ -1,238 +1,257 @@
 # Getting Started with Worship Catalog
 
-## Quick Start (5 minutes)
+This guide gets you up and running quickly. For full command documentation,
+see [README.md](README.md).
 
-### 1. Clone/Setup Repository
+---
+
+## Prerequisites
+
+- **Python 3.10+** (3.12 recommended)
+- **Docker** (optional, for containerized deployment)
+- PowerPoint (`.pptx`) worship slide decks to import
+
+---
+
+## Quick Start (Local)
+
+### 1. Install
 
 ```bash
-cd /home/matt/projects/highland/song-history
-
-# Create and activate virtual environment
 python3 -m venv venv
 source venv/bin/activate
-
-# Install project in development mode
-pip install -e ".[dev]"
+pip install -e .
 ```
 
-### 2. Run the Demo
+### 2. Validate a slide deck
+
+Preview what will be extracted, without touching the database:
 
 ```bash
-# Make the demo executable
-chmod +x demo.sh
-
-# Run it!
-./demo.sh
+worship-catalog validate "data/AM Worship 2026.02.15.pptx"
 ```
 
-This will:
-- ✅ Show title normalization in action
-- ✅ Demonstrate candidate selection logic
-- ✅ Show credit parsing
-- ✅ Demonstrate publisher detection
-- ✅ Run all 53 unit tests with coverage report
+### 3. Import to database
 
-### 3. Explore the Code
-
-**Core Module:**
 ```bash
-# View the main normalization module
-cat src/worship_catalog/normalize.py
+worship-catalog import "data/AM Worship 2026.02.15.pptx"
 ```
 
-**Test Files:**
+Import an entire folder recursively:
+
 ```bash
-# View the test suites
-cat tests/test_title_normalize.py        # 29 tests
-cat tests/test_publisher_detection.py   # 11 tests
-cat tests/test_credits_parsing.py       # 13 tests
+worship-catalog import data/ --recurse
+```
+
+### 4. Generate reports
+
+```bash
+# CCLI compliance CSV
+worship-catalog report ccli --from 2026-01-01 --to 2026-12-31 --out ccli.csv
+
+# Usage statistics (Markdown)
+worship-catalog report stats --out stats.md
+```
+
+### 5. Repair missing credits
+
+Some slide formats embed credits in images. Backfill them from the bundled
+library index or Claude Vision OCR:
+
+```bash
+worship-catalog repair-credits              # library index only
+worship-catalog repair-credits --ocr        # + Vision API fallback
+worship-catalog repair-credits --dry-run    # preview without writing
 ```
 
 ---
 
-## Manual Testing (if you prefer)
+## Quick Start (Docker)
 
-Instead of the demo script, you can test functions directly:
-
-### Test 1: Title Stripping
+Pre-built images are published to GitHub Container Registry:
 
 ```bash
-source venv/bin/activate
-python3 << 'EOF'
-from worship_catalog.normalize import strip_title_prefix
-
-# Test examples
-test_cases = [
-    ("1 - We Will Glorify", "We Will Glorify"),
-    ("1-1 Ancient Words", "Ancient Words"),
-    ("Bridge Mighty To Save", "Mighty To Save"),
-    ("C – Amazing Grace", "Amazing Grace"),
-]
-
-for input_title, expected in test_cases:
-    result = strip_title_prefix(input_title)
-    status = "✅" if result == expected else "❌"
-    print(f"{status} {input_title:30} → {result:20} (expected: {expected})")
-EOF
+docker pull ghcr.io/mshirel/song-history:latest
 ```
 
-### Test 2: Publisher Detection
+### Start the web UI and inbox watcher
 
 ```bash
-source venv/bin/activate
-python3 << 'EOF'
-from worship_catalog.normalize import detect_publisher
-
-test_cases = [
-    ("PaperlessHymnal.com", "Paperless Hymnal"),
-    ("Copyright © Taylor Publications LLC", "Taylor Publications"),
-    ("Regular hymn with no markers", None),
-]
-
-for text, expected in test_cases:
-    result = detect_publisher(text)
-    status = "✅" if result == expected else "❌"
-    print(f"{status} Publisher: {result} (expected: {expected})")
-EOF
+docker compose up -d web watcher
 ```
 
-### Test 3: Run All Tests
+### Run CLI commands in the container
 
 ```bash
-source venv/bin/activate
+docker compose run --rm cli report ccli --from 2026-01-01 --to 2026-12-31
+docker compose run --rm cli report stats --all-songs
+docker compose run --rm cli repair-credits
+```
 
-# Run all tests with verbose output
-python -m pytest tests/ -v
+### Volume layout
+
+| Host path   | Container path | Contents                          |
+|-------------|---------------|-----------------------------------|
+| `./data/`   | `/data`       | `worship.db` SQLite database      |
+| `./inbox/`  | `/inbox`      | New PPTX files for auto-import    |
+| `./config/` | `/config`     | Optional configuration            |
+
+---
+
+## Web UI
+
+Start locally:
+
+```bash
+pip install -e ".[web]"
+uvicorn worship_catalog.web.app:app --host 0.0.0.0 --port 8000
+```
+
+Or via Docker: `docker compose up -d web`
+
+Open **http://localhost:8000** to access:
+
+| Page             | URL               | Description                                       |
+|------------------|-------------------|---------------------------------------------------|
+| Songs            | `/songs`          | Searchable, sortable song browser                 |
+| Song Detail      | `/songs/{id}`     | Service history for a single song                 |
+| Services         | `/services`       | Filterable list of all imported services          |
+| Service Detail   | `/services/{id}`  | Setlist and metadata for a service                |
+| Leaders          | `/leaders`        | Song leader directory with top songs              |
+| Reports          | `/reports`        | Generate CCLI CSV or stats report in browser      |
+| Health           | `/health`         | `{"status": "ok"}` for Docker healthcheck         |
+
+---
+
+## CLI Commands
+
+| Command                 | Purpose                                       |
+|-------------------------|-----------------------------------------------|
+| `validate <pptx>`       | Preview extraction without importing          |
+| `import <pptx\|dir>`    | Import slide decks to SQLite                  |
+| `report ccli`           | Generate CCLI compliance CSV                  |
+| `report stats`          | Generate usage statistics (Markdown)          |
+| `repair-credits`        | Backfill missing credits from library or OCR  |
+| `library index`         | Rebuild the TPH credits index from `.ppt` files |
+
+See [README.md](README.md) for full flag reference and examples.
+
+---
+
+## Running Tests
+
+The project has **741+ tests** with **93%+ coverage**.
+
+```bash
+# Install dev dependencies
+pip install -e ".[dev,web,ocr]"
+
+# Run all tests
+python3 -m pytest
+
+# Run a specific test file
+python3 -m pytest tests/test_cli.py -v
 
 # Run with coverage report
-python -m pytest tests/ --cov=src/worship_catalog --cov-report=term-missing
+python3 -m pytest --cov=worship_catalog
 
-# Run just one test file
-python -m pytest tests/test_title_normalize.py -v
-
-# Run a specific test
-python -m pytest tests/test_title_normalize.py::TestTitleNormalization::test_strip_numeric_prefix_with_dash -v
+# Skip slow integration tests
+python3 -m pytest -m "not integration"
 ```
+
+### Key test files
+
+| File                            | What it covers                    |
+|---------------------------------|-----------------------------------|
+| `tests/test_cli.py`            | CLI commands and flags            |
+| `tests/test_web.py`            | Web UI routes and HTMX           |
+| `tests/test_db_integration.py` | Database operations              |
+| `tests/test_extractor_unit.py` | PPTX song extraction             |
+| `tests/test_credits_parsing.py`| Credit parsing and normalization |
+| `tests/test_pptx_reader_unit.py`| Low-level slide parsing         |
+| `tests/test_ocr.py`            | Claude Vision API                |
+| `tests/test_web_security.py`   | Security (CSRF, upload limits)   |
 
 ---
 
-## What's Implemented (Phase 1)
+## Development Setup
 
-### Functions Available
+```bash
+python3 -m venv venv
+source venv/bin/activate
+pip install -e ".[dev,web,ocr]"
 
-1. **`strip_title_prefix(line: str) -> str`**
-   - Strips verse/chorus/section indicators from titles
-   - Handles: numeric prefixes (1 -), compound numbering (1-1), named sections (Bridge), lowercase tag
-   - Example: `"1-1 Ancient Words"` → `"Ancient Words"`
-
-2. **`select_best_title(candidates: list[str]) -> Optional[str]`**
-   - Chooses best title from multiple lines
-   - Prefers plain titles over prefixed forms
-   - Ignores copyright/footer lines
-   - Example: `["1-1 Title", "Title"]` → `"Title"`
-
-3. **`canonicalize_title(title: str) -> str`**
-   - Creates lowercase deduplication key
-   - Removes punctuation, normalizes whitespace
-   - Example: `"We Will Glorify!"` → `"we will glorify"`
-
-4. **`parse_credits(text: str) -> dict`**
-   - Extracts composer/arranger information
-   - Returns: `{words_by, music_by, arranger, other_credits}`
-   - Handles: "Words and Music by:", "Arr.:", "Arrangement by:"
-
-5. **`detect_publisher(text: str) -> Optional[str]`**
-   - Identifies publisher from slide text
-   - Returns: `"Paperless Hymnal"` or `"Taylor Publications"` or `None`
-
----
-
-## Test Results
-
-```
-Phase 1 Summary:
-✅ 53/53 tests passing (100% pass rate)
-✅ 93% code coverage (exceeds 85% target)
-✅ All parsing functions validated
-
-Breakdown:
-- Title normalization:    29 tests ✅
-- Publisher detection:    11 tests ✅
-- Credits parsing:        13 tests ✅
+# Install pre-commit hooks
+pip install pre-commit
+pre-commit install
 ```
 
----
+### Code quality checks
 
-## Project Structure
-
-```
-.
-├── src/worship_catalog/
-│   ├── __init__.py              # Package marker
-│   └── normalize.py             # Core parsing functions (295 lines)
-│
-├── tests/
-│   ├── test_title_normalize.py       # 29 tests
-│   ├── test_publisher_detection.py   # 11 tests
-│   └── test_credits_parsing.py       # 13 tests
-│
-├── data/                        # Input PPTX files (your worship decks)
-│   ├── AM Worship 2025.11.23.pptx
-│   ├── AM Worship 2026.02.15.pptx
-│   ├── ... (8 total files)
-│
-├── pyproject.toml               # Project metadata & dependencies
-├── demo.sh                      # Demo script
-└── README.md                    # This file
+```bash
+python3 -m ruff check src/       # Lint
+python3 -m mypy src/             # Type check (strict)
 ```
 
----
+Both must pass with zero errors before any commit.
 
-## Next Steps (Phase 2 & Beyond)
+### Security checks
 
-Phase 2 will add:
-- PPTX slide parsing with `python-pptx`
-- Metadata extraction (date, service, leader)
-- Song slide detection and grouping
-- Integration tests on real PPTX files
+```bash
+python3 -m bandit -r src/ -ll -c pyproject.toml   # Static analysis
+python3 -m pip_audit --skip-editable               # Dependency CVE scan
+```
 
-Phases 3-7:
-- SQLite database storage
-- CLI commands (validate, import, report)
-- CCLI report generation
-- Testing & CI/CD
-- Documentation
+### CI pipeline
+
+Every push/PR runs these GitHub Actions jobs:
+
+| Job        | Steps                                              |
+|------------|-----------------------------------------------------|
+| `test`     | ruff lint, mypy type check, pytest                  |
+| `security` | gitleaks secrets scan, pip-audit, bandit             |
+| `publish`  | Docker build + push to GHCR (main branch only)      |
 
 ---
 
 ## Troubleshooting
 
-### "ModuleNotFoundError: No module named 'worship_catalog'"
+### ModuleNotFoundError: No module named 'worship_catalog'
 
-Make sure you're in the virtual environment and installed in dev mode:
+Make sure you installed the package in the active virtual environment:
+
 ```bash
 source venv/bin/activate
 pip install -e ".[dev]"
 ```
 
-### "pytest: command not found"
+### pytest: command not found
 
 Install dev dependencies:
+
 ```bash
-source venv/bin/activate
 pip install -e ".[dev]"
 ```
 
-### Tests fail with import errors
+### Vision OCR not working
 
-Verify the package structure:
+OCR requires the `ocr` extra and an API key:
+
 ```bash
-ls -la src/worship_catalog/
-# Should show: __init__.py, normalize.py
+pip install -e ".[ocr]"
+export ANTHROPIC_API_KEY=sk-ant-...
+```
+
+### Docker healthcheck failing
+
+Verify the web service is running and port 8000 is accessible:
+
+```bash
+docker compose logs web
+curl http://localhost:8000/health
 ```
 
 ---
 
-## Questions?
-
-Refer to the specification in `spec.md` for complete requirements and architecture details.
+For full command documentation, database schema, and feature details, see
+[README.md](README.md).
