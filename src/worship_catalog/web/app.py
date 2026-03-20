@@ -34,6 +34,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette_csrf import CSRFMiddleware  # type: ignore[attr-defined]
 
 from worship_catalog.db import Database
+from worship_catalog.import_service import run_import
 from worship_catalog.log_config import RequestLoggingMiddleware
 from worship_catalog.log_config import setup as _setup_logging
 from worship_catalog.notify import send_pushover
@@ -558,90 +559,21 @@ def _run_import_in_background(job_id: str, pptx_path: Path) -> None:
     so that the inbox is always cleaned up regardless of success or failure.
     """
     db = _get_db()
+    # Initialize notify variables with safe defaults so the finally block never
+    # hits UnboundLocalError if db.update_import_job() raises (#193).
+    _notify_title = "Import failed"
+    _notify_message = f"{pptx_path.name} — unknown error"
+    _notify_priority = -1
     try:
-        from worship_catalog.extractor import extract_songs
-        from worship_catalog.pptx_reader import compute_file_hash
-
-        result = extract_songs(pptx_path)
-        service_hash = compute_file_hash(pptx_path)
-
-        with db.transaction():
-            # Idempotent re-import: delete existing service data if present
-            cursor = db.cursor()
-            cursor.execute(
-                """
-                SELECT id FROM services
-                WHERE service_date = ? AND service_name = ? AND source_hash = ?
-                """,
-                (
-                    result.service_date or "0000-00-00",
-                    result.service_name or "Unknown",
-                    service_hash,
-                ),
-            )
-            existing = cursor.fetchone()
-            if existing:
-                db.delete_service_data(existing[0])
-
-            service_id = db.insert_or_update_service(
-                service_date=result.service_date or "0000-00-00",
-                service_name=result.service_name or "Unknown",
-                source_file=str(pptx_path),
-                source_hash=service_hash,
-                song_leader=result.song_leader,
-                preacher=result.preacher,
-                sermon_title=result.sermon_title,
-            )
-
-            for song in result.songs:
-                song_id = db.insert_or_get_song(
-                    song.canonical_title,
-                    song.display_title,
-                )
-
-                edition_id = None
-                if song.publisher or song.words_by or song.music_by or song.arranger:
-                    edition_id = db.insert_or_get_song_edition(
-                        song_id=song_id,
-                        publisher=song.publisher,
-                        words_by=song.words_by,
-                        music_by=song.music_by,
-                        arranger=song.arranger,
-                    )
-
-                db.insert_service_song(
-                    service_id=service_id,
-                    song_id=song_id,
-                    ordinal=song.ordinal,
-                    song_edition_id=edition_id,
-                    first_slide_index=song.first_slide_index,
-                    last_slide_index=song.last_slide_index,
-                    occurrences=1,
-                )
-
-                db.insert_or_get_copy_event(
-                    service_id=service_id,
-                    song_id=song_id,
-                    song_edition_id=edition_id,
-                    reproduction_type="projection",
-                    count=1,
-                    reportable=True,
-                )
-
-                db.insert_or_get_copy_event(
-                    service_id=service_id,
-                    song_id=song_id,
-                    song_edition_id=edition_id,
-                    reproduction_type="recording",
-                    count=1,
-                    reportable=True,
-                )
+        result = run_import(db, pptx_path)
 
         db.update_import_job(
-            job_id, status="complete", songs_imported=len(result.songs)
+            job_id, status="complete", songs_imported=result.songs_imported
         )
         _notify_title = "Import complete"
-        _notify_message = f"{pptx_path.name} — {len(result.songs)} songs imported"
+        _notify_message = (
+            f"{pptx_path.name} — {result.songs_imported} songs imported"
+        )
         _notify_priority = 0
     except Exception as exc:  # noqa: BLE001
         # update_import_job runs outside the transaction block — commits even on rollback

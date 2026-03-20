@@ -12,13 +12,14 @@ import click
 from worship_catalog.db import Database
 from worship_catalog.extractor import extract_songs
 from worship_catalog.log_config import setup as _setup_logging
+from worship_catalog.services.report_service import _STATS_TOP_SONGS as _STATS_TOP_SONGS
+from worship_catalog.services.report_service import compute_stats_data
 
 _log = logging.getLogger("worship_catalog.cli")
 
 _DEFAULT_MAX_OCR_CALLS: int = 25
 _REPORT_DATE_MIN: str = "0000-01-01"  # open-ended start sentinel for date range queries
 _REPORT_DATE_MAX: str = "9999-12-31"  # open-ended end sentinel for date range queries
-_STATS_TOP_SONGS: int = 20  # number of top songs shown in stats report
 
 
 def _resolve_library_index(path_arg: str) -> Path:
@@ -403,7 +404,7 @@ def report() -> None:
     pass
 
 
-@report.command(hidden=True)
+@report.command()
 @click.option(
     "--from",
     "start_date",
@@ -544,10 +545,14 @@ def stats(
         if not end_date:
             end_date = _REPORT_DATE_MAX
 
-        # Query services (with optional leader filter) then scope events to those services
-        services = database.query_services(start_date, end_date, song_leader=leader)
-        service_ids = [s["id"] for s in services] if leader else None
-        events = database.query_copy_events(start_date, end_date, service_ids=service_ids)
+        # Delegate data computation to shared service (#167)
+        data = compute_stats_data(database, start_date, end_date, leader, all_songs)
+        services = data["services"]
+        events: list[dict[str, object]] = data["events"]
+        sorted_songs: list[tuple[str, int]] = data["sorted_songs"]
+        song_credits: dict[str, str] = data["song_credits"]
+        leader_breakdown: dict[str, list[tuple[str, int]]] = data["leader_breakdown"]
+        leader_service_counts: dict[str, int] = data["leader_service_counts"]
 
         # Use actual DB min/max dates for the report header instead of wildcards
         if services:
@@ -556,54 +561,6 @@ def stats(
         else:
             report_start = start_date
             report_end = end_date
-
-        # Build statistics: count distinct services per song (not copy events,
-        # which are doubled by projection + recording). Also collect credits.
-        song_services: dict[str, set[int]] = {}
-        song_credits: dict[str, str] = {}
-        for event in events:
-            title = event["display_title"]
-            if title not in song_services:
-                song_services[title] = set()
-            song_services[title].add(event["service_id"])
-            # Collect credits (first non-null value seen wins)
-            if title not in song_credits:
-                parts = []
-                if event.get("words_by"):
-                    parts.append(f"Words: {event['words_by']}")
-                if event.get("music_by") and event.get("music_by") != event.get("words_by"):
-                    parts.append(f"Music: {event['music_by']}")
-                if event.get("arranger"):
-                    parts.append(f"Arr: {event['arranger']}")
-                if parts:
-                    song_credits[title] = ", ".join(parts)
-        song_counts = {title: len(s) for title, s in song_services.items()}
-
-        # Build per-leader breakdown (only when not already filtered to one leader)
-        leader_breakdown: dict[str, list[tuple[str, int]]] = {}
-        if not leader:
-            service_leader_map = {s["id"]: (s.get("song_leader") or "Unknown") for s in services}
-            ldr_song_services: dict[str, dict[str, set[int]]] = {}
-            for event in events:
-                ldr = service_leader_map.get(event["service_id"], "Unknown")
-                title = event["display_title"]
-                ldr_song_services.setdefault(ldr, {}).setdefault(title, set()).add(
-                    event["service_id"]
-                )
-            # Sort each leader's songs by count desc, then alpha; leaders by service count desc
-            leader_breakdown = {
-                ldr: sorted(
-                    [(t, len(sids)) for t, sids in songs.items()],
-                    key=lambda x: (-x[1], x[0].lower()),
-                )
-                for ldr, songs in sorted(
-                    ldr_song_services.items(),
-                    key=lambda kv: -sum(len(v) for v in kv[1].values()),
-                )
-            }
-
-        # Sort by count descending, then alphabetically by title
-        sorted_songs = sorted(song_counts.items(), key=lambda x: (-x[1], x[0].lower()))
 
         # Write markdown
         output_path = Path(out)
@@ -616,24 +573,21 @@ def stats(
             f.write("## Summary\n\n")
             f.write(f"- Services: {len(services)}\n")
             f.write(f"- Unique Songs: {len(sorted_songs)}\n")
-            f.write(f"- Total Song Performances: {sum(song_counts.values())}\n")
-            f.write(f"- Total Copy Events: {len(events)}\n\n")
+            f.write(f"- Total Song Performances: {data['total_performances']}\n")
+            f.write(f"- Total Copy Events: {data['total_events']}\n\n")
 
             heading = "All Songs" if all_songs else "Most Frequent Songs"
-            songs_to_show = sorted_songs if all_songs else sorted_songs[:_STATS_TOP_SONGS]
             f.write(f"## {heading}\n\n")
             f.write("| Song | Credits | Count |\n")
             f.write("|------|---------|-------|\n")
-            for song, count in songs_to_show:
+            for song, count in sorted_songs:
                 credits = song_credits.get(song, "")
                 f.write(f"| {song} | {credits} | {count} |\n")
 
             if leader_breakdown:
                 f.write("\n## By Song Leader\n\n")
                 for ldr_name, ldr_songs in leader_breakdown.items():
-                    service_count = sum(
-                        1 for s in services if (s.get("song_leader") or "Unknown") == ldr_name
-                    )
+                    service_count = leader_service_counts.get(ldr_name, 0)
                     plural = "s" if service_count != 1 else ""
                     f.write(f"### {ldr_name} ({service_count} service{plural})\n\n")
                     f.write("| Song | Count |\n")
