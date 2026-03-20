@@ -15,36 +15,12 @@ from pathlib import Path
 import pytest
 from starlette.testclient import TestClient
 
+from conftest import CsrfAwareClient
+
 
 _PPTX_MIME = (
     "application/vnd.openxmlformats-officedocument.presentationml.presentation"
 )
-
-
-class _CsrfAwareClient:
-    """Wraps TestClient to automatically include the CSRF token on POST requests."""
-
-    def __init__(self, inner: TestClient) -> None:
-        self._inner = inner
-        self._csrf_token: str | None = None
-
-    def _ensure_token(self) -> str:
-        if self._csrf_token is None:
-            resp = self._inner.get("/songs")
-            self._csrf_token = resp.cookies.get("csrftoken", "")
-        return self._csrf_token or ""
-
-    def get(self, *args, **kwargs):
-        return self._inner.get(*args, **kwargs)
-
-    def post(self, *args, **kwargs):
-        token = self._ensure_token()
-        headers = dict(kwargs.pop("headers", {}) or {})
-        headers.setdefault("X-CSRFToken", token)
-        return self._inner.post(*args, headers=headers, **kwargs)
-
-    def __getattr__(self, name):
-        return getattr(self._inner, name)
 
 
 @pytest.fixture
@@ -57,7 +33,7 @@ def client(db_with_songs, tmp_path, monkeypatch):
     from importlib import reload
     import worship_catalog.web.app as app_module
     reload(app_module)
-    return _CsrfAwareClient(TestClient(app_module.app))
+    return CsrfAwareClient(TestClient(app_module.app))
 
 
 # ---------------------------------------------------------------------------
@@ -203,7 +179,7 @@ class TestUploadFilenamePathTraversal:
         reload(app_module)
         inner = TestClient(app_module.app)
         # Re-wrap with CSRF helper
-        wrapped = _CsrfAwareClient(inner)
+        wrapped = CsrfAwareClient(inner)
 
         resp = self._upload(wrapped, "../../../tmp/evil.pptx")
         if resp.status_code == 202:

@@ -6,6 +6,32 @@ from worship_catalog.db import Database
 from worship_catalog.pptx_reader import Slide, SlideText, SlideImage
 
 
+class CsrfAwareClient:
+    """Wraps TestClient to automatically include the CSRF token on POST requests."""
+
+    def __init__(self, inner):
+        self._inner = inner
+        self._csrf_token = None
+
+    def _ensure_token(self):
+        if self._csrf_token is None:
+            resp = self._inner.get("/songs")
+            self._csrf_token = resp.cookies.get("csrftoken", "")
+        return self._csrf_token or ""
+
+    def get(self, *args, **kwargs):
+        return self._inner.get(*args, **kwargs)
+
+    def post(self, *args, **kwargs):
+        token = self._ensure_token()
+        headers = dict(kwargs.pop("headers", {}) or {})
+        headers.setdefault("X-CSRFToken", token)
+        return self._inner.post(*args, headers=headers, **kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+
 @pytest.fixture(scope="session")
 def synthetic_pptx(tmp_path_factory):
     """
