@@ -115,16 +115,21 @@ _CSP_POLICY: str = (
 )
 
 
-class _CSPMiddleware(BaseHTTPMiddleware):
-    """Attach Content-Security-Policy header to every response."""
+class _SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    """Attach security headers to every response (#197, #282)."""
 
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         response = await call_next(request)
         response.headers["Content-Security-Policy"] = _CSP_POLICY
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        response.headers["Permissions-Policy"] = (
+            "camera=(), microphone=(), geolocation=(), payment=()"
+        )
         return response
 
 
-app.add_middleware(_CSPMiddleware)
+app.add_middleware(_SecurityHeadersMiddleware)
 
 
 _TEMPLATES_DIR = Path(__file__).parent / "templates"
@@ -179,6 +184,7 @@ _BUILD_DATE_FILE: Path = Path("/app/.build-date")
 
 # Upload constants (#45)
 MAX_UPLOAD_BYTES: int = 200 * 1024 * 1024  # 200 MB
+_UPLOAD_CHUNK_SIZE: int = 64 * 1024  # 64 KB — chunk size for streaming upload reads (#297)
 _PPTX_MIME = (
     "application/vnd.openxmlformats-officedocument.presentationml.presentation"
 )
@@ -327,6 +333,7 @@ def _validate_date_range(start_date: str, end_date: str) -> None:
 
 
 _schema_ready: bool = False
+_schema_lock = threading.Lock()
 
 
 def _get_db() -> Database:
@@ -335,8 +342,10 @@ def _get_db() -> Database:
     db = Database(db_path)
     db.connect()
     if not _schema_ready:
-        db.init_schema()
-        _schema_ready = True
+        with _schema_lock:
+            if not _schema_ready:  # double-check under lock (#277, #296)
+                db.init_schema()
+                _schema_ready = True
     return db
 
 
@@ -872,9 +881,19 @@ async def upload(
             content={"detail": "Filename is invalid after sanitization"},
             status_code=400,
         )
-    # Read and enforce size limit
-    content = await file.read()
-    if len(content) > MAX_UPLOAD_BYTES:
+    # Read body in chunks to bound memory usage (#297)
+    chunks: list[bytes] = []
+    total_read = 0
+    while True:
+        chunk = await file.read(_UPLOAD_CHUNK_SIZE)
+        if not chunk:
+            break
+        total_read += len(chunk)
+        if total_read > MAX_UPLOAD_BYTES:
+            break
+        chunks.append(chunk)
+    content = b"".join(chunks)
+    if total_read > MAX_UPLOAD_BYTES:
         limit_mb = MAX_UPLOAD_BYTES // (1024 * 1024)
         send_pushover(
             title="Upload rejected",

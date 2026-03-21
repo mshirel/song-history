@@ -28,6 +28,9 @@ services:
   cli:
     image: ghcr.io/mshirel/song-history:latest
     # build: .                        # ← uncomment for local development
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
     env_file:
       - path: .env
         required: false
@@ -54,6 +57,9 @@ services:
     image: ghcr.io/mshirel/song-history:latest
     # build: .                        # ← uncomment for local development
     init: true                        # tini as PID 1 — forwards SIGTERM to children (#29)
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
     entrypoint: /bin/sh
     command: >
       -c "while true;
@@ -92,6 +98,10 @@ services:
   web:
     image: ghcr.io/mshirel/song-history:latest
     # build: .                        # ← uncomment for local development
+    init: true                        # tini as PID 1 — forwards SIGTERM for graceful shutdown (#289)
+    cap_drop: [ALL]                   # drop all Linux capabilities (#284)
+    security_opt:
+      - no-new-privileges:true        # prevent privilege escalation (#284)
     entrypoint: uvicorn
     command: worship_catalog.web.app:app --host 0.0.0.0 --port 8000
     env_file:
@@ -146,6 +156,9 @@ services:
     # Pin alpine to exact digest (#26)
     image: alpine@sha256:25109184c71bdad752c8312a8623239686a9a2071e8825f20acb8f2198c3f659
     init: true                        # tini as PID 1 — forwards SIGTERM to children (#29)
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
     entrypoint: /bin/sh
     command: >
       -c "apk add --no-cache sqlite > /dev/null 2>&1;

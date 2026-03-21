@@ -33,8 +33,8 @@ COPY data/library_index.json /app/data/library_index.json
 RUN chmod +x scripts/import-new.sh
 
 # Install pinned dependencies from lockfile for reproducible builds (#174),
-# then install the package itself (editable not needed in prod).
-RUN pip install --no-cache-dir -r requirements.lock && pip install --no-cache-dir --no-deps ".[web]"
+# then install the package itself (--no-deps: deps already in lockfile) (#294).
+RUN pip install --no-cache-dir -r requirements.lock && pip install --no-cache-dir --no-deps .
 
 # Bake version and build date so the About page shows real values (#261, #262)
 RUN echo "${APP_VERSION}" > /app/.version \

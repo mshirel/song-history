@@ -201,75 +201,77 @@ def import_cmd(
 
         path = Path(pptx_or_folder)
         db_path = Path(db)
-        database = Database(db_path)
-        database.connect()
-        database.init_schema()
 
-        # Load library index from JSON if it exists (local override or bundled default)
-        lib_index: dict[str, dict[str, str | None]] = {}
-        lib_index_path = _resolve_library_index(library_index)
-        if lib_index_path.exists():
-            lib_index = load_library_index(lib_index_path)
+        with Database(db_path) as database:
+            database.init_schema()
 
-        # Determine which files to process
-        if path.is_file():
-            pptx_files = [path]
-        else:
-            if recurse:
-                pptx_files = list(path.glob("**/*.pptx"))
+            # Load library index from JSON if it exists (local override or bundled default)
+            lib_index: dict[str, dict[str, str | None]] = {}
+            lib_index_path = _resolve_library_index(library_index)
+            if lib_index_path.exists():
+                lib_index = load_library_index(lib_index_path)
+
+            # Determine which files to process
+            if path.is_file():
+                pptx_files = [path]
             else:
-                pptx_files = list(path.glob("*.pptx"))
+                if recurse:
+                    pptx_files = list(path.glob("**/*.pptx"))
+                else:
+                    pptx_files = list(path.glob("*.pptx"))
 
-        if not pptx_files:
-            click.echo("No PPTX files found", err=True)
-            sys.exit(1)
+            if not pptx_files:
+                click.echo("No PPTX files found", err=True)
+                sys.exit(1)
 
-        # Build shared OCR budget (shared across all files in this run)
-        if ocr:
-            from worship_catalog.extractor import OcrBudget
-            ocr_budget: OcrBudget | None = OcrBudget(
-                max_calls=None if unlimited_ocr else max_ocr_calls
-            )
-        else:
-            ocr_budget = None
-
-        _log.info("Starting import", extra={"path": str(path), "files": len(pptx_files)})
-        total_songs = 0
-        failed_files = 0
-        for pptx_file in pptx_files:
-            click.echo(f"Processing {pptx_file.name}...", err=False)
-
-            try:
-                import_result = run_import(
-                    database,
-                    pptx_file,
-                    library_index=lib_index or None,
-                    ocr_budget=ocr_budget,
-                    use_ocr=ocr,
+            # Build shared OCR budget (shared across all files in this run)
+            if ocr:
+                from worship_catalog.extractor import OcrBudget
+                ocr_budget: OcrBudget | None = OcrBudget(
+                    max_calls=None if unlimited_ocr else max_ocr_calls
                 )
+            else:
+                ocr_budget = None
 
-                total_songs += import_result.songs_imported
-                _log.info(
-                    "File imported",
-                    extra={
-                        "file": pptx_file.name,
-                        "songs": import_result.songs_imported,
-                        "service_date": import_result.service_date,
-                        "service_name": import_result.service_name,
-                    },
-                )
-                click.echo(
-                    f"  ✓ Imported {import_result.songs_imported} songs",
-                    err=False,
-                )
+            _log.info("Starting import", extra={"path": str(path), "files": len(pptx_files)})
+            total_songs = 0
+            failed_files = 0
+            for pptx_file in pptx_files:
+                click.echo(f"Processing {pptx_file.name}...", err=False)
 
-            except Exception as e:
-                _log.error("File import failed", extra={"file": pptx_file.name, "error": str(e)})
-                click.echo(f"  ✗ Error: {e}", err=True)
-                failed_files += 1
-                continue
+                try:
+                    import_result = run_import(
+                        database,
+                        pptx_file,
+                        library_index=lib_index or None,
+                        ocr_budget=ocr_budget,
+                        use_ocr=ocr,
+                    )
 
-        database.close()
+                    total_songs += import_result.songs_imported
+                    _log.info(
+                        "File imported",
+                        extra={
+                            "file": pptx_file.name,
+                            "songs": import_result.songs_imported,
+                            "service_date": import_result.service_date,
+                            "service_name": import_result.service_name,
+                        },
+                    )
+                    click.echo(
+                        f"  ✓ Imported {import_result.songs_imported} songs",
+                        err=False,
+                    )
+
+                except Exception as e:
+                    _log.error(
+                        "File import failed",
+                        extra={"file": pptx_file.name, "error": str(e)},
+                    )
+                    click.echo(f"  ✗ Error: {e}", err=True)
+                    failed_files += 1
+                    continue
+
         succeeded = len(pptx_files) - failed_files
         _log.info(
             "Import complete",
@@ -337,8 +339,6 @@ def ccli(start_date: str, end_date: str, out: str, db: str) -> None:
     """
     try:
         db_path = Path(db)
-        database = Database(db_path)
-        database.connect()
 
         # Use broad date range if not specified
         if not start_date:
@@ -346,8 +346,9 @@ def ccli(start_date: str, end_date: str, out: str, db: str) -> None:
         if not end_date:
             end_date = _REPORT_DATE_MAX
 
-        # Query copy events
-        events = database.query_copy_events(start_date, end_date)
+        with Database(db_path) as database:
+            # Query copy events
+            events = database.query_copy_events(start_date, end_date)
 
         if not events:
             click.echo(f"No events found for {start_date} to {end_date}")
@@ -370,7 +371,6 @@ def ccli(start_date: str, end_date: str, out: str, db: str) -> None:
                     event["count"],
                 ])
 
-        database.close()
         click.echo(f"Report written to {output_path}")
         sys.exit(0)
 
@@ -428,8 +428,6 @@ def stats(
     """
     try:
         db_path = Path(db)
-        database = Database(db_path)
-        database.connect()
 
         # Use broad date range if not specified
         if not start_date:
@@ -437,8 +435,10 @@ def stats(
         if not end_date:
             end_date = _REPORT_DATE_MAX
 
-        # Delegate data computation to shared service (#167)
-        data = compute_stats_data(database, start_date, end_date, leader, all_songs)
+        with Database(db_path) as database:
+            # Delegate data computation to shared service (#167)
+            data = compute_stats_data(database, start_date, end_date, leader, all_songs)
+
         services = data["services"]
         events: list[dict[str, object]] = data["events"]
         sorted_songs: list[tuple[str, int]] = data["sorted_songs"]
@@ -491,16 +491,18 @@ def stats(
             f.write("\n## Services\n\n")
             f.write("| Date | Service | Song Leader | Songs |\n")
             f.write("|------|---------|-------------|-------|\n")
+            # Pre-index events by service_id to avoid O(n*m) scan (#281)
+            songs_by_service: dict[object, set[object]] = {}
+            for e in events:
+                songs_by_service.setdefault(e["service_id"], set()).add(e["song_id"])
             for service in services:
-                service_songs = [e for e in events if e["service_id"] == service["id"]]
-                unique_songs = len(set(e["song_id"] for e in service_songs))
+                unique_songs = len(songs_by_service.get(service["id"], set()))
                 svc_leader = service.get("song_leader") or ""
                 f.write(
                     f"| {service['service_date']} | "
                     f"{service['service_name']} | {svc_leader} | {unique_songs} |\n"
                 )
 
-        database.close()
         click.echo(f"Report written to {output_path}")
         sys.exit(0)
 
@@ -585,6 +587,8 @@ def repair_credits(
             click.echo("No songs with missing credits found.")
             database.close()
             sys.exit(0)
+        # Note: repair-credits keeps manual connect/close because the loop
+        # interleaves user output with DB writes over a long-running session.
 
         _log.info("repair-credits started", extra={"missing": len(missing), "dry_run": dry_run})
         click.echo(f"Found {len(missing)} song(s) with missing credits.")
@@ -649,8 +653,12 @@ def repair_credits(
                     source_file = row.get("source_file")
                     if source_file and Path(source_file).exists():
                         try:
-                            if ocr_budget is not None:
-                                ocr_budget.consume()
+                            if ocr_budget is not None and not ocr_budget.consume():
+                                click.echo(
+                                    "    [ocr] skipped — budget exhausted",
+                                    err=True,
+                                )
+                                continue
                             prs = load_pptx(source_file)
                             all_slides = parse_all_slides(prs)
                             song_slides = [
@@ -844,58 +852,53 @@ def delete_service(
 
     try:
         db_path = Path(db)
-        database = Database(db_path)
-        database.connect()
 
-        services_to_delete: list[dict[str, Any]] = []
+        with Database(db_path) as database:
+            services_to_delete: list[dict[str, Any]] = []
 
-        if service_id is not None:
-            svc = database.query_service_by_id(service_id)
-            if svc is None:
-                click.echo(f"Error: service {service_id} not found", err=True)
-                database.close()
-                sys.exit(1)
-            services_to_delete = [svc]
-        else:
-            assert service_date is not None  # guaranteed by the check above
-            services_to_delete = database.query_services_by_date(
-                service_date, name_pattern=name_pattern
-            )
-            if not services_to_delete:
-                click.echo(
-                    f"Error: no services found for date {service_date}"
-                    + (f" with name matching '{name_pattern}'" if name_pattern else ""),
-                    err=True,
+            if service_id is not None:
+                svc = database.query_service_by_id(service_id)
+                if svc is None:
+                    click.echo(f"Error: service {service_id} not found", err=True)
+                    sys.exit(1)
+                services_to_delete = [svc]
+            else:
+                assert service_date is not None  # guaranteed by the check above
+                services_to_delete = database.query_services_by_date(
+                    service_date, name_pattern=name_pattern
                 )
-                database.close()
-                sys.exit(1)
+                if not services_to_delete:
+                    click.echo(
+                        f"Error: no services found for date {service_date}"
+                        + (f" with name matching '{name_pattern}'" if name_pattern else ""),
+                        err=True,
+                    )
+                    sys.exit(1)
 
-        # Show what will be deleted
-        click.echo(f"{'Would delete' if dry_run else 'Deleting'} "
-                    f"{len(services_to_delete)} service(s):")
-        for svc in services_to_delete:
-            click.echo(
-                f"  ID={svc['id']}  {svc['service_date']}  "
-                f"{svc['service_name']}  hash={svc['source_hash']}"
-            )
+            # Show what will be deleted
+            click.echo(f"{'Would delete' if dry_run else 'Deleting'} "
+                        f"{len(services_to_delete)} service(s):")
+            for svc in services_to_delete:
+                click.echo(
+                    f"  ID={svc['id']}  {svc['service_date']}  "
+                    f"{svc['service_name']}  hash={svc['source_hash']}"
+                )
 
-        if dry_run:
-            click.echo("\nDry run — no changes made.")
-            database.close()
-            sys.exit(0)
+            if dry_run:
+                click.echo("\nDry run — no changes made.")
+                sys.exit(0)
 
-        if not yes:
-            click.confirm("Proceed?", abort=True)
+            if not yes:
+                click.confirm("Proceed?", abort=True)
 
-        for svc in services_to_delete:
-            database.delete_service_data(int(svc["id"]))
-            _log.info(
-                "Deleted service",
-                extra={"service_id": svc["id"], "date": svc["service_date"]},
-            )
+            for svc in services_to_delete:
+                database.delete_service_data(int(svc["id"]))
+                _log.info(
+                    "Deleted service",
+                    extra={"service_id": svc["id"], "date": svc["service_date"]},
+                )
 
         click.echo(f"Deleted {len(services_to_delete)} service(s).")
-        database.close()
         sys.exit(0)
 
     except click.Abort:
@@ -934,37 +937,33 @@ def orphaned_songs(db: str, dry_run: bool, yes: bool) -> None:
     """
     try:
         db_path = Path(db)
-        database = Database(db_path)
-        database.connect()
 
-        orphans = database.query_orphaned_songs()
+        with Database(db_path) as database:
+            orphans = database.query_orphaned_songs()
 
-        if not orphans:
-            click.echo("No orphaned songs found.")
-            database.close()
-            sys.exit(0)
+            if not orphans:
+                click.echo("No orphaned songs found.")
+                sys.exit(0)
 
-        click.echo(f"Found {len(orphans)} orphaned song(s):")
-        for song in orphans:
-            click.echo(f"  ID={song['song_id']}  {song['display_title']}")
+            click.echo(f"Found {len(orphans)} orphaned song(s):")
+            for song in orphans:
+                click.echo(f"  ID={song['song_id']}  {song['display_title']}")
 
-        if dry_run:
-            click.echo(f"\nDry run — would remove {len(orphans)} song(s).")
-            database.close()
-            sys.exit(0)
+            if dry_run:
+                click.echo(f"\nDry run — would remove {len(orphans)} song(s).")
+                sys.exit(0)
 
-        if not yes:
-            click.confirm("Proceed?", abort=True)
+            if not yes:
+                click.confirm("Proceed?", abort=True)
 
-        for song in orphans:
-            database.delete_song(int(song["song_id"]))
-            _log.info(
-                "Deleted orphaned song",
-                extra={"song_id": song["song_id"], "title": song["display_title"]},
-            )
+            for song in orphans:
+                database.delete_song(int(song["song_id"]))
+                _log.info(
+                    "Deleted orphaned song",
+                    extra={"song_id": song["song_id"], "title": song["display_title"]},
+                )
 
         click.echo(f"Removed {len(orphans)} orphaned song(s).")
-        database.close()
         sys.exit(0)
 
     except click.Abort:
@@ -993,14 +992,12 @@ def find_duplicates(db: str) -> None:
     """
     try:
         db_path = Path(db)
-        database = Database(db_path)
-        database.connect()
 
-        dupes = database.query_duplicate_services()
+        with Database(db_path) as database:
+            dupes = database.query_duplicate_services()
 
         if not dupes:
             click.echo("No duplicate services found.")
-            database.close()
             sys.exit(0)
 
         # Group by (date, name)
@@ -1015,7 +1012,6 @@ def find_duplicates(db: str) -> None:
             for svc in svcs:
                 click.echo(f"    ID={svc['id']}  hash={svc['source_hash']}")
 
-        database.close()
         sys.exit(0)
 
     except SystemExit:

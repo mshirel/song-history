@@ -843,3 +843,32 @@ class TestCsrfCookieConfiguration:
         assert "csrftoken" in resp.text, (
             "reports.js does not reference the correct CSRF cookie name"
         )
+
+
+class TestSecurityHeaders:
+    """Tests for security response headers (#282)."""
+
+    @pytest.fixture
+    def client(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("DB_PATH", str(tmp_path / "test.db"))
+        import worship_catalog.web.app as app_module
+        app_module._schema_ready = False
+        return TestClient(app_module.app)
+
+    def test_x_content_type_options(self, client):
+        resp = client.get("/health")
+        assert resp.headers.get("X-Content-Type-Options") == "nosniff"
+
+    def test_referrer_policy(self, client):
+        resp = client.get("/health")
+        assert resp.headers.get("Referrer-Policy") == "strict-origin-when-cross-origin"
+
+    def test_permissions_policy(self, client):
+        resp = client.get("/health")
+        pp = resp.headers.get("Permissions-Policy", "")
+        assert "camera=()" in pp
+        assert "microphone=()" in pp
+
+    def test_csp_still_present(self, client):
+        resp = client.get("/health")
+        assert "Content-Security-Policy" in resp.headers

@@ -214,7 +214,9 @@ class TestCreateSongOccurrence:
             make_slide(0, ["Amazing Grace", "Words: John Newton", "PaperlessHymnal.com"],
                        image_blobs=[b"\xff\xd8"])
         ]
-        _create_song_occurrence(1, "amazing grace", slides, use_ocr=True)
+        from worship_catalog.extractor import CreditResolver
+        resolver = CreditResolver(use_ocr=True)
+        _create_song_occurrence(1, "amazing grace", slides, resolver=resolver)
         assert called == [], "OCR should not be called when credits found in text"
 
     def test_ocr_not_called_when_no_image(self, monkeypatch):
@@ -225,7 +227,9 @@ class TestCreateSongOccurrence:
             lambda blob: called.append(blob) or "Words: X",
         )
         slides = [make_slide(0, ["Amazing Grace"])]
-        _create_song_occurrence(1, "amazing grace", slides, use_ocr=True)
+        from worship_catalog.extractor import CreditResolver
+        resolver = CreditResolver(use_ocr=True)
+        _create_song_occurrence(1, "amazing grace", slides, resolver=resolver)
         assert called == []
 
 
@@ -402,7 +406,6 @@ class TestExtractionLogging:
                 ordinal=1,
                 canonical_title="amazing grace",
                 slides=[slide],
-                use_ocr=False,
             )
 
         messages = [r.message.lower() for r in caplog.records]
@@ -420,7 +423,6 @@ class TestExtractionLogging:
                 ordinal=1,
                 canonical_title="amazing grace",
                 slides=[slide],
-                use_ocr=False,
             )
 
         messages = [r.message.lower() for r in caplog.records]
@@ -928,8 +930,10 @@ class TestCreditResolverLibraryLookup:
                 "arranger": None,
             }
         }
+        from worship_catalog.extractor import CreditResolver
+        resolver = CreditResolver(library_index=library_index)
         result = _create_song_occurrence(
-            1, "amazing grace", slides, library_index=library_index
+            1, "amazing grace", slides, resolver=resolver
         )
         assert result.words_by == "John Newton"
         assert result.music_by == "Traditional"
@@ -939,7 +943,7 @@ class TestCreditResolverLibraryLookup:
         from worship_catalog.extractor import _create_song_occurrence
 
         slides = [make_slide(0, ["Amazing Grace", "PaperlessHymnal.com"])]
-        result = _create_song_occurrence(1, "amazing grace", slides, library_index=None)
+        result = _create_song_occurrence(1, "amazing grace", slides, resolver=None)
         assert result.words_by is None
         assert result.music_by is None
 

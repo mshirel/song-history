@@ -1,8 +1,104 @@
 # Code Review History
 
-Full multi-perspective reviews conducted by seven senior engineering personas
-(Architect, Developer, DevOps, Security, DevSecOps, QA, Product Manager).
+Full multi-perspective reviews conducted by ten senior engineering personas
+(Architect, Developer, DevOps, Security, DevSecOps, QA, Product Manager,
+UAT Analyst, Accessibility Specialist, Database/Data Engineer).
 Each review produces GitHub issues for every significant finding.
+
+---
+
+## Review 7 — 2026-03-21
+
+**Branch:** `fix/extractor-size-limit`
+**Reviewer:** Claude Code (full-code-review skill)
+**Issues created:** #290–#309
+
+### Findings
+
+| Issue | Persona | Title | Severity |
+|-------|---------|-------|----------|
+| #290 | Architect | Database class not usable as context manager | MED |
+| #291 | Architect | CreditResolver instantiated per-song instead of per-run | LOW |
+| #293 | Developer | repair-credits OCR path reloads PPTX per song | MED |
+| #294 | DevOps | Dockerfile pip install extras misleading with --no-deps | LOW |
+| #295 | DevOps | No SIGTERM handler — ThreadPoolExecutor jobs may be orphaned | MED |
+| #296 | Security | _get_db() schema_ready flag not set atomically | MED |
+| #297 | Security | Upload reads entire file body into memory before size check | HIGH |
+| #298 | DevSecOps | CI test job does not verify minimum test count | MED |
+| #299 | QA | No contract test for stats XLSX output schema | MED |
+| #300 | QA | No test for upload rate limiter SQLite persistence | MED |
+| #301 | Product Manager | No user feedback when PPTX has zero recognizable songs | MED |
+| #302 | Product Manager | Services date filters have no clear/reset button | LOW |
+| #303 | UAT | No Playwright test for CCLI CSV download end-to-end | HIGH |
+| #304 | UAT | No Playwright test for upload workflow end-to-end | HIGH |
+| #305 | Accessibility | Sortable table headers missing aria-sort attribute | MED |
+| #306 | Accessibility | HTMX dynamic content updates lack aria-live regions | HIGH |
+| #307 | Accessibility | Error pages use low-contrast gray text | LOW |
+| #308 | Database | No indexes on song_id columns for join performance | MED |
+| #309 | Database | Database._in_transaction flag not thread-safe | LOW |
+
+### Grades
+
+| Persona | Grade | Notes |
+|---------|-------|-------|
+| Senior Architect | B+ | Good module separation and dataclass design; Database lifecycle still manual, CreditResolver instantiation pattern suboptimal |
+| Senior Developer | B+ | Clean code with strong typing; repair-credits PPTX reload is a performance gap |
+| Senior DevOps | A- | Excellent CI with E2E, smoke test, lockfile verify; minor Dockerfile clarity and SIGTERM gaps |
+| Senior Security Architect | B | CSP, CSRF, parameterized SQL solid; upload memory consumption and schema_ready atomicity are real risks |
+| Senior DevSecOps | B+ | SHA-pinned actions, Trivy scan, SBOM baseline; CI needs minimum test count guard |
+| Senior QA Engineer | B | 950+ tests, good markers; XLSX contract and rate limiter persistence untested |
+| Product Manager | B | Functional features; zero-song feedback and filter reset are UX gaps |
+| UAT Analyst | B- | Playwright tests exist but miss critical download and upload workflows |
+| Accessibility Specialist | C+ | Skip-nav, labels, semantic HTML present; aria-sort, aria-live, and contrast gaps remain |
+| Database / Data Engineer | B | WAL mode, parameterized queries, migrations; missing indexes and thread-safety documentation |
+
+**Overall: B**
+
+---
+
+## Review 6 — 2026-03-21
+
+**Branch:** `fix/extractor-size-limit`
+**Reviewer:** Claude Code (full-code-review skill)
+**Issues created:** #274–#289
+
+### Findings
+
+| Issue | Persona | Title | Severity |
+|-------|---------|-------|----------|
+| #274 | Architect | CLI commands leak database connections on error paths | HIGH |
+| #275 | Developer | OcrBudget.consume() return value not checked in repair-credits | HIGH |
+| #276 | Product Manager | Upload page provides no feedback on import progress | HIGH |
+| #277 | Architect | _schema_ready flag race condition between threads | MED |
+| #278 | Developer | Double file hash computation during import | MED |
+| #279 | Developer | Duplicated copy-event SQL across query/iter methods | MED |
+| #280 | Architect | Non-song content marker lists duplicated in extractor | MED |
+| #281 | Developer | O(n*m) service-song counting in CLI stats report | MED |
+| #282 | Security | Missing X-Content-Type-Options, Referrer-Policy headers | MED |
+| #283 | Security | Rate limiter collapses behind reverse proxy | MED |
+| #284 | DevSecOps | Containers missing cap_drop ALL and no-new-privileges | MED |
+| #285 | DevSecOps | CI test/e2e jobs install unlocked deps, not lockfile | MED |
+| #286 | QA | CSV header contract tests assert partial columns only | MED |
+| #287 | QA | HTMX songs search does not update pagination controls | MED |
+| #288 | Product Manager | Stats download forms in HTMX partial may not bind CSRF | MED |
+| #289 | DevOps | Web service in compose.yml missing init:true | MED |
+
+### Grades
+
+| Persona | Grade | Notes |
+|---------|-------|-------|
+| Senior Architect | B+ | Good separation (import_service, report_service), but DB connection lifecycle and thread-safety gaps |
+| Senior Developer | B | Clean code, good types; double-hash and quadratic scan are performance risks |
+| Senior DevOps | A- | Excellent pipeline with E2E job, smoke test, lockfile verification; minor compose.yml gap |
+| Senior Security Architect | B | CSP, CSRF, parameterized queries all solid; missing standard headers and proxy-aware rate limiting |
+| Senior DevSecOps | B+ | SHA-pinned actions, Trivy scan-before-push, SBOM baseline; CI dep install doesn't use lockfile |
+| Senior QA Engineer | B | 916 tests at 94% coverage, E2E now in CI; CSV contract tests need tightening |
+| Product Manager | B- | Functional features, good reporting; upload progress feedback is the biggest UX gap |
+| UAT Analyst | B | 33 Playwright tests cover nav/search/sort/CSRF; missing upload workflow and download validation E2E |
+| Accessibility Specialist | C+ | Skip-nav exists, basic ARIA; services filters lack labels, no ARIA live regions for HTMX updates |
+| Database / Data Engineer | B | WAL mode, parameterized queries, migration tracking; schema_ready race and no indexes on hot paths |
+
+**Overall: B**
 
 ---
 

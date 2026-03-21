@@ -14,7 +14,7 @@ _log = logging.getLogger("worship_catalog.db")
 # Bump this integer whenever the schema changes.  Each new version must have a
 # corresponding entry in _MIGRATIONS.  connect() raises SchemaVersionError if the
 # on-disk version is *higher* than this value (DB created by a newer release).
-_SCHEMA_VERSION: int = 1
+_SCHEMA_VERSION: int = 2
 
 # Ordered dict of version → list of SQL statements.  Each migration brings the
 # DB from version (N-1) to version N.  Migration 1 is the baseline — it
@@ -34,6 +34,15 @@ _MIGRATIONS: dict[int, list[str]] = {
             error_message TEXT
         )
         """,
+    ],
+    2: [
+        # Indexes on song_id for JOIN performance (#308).
+        # service_songs.UNIQUE(service_id, ordinal) and
+        # copy_events.UNIQUE(service_id, song_id, ...) put service_id first,
+        # making song_id-only lookups fall back to full table scans.
+        "CREATE INDEX IF NOT EXISTS idx_service_songs_song_id ON service_songs(song_id)",
+        "CREATE INDEX IF NOT EXISTS idx_copy_events_song_id ON copy_events(song_id)",
+        "CREATE INDEX IF NOT EXISTS idx_services_date ON services(service_date)",
     ],
 }
 
@@ -71,6 +80,15 @@ class Database:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.conn: sqlite3.Connection | None = None
         self._in_transaction: bool = False
+
+    def __enter__(self) -> "Database":
+        """Connect and return self for use as a context manager."""
+        self.connect()
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        """Close the connection on context manager exit."""
+        self.close()
 
     def connect(self) -> sqlite3.Connection:
         """Connect to database.
@@ -560,42 +578,34 @@ class Database:
             )
         return [dict(row) for row in cursor.fetchall()]
 
+    def _execute_copy_events_query(
+        self, start_date: str, end_date: str, service_ids: list[int] | None = None
+    ) -> sqlite3.Cursor:
+        """Execute the shared copy-events query and return the cursor (#279)."""
+        cursor = self._conn.cursor()
+        base = """
+            SELECT ce.*, s.canonical_title, s.display_title, sv.service_date, sv.service_name,
+                   se.words_by, se.music_by, se.arranger
+            FROM copy_events ce
+            JOIN services sv ON ce.service_id = sv.id
+            JOIN songs s ON ce.song_id = s.id
+            LEFT JOIN song_editions se ON ce.song_edition_id = se.id
+            WHERE sv.service_date >= ? AND sv.service_date <= ? AND ce.reportable = 1
+        """
+        params: list[Any] = [start_date, end_date]
+        if service_ids is not None:
+            placeholders = ",".join("?" * len(service_ids))
+            base += f" AND ce.service_id IN ({placeholders})"
+            params.extend(service_ids)
+        base += " ORDER BY sv.service_date, s.canonical_title"
+        cursor.execute(base, params)
+        return cursor
+
     def query_copy_events(
         self, start_date: str, end_date: str, service_ids: list[int] | None = None
     ) -> list[dict]:
         """Query copy events for date range, optionally restricted to given service IDs."""
-        cursor = self._conn.cursor()
-        if service_ids is not None:
-            placeholders = ",".join("?" * len(service_ids))
-            cursor.execute(
-                f"""
-                SELECT ce.*, s.canonical_title, s.display_title, sv.service_date, sv.service_name,
-                       se.words_by, se.music_by, se.arranger
-                FROM copy_events ce
-                JOIN services sv ON ce.service_id = sv.id
-                JOIN songs s ON ce.song_id = s.id
-                LEFT JOIN song_editions se ON ce.song_edition_id = se.id
-                WHERE sv.service_date >= ? AND sv.service_date <= ?
-                  AND ce.reportable = 1
-                  AND ce.service_id IN ({placeholders})
-                ORDER BY sv.service_date, s.canonical_title
-                """,
-                (start_date, end_date, *service_ids),
-            )
-        else:
-            cursor.execute(
-                """
-                SELECT ce.*, s.canonical_title, s.display_title, sv.service_date, sv.service_name,
-                       se.words_by, se.music_by, se.arranger
-                FROM copy_events ce
-                JOIN services sv ON ce.service_id = sv.id
-                JOIN songs s ON ce.song_id = s.id
-                LEFT JOIN song_editions se ON ce.song_edition_id = se.id
-                WHERE sv.service_date >= ? AND sv.service_date <= ? AND ce.reportable = 1
-                ORDER BY sv.service_date, s.canonical_title
-                """,
-                (start_date, end_date),
-            )
+        cursor = self._execute_copy_events_query(start_date, end_date, service_ids)
         return [dict(row) for row in cursor.fetchall()]
 
     def iter_copy_events(
@@ -607,38 +617,7 @@ class Database:
         individually so callers can process large result sets without
         materialising the entire list (#27).
         """
-        cursor = self._conn.cursor()
-        if service_ids is not None:
-            placeholders = ",".join("?" * len(service_ids))
-            cursor.execute(
-                f"""
-                SELECT ce.*, s.canonical_title, s.display_title, sv.service_date, sv.service_name,
-                       se.words_by, se.music_by, se.arranger
-                FROM copy_events ce
-                JOIN services sv ON ce.service_id = sv.id
-                JOIN songs s ON ce.song_id = s.id
-                LEFT JOIN song_editions se ON ce.song_edition_id = se.id
-                WHERE sv.service_date >= ? AND sv.service_date <= ?
-                  AND ce.reportable = 1
-                  AND ce.service_id IN ({placeholders})
-                ORDER BY sv.service_date, s.canonical_title
-                """,
-                (start_date, end_date, *service_ids),
-            )
-        else:
-            cursor.execute(
-                """
-                SELECT ce.*, s.canonical_title, s.display_title, sv.service_date, sv.service_name,
-                       se.words_by, se.music_by, se.arranger
-                FROM copy_events ce
-                JOIN services sv ON ce.service_id = sv.id
-                JOIN songs s ON ce.song_id = s.id
-                LEFT JOIN song_editions se ON ce.song_edition_id = se.id
-                WHERE sv.service_date >= ? AND sv.service_date <= ? AND ce.reportable = 1
-                ORDER BY sv.service_date, s.canonical_title
-                """,
-                (start_date, end_date),
-            )
+        cursor = self._execute_copy_events_query(start_date, end_date, service_ids)
         row = cursor.fetchone()
         while row is not None:
             yield dict(row)

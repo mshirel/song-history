@@ -2230,3 +2230,92 @@ class TestCleanupQueries:
         cursor = temp_db.cursor()
         cursor.execute("SELECT COUNT(*) FROM copy_events WHERE song_id = ?", (song_id,))
         assert cursor.fetchone()[0] == 0
+
+
+@pytest.mark.integration
+class TestDatabaseContextManager:
+    """Tests for Database __enter__/__exit__ (#290)."""
+
+    def test_context_manager_connects_and_closes(self):
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "test.db"
+            with Database(db_path) as db:
+                db.init_schema()
+                assert db.conn is not None
+            assert db.conn is None
+
+    def test_context_manager_closes_on_exception(self):
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "test.db"
+            with pytest.raises(RuntimeError):
+                with Database(db_path) as db:
+                    db.init_schema()
+                    raise RuntimeError("boom")
+            assert db.conn is None
+
+    def test_context_manager_idempotent_close(self):
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "test.db"
+            with Database(db_path) as db:
+                db.init_schema()
+                db.close()
+            # No error on double close via __exit__
+
+
+@pytest.mark.integration
+class TestDatabaseIndexes:
+    """Tests for song_id indexes (#308)."""
+
+    @pytest.fixture
+    def temp_db(self):
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "test.db"
+            db = Database(db_path)
+            db.connect()
+            db.init_schema()
+            yield db
+            db.close()
+
+    def test_service_songs_has_song_id_index(self, temp_db):
+        cursor = temp_db.cursor()
+        cursor.execute("PRAGMA index_list('service_songs')")
+        indexes = cursor.fetchall()
+        has_song_id_index = False
+        for idx in indexes:
+            cursor.execute(f"PRAGMA index_info('{idx['name']}')")
+            columns = [col["name"] for col in cursor.fetchall()]
+            if "song_id" in columns:
+                has_song_id_index = True
+                break
+        assert has_song_id_index, "Missing index on service_songs.song_id"
+
+    def test_copy_events_has_song_id_index(self, temp_db):
+        cursor = temp_db.cursor()
+        cursor.execute("PRAGMA index_list('copy_events')")
+        indexes = cursor.fetchall()
+        has_song_id_index = False
+        for idx in indexes:
+            cursor.execute(f"PRAGMA index_info('{idx['name']}')")
+            columns = [col["name"] for col in cursor.fetchall()]
+            if "song_id" in columns:
+                has_song_id_index = True
+                break
+        assert has_song_id_index, "Missing index on copy_events.song_id"
+
+    def test_services_has_date_index(self, temp_db):
+        cursor = temp_db.cursor()
+        cursor.execute("PRAGMA index_list('services')")
+        indexes = cursor.fetchall()
+        has_date_index = False
+        for idx in indexes:
+            cursor.execute(f"PRAGMA index_info('{idx['name']}')")
+            columns = [col["name"] for col in cursor.fetchall()]
+            if "service_date" in columns:
+                has_date_index = True
+                break
+        assert has_date_index, "Missing index on services.service_date"
+
+    def test_schema_version_is_2(self, temp_db):
+        cursor = temp_db.cursor()
+        cursor.execute("PRAGMA user_version")
+        assert cursor.fetchone()[0] == 2
