@@ -4,6 +4,7 @@ Covers:
 - Issue #107: HTMX CDN script tag must include SRI integrity attribute
 - Issue #105: leader_name Content-Disposition header injection
 - Issue #106: upload filename path traversal
+- Issue #241: rate limiter persistence across restarts
 """
 
 from __future__ import annotations
@@ -644,6 +645,127 @@ class TestUploadRateLimiterUnit:
         finally:
             app_module._UPLOAD_RATE_LIMIT = original_limit
             app_module._UPLOAD_RATE_WINDOW_SECONDS = original_window
+
+
+# ---------------------------------------------------------------------------
+# Issue #241 — Rate limiter persistence across restarts
+# ---------------------------------------------------------------------------
+
+
+class TestUploadRateLimiterPersistence:
+    """Rate limiter state must survive process restarts (#241)."""
+
+    def test_rate_limit_state_survives_new_instance(self, tmp_path):
+        """Creating a new _UploadRateLimiter with same DB retains state."""
+        import worship_catalog.web.app as app_module
+        from worship_catalog.web.app import _UploadRateLimiter
+
+        db_path = tmp_path / "rate.db"
+        original_limit = app_module._UPLOAD_RATE_LIMIT
+        original_window = app_module._UPLOAD_RATE_WINDOW_SECONDS
+        try:
+            app_module._UPLOAD_RATE_LIMIT = 2
+            app_module._UPLOAD_RATE_WINDOW_SECONDS = 3600
+
+            # First instance — exhaust the quota
+            limiter1 = _UploadRateLimiter(db_path=db_path)
+            assert limiter1.is_allowed("192.168.1.1")[0] is True
+            assert limiter1.is_allowed("192.168.1.1")[0] is True
+            assert limiter1.is_allowed("192.168.1.1")[0] is False
+
+            # New instance with same DB path (simulates restart)
+            limiter2 = _UploadRateLimiter(db_path=db_path)
+            allowed, _ = limiter2.is_allowed("192.168.1.1")
+            assert allowed is False, (
+                "Rate limit state was lost when creating a new limiter instance — "
+                "state must persist across restarts"
+            )
+        finally:
+            app_module._UPLOAD_RATE_LIMIT = original_limit
+            app_module._UPLOAD_RATE_WINDOW_SECONDS = original_window
+
+    def test_rate_limit_persistence_different_ips_independent(self, tmp_path):
+        """Persisted rate limits are still per-IP."""
+        import worship_catalog.web.app as app_module
+        from worship_catalog.web.app import _UploadRateLimiter
+
+        db_path = tmp_path / "rate.db"
+        original_limit = app_module._UPLOAD_RATE_LIMIT
+        original_window = app_module._UPLOAD_RATE_WINDOW_SECONDS
+        try:
+            app_module._UPLOAD_RATE_LIMIT = 1
+            app_module._UPLOAD_RATE_WINDOW_SECONDS = 3600
+
+            limiter = _UploadRateLimiter(db_path=db_path)
+            # Exhaust IP-A
+            limiter.is_allowed("10.0.0.1")
+            # IP-B must still work after restart
+            limiter2 = _UploadRateLimiter(db_path=db_path)
+            allowed, _ = limiter2.is_allowed("10.0.0.2")
+            assert allowed is True, (
+                "Different IPs should have independent rate limits"
+            )
+        finally:
+            app_module._UPLOAD_RATE_LIMIT = original_limit
+            app_module._UPLOAD_RATE_WINDOW_SECONDS = original_window
+
+    def test_rate_limit_window_expiry_persisted(self, tmp_path):
+        """Expired timestamps in DB should not count against the limit."""
+        import worship_catalog.web.app as app_module
+        from worship_catalog.web.app import _UploadRateLimiter
+
+        db_path = tmp_path / "rate.db"
+        original_limit = app_module._UPLOAD_RATE_LIMIT
+        original_window = app_module._UPLOAD_RATE_WINDOW_SECONDS
+        try:
+            app_module._UPLOAD_RATE_LIMIT = 1
+            app_module._UPLOAD_RATE_WINDOW_SECONDS = 10
+
+            limiter = _UploadRateLimiter(db_path=db_path)
+            limiter.is_allowed("1.2.3.4")
+            assert limiter.is_allowed("1.2.3.4")[0] is False
+
+            # Manually backdate the stored timestamp to simulate time passing
+            import sqlite3
+            conn = sqlite3.connect(db_path)
+            conn.execute(
+                "UPDATE rate_limit_events SET timestamp = timestamp - 20"
+            )
+            conn.commit()
+            conn.close()
+
+            limiter2 = _UploadRateLimiter(db_path=db_path)
+            allowed, _ = limiter2.is_allowed("1.2.3.4")
+            assert allowed is True, (
+                "Expired timestamps should not count against rate limit"
+            )
+        finally:
+            app_module._UPLOAD_RATE_LIMIT = original_limit
+            app_module._UPLOAD_RATE_WINDOW_SECONDS = original_window
+
+    def test_rate_limit_no_db_path_falls_back_to_in_memory(self):
+        """When no db_path is given, limiter still works (in-memory only)."""
+        import worship_catalog.web.app as app_module
+        from worship_catalog.web.app import _UploadRateLimiter
+
+        original_limit = app_module._UPLOAD_RATE_LIMIT
+        try:
+            app_module._UPLOAD_RATE_LIMIT = 1
+            limiter = _UploadRateLimiter()
+            assert limiter.is_allowed("9.9.9.9")[0] is True
+            assert limiter.is_allowed("9.9.9.9")[0] is False
+        finally:
+            app_module._UPLOAD_RATE_LIMIT = original_limit
+
+    def test_upload_endpoint_uses_persistent_limiter(self, client, monkeypatch):
+        """The /upload endpoint must use a DB-backed rate limiter."""
+        import worship_catalog.web.app as app_module
+
+        # Check that the module-level limiter has a db_path set
+        assert app_module._upload_limiter._db_path is not None, (
+            "Module-level _upload_limiter should be configured with a db_path "
+            "for persistence across restarts"
+        )
 
 
 # ---------------------------------------------------------------------------
