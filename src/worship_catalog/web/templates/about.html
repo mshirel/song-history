@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}About — Highland Worship Catalog{% endblock %}
+{% block content %}
+<h1>About</h1>
+
+<div class="card">
+  <h2>What is this app?</h2>
+  <p>Highland Church of Christ uses this app to track which songs are sung each Sunday.
+     It reads the PowerPoint worship slides and automatically extracts song titles,
+     credits, and service details.</p>
+  <p>This data is used to generate CCLI compliance reports (required for churches that
+     project copyrighted song lyrics). The app also provides statistics on song frequency,
+     leader preferences, and service history.</p>
+</div>
+
+<div class="card">
+  <h2>Version and Build Info</h2>
+  <table>
+    <tr><td><strong>Version</strong></td><td>{{ version }}</td></tr>
+    <tr><td><strong>Build Date</strong></td><td>{{ build_date }}</td></tr>
+    <tr><td><strong>Python</strong></td><td>{{ python_version }}</td></tr>
+    <tr><td><strong>Database</strong></td><td>{{ db_path }}</td></tr>
+  </table>
+</div>
+
+<div class="card">
+  <h2>Copyright and Attribution</h2>
+  <p>Highland Church of Christ &mdash; Dalton, GA</p>
+  <p>License: <strong>GPL-3.0</strong></p>
+  <p>Source code: <a href="https://github.com/mshirel/song-history">https://github.com/mshirel/song-history</a></p>
+</div>
+{% endblock %}
