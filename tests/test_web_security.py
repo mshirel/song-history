@@ -681,3 +681,47 @@ class TestContentSecurityPolicy:
         assert resp.status_code == 200
         csp = resp.headers.get("content-security-policy")
         assert csp is not None, "Reports page missing CSP header"
+
+
+# ---------------------------------------------------------------------------
+# Issue #235 — Upload CSRF integration (PowerShell script compatibility)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def raw_client(db_with_songs, tmp_path, monkeypatch):
+    """Plain TestClient without CSRF token injection — for CSRF security tests."""
+    inbox = tmp_path / "inbox"
+    inbox.mkdir()
+    monkeypatch.setenv("DB_PATH", str(db_with_songs))
+    monkeypatch.setenv("INBOX_DIR", str(inbox))
+    from importlib import reload
+    import worship_catalog.web.app as app_module
+    reload(app_module)
+    return TestClient(app_module.app)
+
+
+class TestUploadCsrfIntegration:
+    """Upload endpoint CSRF behavior — issue #235."""
+
+    def test_upload_without_csrf_returns_403(self, raw_client):
+        """POST /upload without CSRF token must be rejected with 403."""
+        pptx_mime = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+        resp = raw_client.post(
+            "/upload",
+            files={"file": ("test.pptx", io.BytesIO(b"PK\x03\x04dummy"), pptx_mime)},
+        )
+        assert resp.status_code == 403, (
+            f"Expected 403 for missing CSRF token, got {resp.status_code}"
+        )
+
+    def test_upload_with_csrf_token_succeeds(self, client):
+        """POST /upload with valid CSRF token must not be rejected by CSRF middleware."""
+        pptx_mime = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+        # CsrfAwareClient automatically includes the token
+        resp = client.post(
+            "/upload",
+            files={"file": ("test.pptx", io.BytesIO(b"PK\x03\x04dummy"), pptx_mime)},
+        )
+        # 400 is OK here (bad PPTX content), but not 403 (CSRF rejection)
+        assert resp.status_code != 403, "CSRF token was rejected despite being valid"
