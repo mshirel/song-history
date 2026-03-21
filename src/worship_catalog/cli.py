@@ -462,13 +462,7 @@ def ccli(start_date: str, end_date: str, out: str, db: str) -> None:
             # Header
             writer.writerow(["Date", "Service", "Title", "CCLI#", "Reproduction Type", "Count"])
 
-            # Group events for cleaner output
-            current_date = None
             for event in events:
-                if event["service_date"] != current_date:
-                    current_date = event["service_date"]
-                    f.write(f"\n# {event['service_date']} - {event['service_name']}\n")
-
                 writer.writerow([
                     event["service_date"],
                     event["service_name"],
