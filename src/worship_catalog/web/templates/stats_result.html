@@ -23,14 +23,14 @@
 
 {% if sorted_songs %}
 <div style="display:flex;gap:0.5rem;margin-bottom:1rem;">
-  <form method="post" action="/reports/stats/csv" style="display:inline;">
+  <form id="stats-csv-form" method="post" action="/reports/stats/csv" style="display:inline;">
     <input type="hidden" name="start_date" value="{{ start_date }}">
     <input type="hidden" name="end_date" value="{{ end_date }}">
     <input type="hidden" name="leader" value="{{ leader }}">
     {% if all_songs %}<input type="hidden" name="all_songs" value="true">{% endif %}
     <button type="submit">Download CSV</button>
   </form>
-  <form method="post" action="/reports/stats/xlsx" style="display:inline;">
+  <form id="stats-xlsx-form" method="post" action="/reports/stats/xlsx" style="display:inline;">
     <input type="hidden" name="start_date" value="{{ start_date }}">
     <input type="hidden" name="end_date" value="{{ end_date }}">
     <input type="hidden" name="leader" value="{{ leader }}">

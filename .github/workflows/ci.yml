@@ -23,7 +23,9 @@ jobs:
           python-version: "3.12"
 
       - name: Install dependencies
-        run: pip install -e ".[dev,web,ocr]"
+        run: |
+          pip install -r requirements.lock          # locked runtime deps (#285)
+          pip install -e ".[dev]"                    # dev tools (pytest, ruff, mypy)
 
       - name: Lint (ruff)
         run: python3 -m ruff check src/
@@ -32,7 +34,13 @@ jobs:
         run: python3 -m mypy src/
 
       - name: Test
-        run: python3 -m pytest
+        run: |
+          python3 -m pytest 2>&1 | tee /tmp/test.log
+          count=$(grep -oP '\d+ passed' /tmp/test.log | grep -oP '\d+')
+          if [ -z "$count" ] || [ "$count" -lt 700 ]; then
+            echo "ERROR: Expected at least 700 tests to pass, got ${count:-0}"
+            exit 1
+          fi
 
       # Integration tests that require real PPTX files are skipped gracefully
       # in CI (the fixture files are gitignored large binaries).  DB-only
@@ -65,7 +73,9 @@ jobs:
           python-version: "3.12"
 
       - name: Install dependencies
-        run: pip install -e ".[dev,web,ocr]"
+        run: |
+          pip install -r requirements.lock          # locked runtime deps (#285)
+          pip install -e ".[dev]"                    # dev tools (pytest, playwright)
 
       - name: Install Playwright Chromium
         run: python3 -m playwright install chromium --with-deps
@@ -78,15 +88,26 @@ jobs:
           db = Database('/tmp/e2e-test.db')
           db.connect()
           db.init_schema()
-          s1 = db.insert_or_get_song('amazing grace', 'Amazing Grace')
-          s2 = db.insert_or_get_song('how great thou art', 'How Great Thou Art')
-          e1 = db.insert_or_get_song_edition(s1, words_by='John Newton', music_by=None, arranger=None)
-          e2 = db.insert_or_get_song_edition(s2, words_by='Stuart K. Hine', music_by='Stuart K. Hine', arranger=None)
+          # Seed enough songs for search/filter E2E tests to meaningfully reduce rows
+          songs = [
+              ('amazing grace', 'Amazing Grace', 'John Newton', None),
+              ('how great thou art', 'How Great Thou Art', 'Stuart K. Hine', 'Stuart K. Hine'),
+              ('blessed assurance', 'Blessed Assurance', 'Fanny Crosby', 'Phoebe Knapp'),
+              ('great is thy faithfulness', 'Great Is Thy Faithfulness', 'Thomas Chisholm', 'William Runyan'),
+              ('it is well', 'It Is Well With My Soul', 'Horatio Spafford', 'Philip Bliss'),
+              ('holy holy holy', 'Holy Holy Holy', 'Reginald Heber', 'John B. Dykes'),
+          ]
+          song_ids = []
+          edition_ids = []
+          for canonical, display, words, music in songs:
+              sid = db.insert_or_get_song(canonical, display)
+              eid = db.insert_or_get_song_edition(sid, words_by=words, music_by=music, arranger=None)
+              song_ids.append(sid)
+              edition_ids.append(eid)
           svc = db.insert_or_update_service('2026-02-15', 'AM Worship', 'test.pptx', 'abc123', song_leader='Matt')
-          db.insert_service_song(svc, s1, ordinal=1, song_edition_id=e1)
-          db.insert_service_song(svc, s2, ordinal=2, song_edition_id=e2)
-          db.insert_or_get_copy_event(svc, s1, 'projection', song_edition_id=e1)
-          db.insert_or_get_copy_event(svc, s2, 'projection', song_edition_id=e2)
+          for i, (sid, eid) in enumerate(zip(song_ids, edition_ids)):
+              db.insert_service_song(svc, sid, ordinal=i+1, song_edition_id=eid)
+              db.insert_or_get_copy_event(svc, sid, 'projection', song_edition_id=eid)
           db.close()
           print('E2E test database seeded at /tmp/e2e-test.db')
           "

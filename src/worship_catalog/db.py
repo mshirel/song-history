@@ -72,7 +72,14 @@ class SchemaVersionError(RuntimeError):
 
 
 class Database:
-    """SQLite database interface for worship catalog."""
+    """SQLite database interface for worship catalog.
+
+    **Thread safety:** This class is NOT thread-safe.  Each thread must use
+    its own ``Database`` instance.  The ``_in_transaction`` flag and the
+    underlying ``sqlite3.Connection`` are not protected by a lock.  In the
+    web app, ``get_db()`` creates a new instance per request; background
+    import threads call ``_get_db()`` for their own instance (#309).
+    """
 
     def __init__(self, db_path: Path | str = "data/worship.db"):
         """Initialize database connection."""

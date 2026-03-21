@@ -92,10 +92,25 @@
     });
   }
 
+  /**
+   * Bind download handlers for forms that appear after HTMX content swaps
+   * (e.g. stats CSV/XLSX forms loaded inside #stats-result) (#288).
+   */
+  function bindDynamicDownloadForms() {
+    interceptDownloadForm("stats-csv-form");
+    interceptDownloadForm("stats-xlsx-form");
+  }
+
   /* Initialise on DOMContentLoaded (or immediately if already loaded). */
   function init() {
     configureHtmxCsrf();
     interceptDownloadForm("ccli-form");
+
+    /* Re-bind download forms after each HTMX swap so dynamically loaded
+       forms (stats CSV/XLSX) get the CSRF fetch handler (#288). */
+    document.body.addEventListener("htmx:afterSwap", function () {
+      bindDynamicDownloadForms();
+    });
   }
 
   if (document.readyState === "loading") {
