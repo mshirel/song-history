@@ -94,10 +94,32 @@ function Save-Manifest {
     $Manifest | ConvertTo-Json -Depth 3 | Set-Content $manifestPath -Encoding UTF8
 }
 
+function Get-CsrfToken {
+    # Fetch /health to obtain the csrftoken cookie from the CSRF middleware.
+    # Use a WebSession so the cookie jar is populated automatically.
+    $baseUrl = $uploadUrl -replace '/upload$', ''
+    $healthUrl = "$baseUrl/health"
+    $session = New-Object Microsoft.PowerShell.Commands.WebRequestSession
+    Invoke-WebRequest -Uri $healthUrl -Method Get -WebSession $session -UseBasicParsing -TimeoutSec 15 | Out-Null
+    $csrfCookie = $session.Cookies.GetCookies($healthUrl) | Where-Object { $_.Name -eq "csrftoken" }
+    if (-not $csrfCookie) {
+        throw "Failed to obtain csrftoken cookie from $healthUrl"
+    }
+    return @{
+        Token   = $csrfCookie.Value
+        Session = $session
+    }
+}
+
 function Submit-File {
     param([string]$FilePath)
     $fileName = Split-Path $FilePath -Leaf
     $mimeType = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+
+    # Obtain CSRF token before uploading (#235)
+    $csrf = Get-CsrfToken
+    $csrfToken = $csrf.Token
+    $session = $csrf.Session
 
     # Build multipart form data
     $fileBytes = [System.IO.File]::ReadAllBytes($FilePath)
@@ -119,9 +141,12 @@ function Submit-File {
     [System.Buffer]::BlockCopy($fileBytes, 0, $body, $headerBytes.Length, $fileBytes.Length)
     [System.Buffer]::BlockCopy($footerBytes, 0, $body, $headerBytes.Length + $fileBytes.Length, $footerBytes.Length)
 
-    $headers = @{ "Content-Type" = "multipart/form-data; boundary=$boundary" }
+    $headers = @{
+        "Content-Type"  = "multipart/form-data; boundary=$boundary"
+        "X-CSRFToken"   = $csrfToken
+    }
 
-    $response = Invoke-RestMethod -Uri $uploadUrl -Method Post -Body $body -Headers $headers -TimeoutSec 60
+    $response = Invoke-RestMethod -Uri $uploadUrl -Method Post -Body $body -Headers $headers -WebSession $session -TimeoutSec 60
     return $response
 }
 
