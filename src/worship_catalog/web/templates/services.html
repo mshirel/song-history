@@ -15,6 +15,11 @@
 
 {# Filter bar #}
 <div class="card" style="margin-bottom:1rem;">
+  {% if start_date or end_date or q_service or q_leader or q_preacher or q_sermon %}
+  <div style="text-align:right;margin-bottom:0.5rem;">
+    <a href="/services" style="font-size:0.85rem;color:#6c757d;">Clear all filters</a>
+  </div>
+  {% endif %}
   <div class="form-grid">
     <div>
       <label style="font-size:0.8rem;font-weight:600;color:#495057;display:block;margin-bottom:0.2rem;">Date From</label>

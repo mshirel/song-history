@@ -3285,3 +3285,81 @@ class TestUploadRateLimiterPersistence:
         assert not allowed
         allowed, _ = limiter.is_allowed("2.2.2.2")
         assert allowed
+
+
+# ---------------------------------------------------------------------------
+# Proxy-aware rate limiter (#283)
+# ---------------------------------------------------------------------------
+
+
+class TestProxyAwareRateLimiter:
+    """Rate limiter should use X-Forwarded-For when TRUSTED_PROXY is set (#283)."""
+
+    def test_get_client_ip_without_proxy(self, monkeypatch):
+        monkeypatch.setenv("TRUSTED_PROXY", "")
+        from importlib import reload
+        import worship_catalog.web.app as app_module
+        reload(app_module)
+        from unittest.mock import MagicMock
+        req = MagicMock()
+        req.client.host = "1.2.3.4"
+        req.headers = {}
+        assert app_module._get_client_ip(req) == "1.2.3.4"
+
+    def test_get_client_ip_with_proxy(self, monkeypatch):
+        monkeypatch.setenv("TRUSTED_PROXY", "1")
+        from importlib import reload
+        import worship_catalog.web.app as app_module
+        reload(app_module)
+        from unittest.mock import MagicMock
+        req = MagicMock()
+        req.client.host = "10.0.0.1"
+        req.headers = {"x-forwarded-for": "5.6.7.8, 10.0.0.1"}
+        assert app_module._get_client_ip(req) == "5.6.7.8"
+
+    def test_get_client_ip_proxy_no_xff_header(self, monkeypatch):
+        monkeypatch.setenv("TRUSTED_PROXY", "1")
+        from importlib import reload
+        import worship_catalog.web.app as app_module
+        reload(app_module)
+        from unittest.mock import MagicMock
+        req = MagicMock()
+        req.client.host = "10.0.0.1"
+        req.headers = {}
+        assert app_module._get_client_ip(req) == "10.0.0.1"
+
+
+# ---------------------------------------------------------------------------
+# Services clear filters (#302)
+# ---------------------------------------------------------------------------
+
+
+class TestServicesClearFilters:
+    """Services page should show a 'Clear all filters' link when filters active (#302)."""
+
+    def test_clear_link_shown_when_date_filter_active(self, client):
+        resp = client.get("/services?start_date=2026-01-01")
+        assert resp.status_code == 200
+        assert "Clear all filters" in resp.text
+        assert 'href="/services"' in resp.text
+
+    def test_clear_link_hidden_when_no_filters(self, client):
+        resp = client.get("/services")
+        assert resp.status_code == 200
+        assert "Clear all filters" not in resp.text
+
+
+# ---------------------------------------------------------------------------
+# Logo contrast (#249)
+# ---------------------------------------------------------------------------
+
+
+class TestLogoContrast:
+    """Logo should be readable in the dark nav bar (#249)."""
+
+    def test_logo_has_contrast_background(self, client):
+        resp = client.get("/songs")
+        assert resp.status_code == 200
+        # Logo CSS should include background for contrast
+        assert "brand-logo" in resp.text
+        assert "background:" in resp.text or "background-color:" in resp.text
