@@ -70,8 +70,7 @@ jobs:
 
       - name: Verify lockfile is up to date (#174)
         run: |
-          pip install pip-tools
-          pip-compile --strip-extras --extra web --extra ocr --output-file /tmp/requirements.lock pyproject.toml
+          pipx run --spec pip-tools pip-compile --strip-extras --extra web --extra ocr --output-file /tmp/requirements.lock pyproject.toml
           # Compare non-comment lines only (header contains the output path which differs)
           grep -v '^#' requirements.lock > /tmp/lock-current.txt
           grep -v '^#' /tmp/requirements.lock > /tmp/lock-fresh.txt
