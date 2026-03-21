@@ -433,6 +433,39 @@ async def reports_stats_xlsx(
     )
 
 
+@app.post("/reports/ccli")
+async def reports_ccli_csv(
+    start_date: str = Form(...),
+    end_date: str = Form(...),
+) -> StreamingResponse:
+    """Generate CCLI compliance report as a CSV download (#201)."""
+    _validate_date_range(start_date, end_date)
+    db = _get_db()
+    events = db.query_copy_events(start_date, end_date)
+    db.close()
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["Date", "Service", "Title", "CCLI#", "Reproduction Type", "Count"])
+    for event in events:
+        writer.writerow([
+            event["service_date"],
+            event["service_name"],
+            event["display_title"],
+            event.get("ccli_number", ""),
+            event["reproduction_type"],
+            event["count"],
+        ])
+
+    output.seek(0)
+    filename = _sanitize_header_filename(f"ccli_report_{start_date}_{end_date}.csv")
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @app.get("/songs/{song_id}", response_class=HTMLResponse)
 async def song_detail(request: Request, song_id: int) -> HTMLResponse:
     db = _get_db()
@@ -623,6 +656,12 @@ def _run_import_in_background(job_id: str, pptx_path: Path) -> None:
                 "Failed to delete uploaded file from inbox",
                 extra={"path": str(pptx_path), "error": str(exc)},
             )
+
+
+@app.get("/upload", response_class=HTMLResponse)
+async def upload_page(request: Request) -> HTMLResponse:
+    """Render the browser upload form for PPTX files."""
+    return templates.TemplateResponse(request, "upload.html")
 
 
 @app.post("/upload")

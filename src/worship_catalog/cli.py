@@ -770,10 +770,16 @@ def repair_credits(
                                         f"    [ocr] no parseable credits: {ocr_text!r}",
                                         err=True,
                                     )
+                                    if ocr_budget is not None:
+                                        ocr_budget.refund()
                             else:
                                 click.echo("    [ocr] no text returned", err=True)
+                                if ocr_budget is not None:
+                                    ocr_budget.refund()
                         except Exception as e:
                             click.echo(f"    [ocr] error: {e}", err=True)
+                            if ocr_budget is not None:
+                                ocr_budget.refund()
                     else:
                         click.echo("    [ocr] source file not found", err=True)
 
