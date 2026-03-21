@@ -99,13 +99,14 @@ class TestOcrBudget:
         slide.index = 1
 
         budget = OcrBudget(max_calls=5)
+        from worship_catalog.extractor import CreditResolver
+        resolver = CreditResolver(use_ocr=True, ocr_budget=budget)
         with patch("worship_catalog.extractor._try_ocr_credits", return_value=None):
             _create_song_occurrence(
                 ordinal=1,
                 canonical_title="amazing grace",
                 slides=[slide],
-                use_ocr=True,
-                ocr_budget=budget,
+                resolver=resolver,
             )
         assert budget.calls_made == 0
 
@@ -113,7 +114,7 @@ class TestOcrBudget:
         """If _try_ocr_credits returns text, budget is decremented by 1."""
         from unittest.mock import MagicMock, patch
 
-        from worship_catalog.extractor import _create_song_occurrence
+        from worship_catalog.extractor import CreditResolver, _create_song_occurrence
         from worship_catalog.pptx_reader import Slide, SlideText
 
         slide = MagicMock(spec=Slide)
@@ -123,6 +124,7 @@ class TestOcrBudget:
         slide.index = 1
 
         budget = OcrBudget(max_calls=5)
+        resolver = CreditResolver(use_ocr=True, ocr_budget=budget)
         with patch(
             "worship_catalog.extractor._try_ocr_credits",
             return_value="Words by: John Newton",
@@ -131,8 +133,7 @@ class TestOcrBudget:
                 ordinal=1,
                 canonical_title="amazing grace",
                 slides=[slide],
-                use_ocr=True,
-                ocr_budget=budget,
+                resolver=resolver,
             )
         assert budget.calls_made == 1
 

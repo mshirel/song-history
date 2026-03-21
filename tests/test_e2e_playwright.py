@@ -13,49 +13,18 @@ Requires:
 Skip in CI/normal test runs:
     pytest -m "not e2e"
 
-These tests connect to a running server at BASE_URL. Start the server first:
+These tests connect to a running server at E2E_BASE_URL (env var, default localhost:8000).
+Start the server first:
     uvicorn worship_catalog.web.app:app --host 0.0.0.0 --port 8000
 """
-
-import socket
 
 import pytest
 
 # Skip entire module if playwright is not installed
 pytest.importorskip("playwright", reason="playwright not installed — run: pip install playwright")
 
-BASE_URL = "http://localhost:8000"
-
-
-def _server_is_running() -> bool:
-    """Return True if the server at BASE_URL is accepting connections."""
-    try:
-        host = "localhost"
-        port = 8000
-        with socket.create_connection((host, port), timeout=1):
-            return True
-    except (ConnectionRefusedError, OSError):
-        return False
-
-
-_server_available = _server_is_running()
-
-
-@pytest.fixture(scope="module")
-def browser_page():
-    """Launch a Chromium browser and yield a page. Skip if server not running."""
-    if not _server_available:
-        pytest.skip(
-            "No server running at http://localhost:8000 — start the server to run E2E tests"
-        )
-
-    from playwright.sync_api import sync_playwright
-
-    with sync_playwright() as p:
-        browser = p.chromium.launch()
-        page = browser.new_page()
-        yield page
-        browser.close()
+# browser_page fixture and BASE_URL come from conftest.py
+from tests.conftest import E2E_BASE_URL as BASE_URL
 
 
 @pytest.mark.e2e

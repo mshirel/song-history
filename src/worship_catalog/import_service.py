@@ -61,7 +61,6 @@ def run_import(
         TimeoutError: If extraction exceeds the per-file time limit.
     """
     from worship_catalog.extractor import extract_songs
-    from worship_catalog.pptx_reader import compute_file_hash
 
     pptx_path = Path(pptx_path)
 
@@ -71,7 +70,7 @@ def run_import(
         ocr_budget=ocr_budget,
         library_index=library_index,
     )
-    service_hash = compute_file_hash(pptx_path)
+    service_hash = result.file_hash  # reuse hash computed during extraction (#278)
 
     with db.transaction():
         # Idempotent re-import: delete existing service data if present

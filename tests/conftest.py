@@ -1,9 +1,51 @@
 """Shared pytest fixtures for worship-catalog tests."""
 
+import os
+import socket
+from collections.abc import Generator
+from typing import Any
+
 import pytest
-from pathlib import Path
+
 from worship_catalog.db import Database
-from worship_catalog.pptx_reader import Slide, SlideText, SlideImage
+from worship_catalog.pptx_reader import Slide, SlideImage, SlideText
+
+# E2E server URL — configurable via env var for CI (default: local dev server)
+E2E_BASE_URL = os.environ.get("E2E_BASE_URL", "http://localhost:8000")
+
+
+def _e2e_server_is_running() -> bool:
+    """Return True if the E2E server at E2E_BASE_URL is accepting connections."""
+    from urllib.parse import urlparse
+
+    parsed = urlparse(E2E_BASE_URL)
+    host = parsed.hostname or "localhost"
+    port = parsed.port or 8000
+    try:
+        with socket.create_connection((host, port), timeout=2):
+            return True
+    except (ConnectionRefusedError, OSError):
+        return False
+
+
+_e2e_server_available = _e2e_server_is_running()
+
+
+@pytest.fixture(scope="module")
+def browser_page() -> Generator[Any, None, None]:
+    """Launch a Chromium browser and yield a page. Skip if server not running."""
+    if not _e2e_server_available:
+        pytest.skip(
+            f"No server running at {E2E_BASE_URL} — start the server to run E2E tests"
+        )
+
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch()
+        page = browser.new_page()
+        yield page
+        browser.close()
 
 
 class CsrfAwareClient:
@@ -46,7 +88,7 @@ def synthetic_pptx(tmp_path_factory):
     worship PPTX file from the data/ directory (#85).
     """
     from pptx import Presentation
-    from pptx.util import Inches, Pt
+    from pptx.util import Inches
 
     prs = Presentation()
     blank_layout = prs.slide_layouts[6]  # blank layout
@@ -54,7 +96,6 @@ def synthetic_pptx(tmp_path_factory):
     def add_text_box(slide, lines, left=Inches(0.5), top=Inches(0.5),
                      width=Inches(9), height=Inches(2)):
         """Add a text box with one paragraph per line."""
-        from pptx.util import Pt
         txBox = slide.shapes.add_textbox(left, top, width, height)
         tf = txBox.text_frame
         tf.word_wrap = True

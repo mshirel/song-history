@@ -51,6 +51,70 @@ jobs:
             exit 1
           fi
 
+  e2e:
+    needs: [test]  # only run after unit/integration tests pass
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -e ".[dev,web,ocr]"
+
+      - name: Install Playwright Chromium
+        run: python3 -m playwright install chromium --with-deps
+
+      - name: Seed test database
+        run: |
+          mkdir -p /tmp/e2e-inbox
+          python3 -c "
+          from worship_catalog.db import Database
+          db = Database('/tmp/e2e-test.db')
+          db.connect()
+          db.init_schema()
+          s1 = db.insert_or_get_song('amazing grace', 'Amazing Grace')
+          s2 = db.insert_or_get_song('how great thou art', 'How Great Thou Art')
+          e1 = db.insert_or_get_song_edition(s1, words_by='John Newton', music_by=None, arranger=None)
+          e2 = db.insert_or_get_song_edition(s2, words_by='Stuart K. Hine', music_by='Stuart K. Hine', arranger=None)
+          svc = db.insert_or_update_service('2026-02-15', 'AM Worship', 'test.pptx', 'abc123', song_leader='Matt')
+          db.insert_service_song(svc, s1, ordinal=1, song_edition_id=e1)
+          db.insert_service_song(svc, s2, ordinal=2, song_edition_id=e2)
+          db.insert_or_get_copy_event(svc, s1, 'projection', song_edition_id=e1)
+          db.insert_or_get_copy_event(svc, s2, 'projection', song_edition_id=e2)
+          db.close()
+          print('E2E test database seeded at /tmp/e2e-test.db')
+          "
+
+      - name: Start server
+        run: |
+          DB_PATH=/tmp/e2e-test.db INBOX_DIR=/tmp/e2e-inbox \
+            python3 -m uvicorn worship_catalog.web.app:app \
+              --host 127.0.0.1 --port 8000 &
+          # Wait for server to become healthy (max 15s)
+          for i in $(seq 1 15); do
+            if curl -sf http://127.0.0.1:8000/health; then
+              echo "Server is ready"
+              break
+            fi
+            sleep 1
+          done
+          # Final health check — fail fast if server never started
+          curl -sf http://127.0.0.1:8000/health || {
+            echo "ERROR: Server did not start within 15s"
+            exit 1
+          }
+
+      - name: Run E2E tests
+        env:
+          E2E_BASE_URL: "http://127.0.0.1:8000"
+        run: python3 -m pytest -m e2e -v --tb=short --no-header -p no:cacheprovider
+
   security:
     runs-on: ubuntu-latest
     permissions:
@@ -113,7 +177,7 @@ jobs:
           echo "Dependency baseline check passed — no unexpected new packages."
 
   publish:
-    needs: [test, security]
+    needs: [test, security, e2e]
     # Only publish on pushes to main, the weekly scheduled run, or manual dispatch — not on PRs
     if: github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest

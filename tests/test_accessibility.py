@@ -5,6 +5,7 @@ They define what the templates MUST provide; if they fail, fix the templates.
 """
 
 import re
+from pathlib import Path
 
 import pytest
 from starlette.testclient import TestClient
@@ -139,3 +140,54 @@ class TestFormLabels:
             "Search input has no accessible label. "
             "Add <label for='q'> or aria-label='Search' to the input."
         )
+
+
+class TestAriaSortHeaders:
+    """Tests for aria-sort on sortable table headers (#305)."""
+
+    def test_songs_default_sort_has_aria_sort(self, client: TestClient) -> None:
+        resp = client.get("/songs")
+        assert resp.status_code == 200
+        assert 'aria-sort="descending"' in resp.text
+
+    def test_songs_asc_sort_has_aria_ascending(self, client: TestClient) -> None:
+        resp = client.get("/songs?sort=display_title&sort_dir=asc")
+        assert 'aria-sort="ascending"' in resp.text
+
+    def test_services_sort_has_aria_sort(self, client: TestClient) -> None:
+        resp = client.get("/services?sort=service_date&sort_dir=desc")
+        assert 'aria-sort="descending"' in resp.text
+
+
+class TestAriaLiveRegions:
+    """Tests for aria-live on HTMX swap targets (#306)."""
+
+    def test_songs_table_has_aria_live(self, client: TestClient) -> None:
+        resp = client.get("/songs")
+        assert 'aria-live="polite"' in resp.text
+
+    def test_services_table_has_aria_live(self, client: TestClient) -> None:
+        resp = client.get("/services")
+        assert 'aria-live="polite"' in resp.text
+
+    def test_reports_result_has_aria_live(self, client: TestClient) -> None:
+        resp = client.get("/reports")
+        assert 'aria-live="polite"' in resp.text
+
+    def test_upload_result_has_aria_live(self, client: TestClient) -> None:
+        resp = client.get("/upload")
+        assert 'aria-live="assertive"' in resp.text or 'role="alert"' in resp.text
+
+
+class TestErrorPageContrast:
+    """Tests for error page text contrast (#307)."""
+
+    def test_404_heading_not_low_contrast(self, client: TestClient) -> None:
+        """The 404 status code heading should not use #ccc (low contrast)."""
+        resp = client.get("/nonexistent-page-xyz")
+        assert resp.status_code == 404
+        # The heading uses inline style; verify it does NOT use #ccc
+        assert "color:#ccc;\">404" not in resp.text
+        assert "color: #ccc;\">404" not in resp.text
+        # Should use a darker color instead
+        assert "color:#666;\">404" in resp.text or "color: #666;\">404" in resp.text

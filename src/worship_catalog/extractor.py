@@ -40,6 +40,32 @@ _NO_TEXT_STREAK_THRESHOLD: int = 5
 # SFP (Songs For Praise) catalog numbers — Paperless Hymnal reference IDs, not song titles (#264)
 _SFP_CATALOG_RE = re.compile(r"^SFP\s+\d{3,4}$", re.IGNORECASE)
 
+# Non-song content markers — shared between _group_song_slides and
+# _extract_title_candidates to avoid duplication (#280).
+_NON_SONG_MARKERS: tuple[str, ...] = (
+    "give online",
+    "text give",
+    "giving",
+    "offering",
+    "communion",
+    "tithe",
+    "donation",
+    "lesson",
+    "scripture reading",
+    "announcements",
+)
+
+# Footer/copyright markers filtered from title candidates.
+_FOOTER_MARKERS: tuple[str, ...] = (
+    "copyright",
+    "all rights",
+    "permission",
+    "paperlesshymnal",
+    "taylor publications",
+    "presentation ©",
+    "admin",
+)
+
 
 @dataclass
 class OcrBudget:
@@ -283,11 +309,13 @@ def _extract_songs_impl(
     )
 
     # Step 4: Convert groups to song occurrences
+    # Create a single CreditResolver for the entire run so that the
+    # shared ocr_budget is explicitly passed once, not recreated per-song (#291).
+    resolver = CreditResolver(library_index=library_index, ocr_budget=ocr_budget, use_ocr=use_ocr)
     songs = []
     for ordinal, (canonical, group) in enumerate(song_groups, 1):
         song = _create_song_occurrence(
-            ordinal, canonical, group, use_ocr=use_ocr, ocr_budget=ocr_budget,
-            library_index=library_index,
+            ordinal, canonical, group, resolver=resolver,
         )
         songs.append(song)
 
@@ -376,21 +404,7 @@ def _group_song_slides(slides: list[Slide]) -> list[tuple[str, list[Slide]]]:
 
         # Skip giving/offering/communion content at canonical level
         canonical_lower = canonical.lower()
-        if any(
-            marker in canonical_lower
-            for marker in [
-                "give online",
-                "text give",
-                "giving",
-                "offering",
-                "communion",
-                "tithe",
-                "donation",
-                "lesson",
-                "scripture reading",
-                "announcements",
-            ]
-        ):
+        if any(marker in canonical_lower for marker in _NON_SONG_MARKERS):
             continue
 
         # Check if this starts a new song or continues current
@@ -465,28 +479,7 @@ def _extract_title_candidates(slide: Slide) -> list[str]:
         # Skip footer/copyright lines and non-song content
         lower = line.lower()
         if any(
-            marker in lower
-            for marker in [
-                "copyright",
-                "all rights",
-                "permission",
-                "paperlesshymnal",
-                "taylor publications",
-                "presentation ©",
-                "admin",
-                # Skip giving/offering/communion content
-                "give online",
-                "text give",
-                "giving",
-                "offering",
-                "communion",
-                "tithe",
-                "donation",
-                "giving online",
-                "lesson",
-                "scripture reading",
-                "announcements",
-            ]
+            marker in lower for marker in _FOOTER_MARKERS + _NON_SONG_MARKERS
         ):
             continue
 
@@ -511,16 +504,13 @@ def _create_song_occurrence(
     ordinal: int,
     canonical_title: str,
     slides: list[Slide],
-    use_ocr: bool = False,
-    ocr_budget: OcrBudget | None = None,
-    library_index: dict[str, Any] | None = None,
+    resolver: CreditResolver | None = None,
 ) -> SongOccurrence:
     """
     Create a song occurrence from grouped slides.
 
     Extracts credits and metadata from all slides in group.
-    If use_ocr is True and no credits are found via text, falls back to
-    Claude Vision API on the first slide's image, subject to ocr_budget.
+    Uses the provided *resolver* for library + OCR fallback (#291).
     """
     # Extract display title from first slide with text
     display_title = ""
@@ -551,9 +541,11 @@ def _create_song_occurrence(
     else:
         _log.debug("No credits found via text for '%s'", canonical_title)
 
-    # Delegate to CreditResolver for the library + OCR fallback steps (#53)
-    resolver = CreditResolver(library_index=library_index, ocr_budget=ocr_budget, use_ocr=use_ocr)
-    credits = resolver.resolve(slides, parsed, canonical_title)
+    # Delegate to CreditResolver for the library + OCR fallback steps (#53, #291)
+    if resolver is not None:
+        credits = resolver.resolve(slides, parsed, canonical_title)
+    else:
+        credits = parsed
 
     # Detect publisher
     publisher = detect_publisher(all_text)
