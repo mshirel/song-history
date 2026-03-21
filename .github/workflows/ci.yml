@@ -185,6 +185,9 @@ jobs:
           tags: local-scan:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          build-args: |
+            APP_VERSION=${{ github.ref_name }}
+            BUILD_DATE=${{ github.event.head_commit.timestamp || github.event.repository.updated_at }}
 
       - name: Scan image for CVEs
         if: steps.changes.outputs.app == 'true' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
@@ -242,3 +245,6 @@ jobs:
           cache-to: type=gha,mode=max
           sbom: true
           provenance: true
+          build-args: |
+            APP_VERSION=${{ github.ref_name }}
+            BUILD_DATE=${{ github.event.head_commit.timestamp || github.event.repository.updated_at }}

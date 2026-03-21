@@ -1038,6 +1038,71 @@ class Database:
         )
         return [dict(row) for row in cursor.fetchall()], total
 
+    # --- Cleanup queries (#266) ---
+
+    def query_services_by_date(
+        self, date: str, name_pattern: str | None = None
+    ) -> list[dict[str, Any]]:
+        """Return services matching *date*, optionally filtered by name pattern."""
+        cursor = self._conn.cursor()
+        if name_pattern:
+            cursor.execute(
+                """
+                SELECT * FROM services
+                WHERE service_date = ? AND LOWER(service_name) LIKE LOWER(?)
+                ORDER BY id
+                """,
+                (date, f"%{name_pattern}%"),
+            )
+        else:
+            cursor.execute(
+                "SELECT * FROM services WHERE service_date = ? ORDER BY id",
+                (date,),
+            )
+        return [dict(row) for row in cursor.fetchall()]
+
+    def query_orphaned_songs(self) -> list[dict[str, Any]]:
+        """Return songs that have no service_songs rows (0 performances)."""
+        cursor = self._conn.cursor()
+        cursor.execute(
+            """
+            SELECT s.id AS song_id, s.canonical_title, s.display_title
+            FROM songs s
+            LEFT JOIN service_songs ss ON ss.song_id = s.id
+            WHERE ss.id IS NULL
+            ORDER BY s.display_title
+            """
+        )
+        return [dict(row) for row in cursor.fetchall()]
+
+    def query_duplicate_services(self) -> list[dict[str, Any]]:
+        """Return services that share (service_date, service_name) but differ in source_hash."""
+        cursor = self._conn.cursor()
+        cursor.execute(
+            """
+            SELECT s.*
+            FROM services s
+            INNER JOIN (
+                SELECT service_date, service_name
+                FROM services
+                GROUP BY service_date, service_name
+                HAVING COUNT(DISTINCT source_hash) > 1
+            ) dup ON s.service_date = dup.service_date
+                  AND s.service_name = dup.service_name
+            ORDER BY s.service_date, s.service_name, s.id
+            """
+        )
+        return [dict(row) for row in cursor.fetchall()]
+
+    def delete_song(self, song_id: int) -> None:
+        """Delete a song, its editions, and any related copy_events."""
+        cursor = self._conn.cursor()
+        cursor.execute("DELETE FROM copy_events WHERE song_id = ?", (song_id,))
+        cursor.execute("DELETE FROM service_songs WHERE song_id = ?", (song_id,))
+        cursor.execute("DELETE FROM song_editions WHERE song_id = ?", (song_id,))
+        cursor.execute("DELETE FROM songs WHERE id = ?", (song_id,))
+        self._maybe_commit()
+
     def query_song_by_id(self, song_id: int) -> dict[str, Any] | None:
         """Return a single song row or None."""
         cursor = self._conn.cursor()

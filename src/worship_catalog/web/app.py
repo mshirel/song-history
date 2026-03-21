@@ -173,6 +173,10 @@ def _sanitize_header_filename(raw: str) -> str:
     basename = Path(raw).name
     return _SAFE_FILENAME_RE.sub("_", basename)
 
+# Docker-baked version/build metadata (#261, #262)
+_VERSION_FILE: Path = Path("/app/.version")
+_BUILD_DATE_FILE: Path = Path("/app/.build-date")
+
 # Upload constants (#45)
 MAX_UPLOAD_BYTES: int = 200 * 1024 * 1024  # 200 MB
 _PPTX_MIME = (
@@ -417,14 +421,22 @@ async def reports_page(request: Request) -> HTMLResponse:
 
 @app.get("/about", response_class=HTMLResponse)
 async def about_page(request: Request) -> HTMLResponse:
-    """Render the About page with app purpose, version, and copyright (#232)."""
-    try:
-        version = importlib.metadata.version("worship-catalog")
-    except importlib.metadata.PackageNotFoundError:
-        version = "development"
+    """Render the About page with app purpose, version, and copyright (#232, #261, #262)."""
+    # Prefer baked-in file from Docker build; fall back to importlib.metadata (#261)
+    if _VERSION_FILE.is_file():
+        version = _VERSION_FILE.read_text().strip()
+    else:
+        try:
+            version = importlib.metadata.version("worship-catalog")
+        except importlib.metadata.PackageNotFoundError:
+            version = "development"
     python_version = platform.python_version()
     db_path = Path(os.environ.get("DB_PATH", "data/worship.db")).name
-    build_date = os.environ.get("BUILD_DATE", "development")
+    # Prefer baked-in file from Docker build; fall back to "development" (#262)
+    if _BUILD_DATE_FILE.is_file():
+        build_date = _BUILD_DATE_FILE.read_text().strip()
+    else:
+        build_date = "development"
     return templates.TemplateResponse(
         request,
         "about.html",
