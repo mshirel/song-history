@@ -137,3 +137,44 @@
   grep -q "EXIT" scripts/backup.sh
   grep -q "trap" scripts/backup.sh
 }
+
+# ---------------------------------------------------------------------------
+# Submit-WorshipSlides.ps1 Windows upload script (#151)
+# ---------------------------------------------------------------------------
+
+@test "Submit-WorshipSlides.ps1 exists" {
+  [ -f "scripts/Submit-WorshipSlides.ps1" ]
+}
+
+@test "Submit-WorshipSlides.env.example exists" {
+  [ -f "scripts/Submit-WorshipSlides.env.example" ]
+}
+
+@test "Submit-WorshipSlides.ps1 references the upload endpoint" {
+  grep -q "/upload" scripts/Submit-WorshipSlides.ps1
+}
+
+@test "Submit-WorshipSlides.ps1 sends correct PPTX MIME type" {
+  grep -q "openxmlformats-officedocument.presentationml.presentation" scripts/Submit-WorshipSlides.ps1
+}
+
+@test "Submit-WorshipSlides.ps1 tracks submitted files by hash" {
+  grep -q "SHA256" scripts/Submit-WorshipSlides.ps1
+}
+
+@test "Submit-WorshipSlides.ps1 skips temp files (tilde prefix)" {
+  grep -q '~\*' scripts/Submit-WorshipSlides.ps1
+}
+
+@test "Submit-WorshipSlides.env.example contains UPLOAD_URL" {
+  grep -q "UPLOAD_URL" scripts/Submit-WorshipSlides.env.example
+}
+
+@test "Submit-WorshipSlides.env.example contains WATCH_ROOT" {
+  grep -q "WATCH_ROOT" scripts/Submit-WorshipSlides.env.example
+}
+
+@test "Submit-WorshipSlides.env.example does not contain real secrets" {
+  run grep -E "sk-ant-|real-password|actual-token" scripts/Submit-WorshipSlides.env.example
+  [ "$status" -ne 0 ]
+}
