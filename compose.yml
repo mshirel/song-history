@@ -104,6 +104,7 @@ services:
       - ./config:/config
     environment:
       - DB_PATH=/data/worship.db
+      - CSRF_SECRET=${CSRF_SECRET:-}
     restart: unless-stopped
     stop_grace_period: 35s            # 30s executor timeout + 5s margin (#135)
     healthcheck:

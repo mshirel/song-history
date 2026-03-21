@@ -2776,3 +2776,97 @@ class TestHtmxSelfHosted:
         resp = client.get("/static/htmx.min.js")
         assert resp.status_code == 200
         assert "htmx" in resp.text
+
+
+# ---------------------------------------------------------------------------
+# Issue #251 — Upload form must work without inline scripts (CSP compat)
+# ---------------------------------------------------------------------------
+
+
+class TestUploadFormCSPCompatible:
+    """Upload form must not use inline scripts (CSP blocks them)."""
+
+    def test_upload_page_has_no_inline_scripts(self, client):
+        """upload.html must not contain bare <script> tags (blocked by CSP)."""
+        resp = client.get("/upload")
+        assert resp.status_code == 200
+        # All <script> tags must have a src= attribute (external files)
+        import re
+        inline_scripts = re.findall(r"<script(?![^>]*\bsrc\b)[^>]*>", resp.text)
+        assert not inline_scripts, (
+            f"Page has {len(inline_scripts)} inline <script> tag(s) "
+            "which are blocked by CSP script-src 'self'"
+        )
+
+    def test_upload_js_served_from_static(self, client):
+        """upload.js must be available at /static/upload.js."""
+        resp = client.get("/static/upload.js")
+        assert resp.status_code == 200
+        assert "fetch" in resp.text, "upload.js must use fetch to POST the form"
+        assert "csrftoken" in resp.text.lower(), "upload.js must read the CSRF cookie"
+
+    def test_upload_form_references_external_js(self, client):
+        """upload.html must load upload.js from /static/."""
+        resp = client.get("/upload")
+        assert "/static/upload.js" in resp.text
+
+
+class TestReportFormsCSPCompatible:
+    """Report download forms must handle CSRF without inline scripts (#238)."""
+
+    def test_reports_page_has_no_inline_scripts(self, client):
+        """reports.html must not use inline scripts."""
+        resp = client.get("/reports")
+        assert resp.status_code == 200
+        import re
+        inline_scripts = re.findall(r"<script(?![^>]*\bsrc\b)[^>]*>", resp.text)
+        assert not inline_scripts, (
+            "Reports page has inline scripts blocked by CSP"
+        )
+
+    def test_ccli_download_form_posts_with_csrf(self, client):
+        """CCLI CSV download must succeed (not 403) when submitted."""
+        resp = client.post(
+            "/reports/ccli",
+            data={"start_date": "2026-01-01", "end_date": "2026-12-31"},
+        )
+        assert resp.status_code != 403, "CCLI download returned 403 — CSRF token missing"
+
+    def test_stats_form_posts_with_csrf(self, client):
+        """Stats report must succeed (not 403) when submitted."""
+        resp = client.post(
+            "/reports/stats",
+            data={"start_date": "2026-01-01", "end_date": "2026-12-31"},
+        )
+        assert resp.status_code != 403, "Stats report returned 403 — CSRF token missing"
+
+
+class TestEmptyStateLinkTarget:
+    """Empty state card must link to Upload page, not Reports (#240)."""
+
+    def test_songs_empty_state_links_to_upload(self, tmp_path, monkeypatch):
+        db_path = tmp_path / "empty.db"
+        db = Database(db_path)
+        db.connect()
+        db.init_schema()
+        db.close()
+        monkeypatch.setenv("DB_PATH", str(db_path))
+        monkeypatch.setenv("INBOX_DIR", str(tmp_path / "inbox"))
+        (tmp_path / "inbox").mkdir()
+        from importlib import reload
+        import worship_catalog.web.app as app_module
+        reload(app_module)
+        empty_client = TestClient(app_module.app)
+        resp = empty_client.get("/songs")
+        assert "/upload" in resp.text, "Empty state must link to /upload, not /reports"
+
+
+class TestNoDuplicateStaticMount:
+    """Static files must be mounted exactly once (#234)."""
+
+    def test_static_mount_not_duplicated(self):
+        import worship_catalog.web.app as app_module
+        import inspect
+        source = inspect.getsource(app_module)
+        count = source.count('app.mount("/static"')
+        assert count == 1, f"app.mount('/static') appears {count} times, expected 1"

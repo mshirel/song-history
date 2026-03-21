@@ -99,7 +99,7 @@ app.add_middleware(
 app.add_middleware(RequestLoggingMiddleware)
 
 # Content-Security-Policy — defence-in-depth against XSS (#197).
-# script-src allows 'self' plus the unpkg CDN for htmx.
+# All scripts must be external files served from /static/ (no inline JS).
 _CSP_POLICY: str = (
     "default-src 'self'; "
     "script-src 'self'; "
@@ -124,9 +124,6 @@ app.add_middleware(_CSPMiddleware)
 _TEMPLATES_DIR = Path(__file__).parent / "templates"
 _STATIC_DIR = Path(__file__).parent / "static"
 templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
-app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
-
-_STATIC_DIR = Path(__file__).parent / "static"
 app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
 
 
