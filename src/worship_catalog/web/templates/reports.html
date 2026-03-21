@@ -9,7 +9,7 @@
   <p style="font-size:0.85rem;color:#495057;margin-bottom:0.75rem;">
     Generate the CSV report of song reproductions required for CCLI licence compliance.
   </p>
-  <form method="post" action="/reports/ccli">
+  <form method="post" action="/reports/ccli" id="ccli-form">
     <div class="form-grid" style="margin-bottom:0.75rem;">
       <div>
         <label for="ccli-from">From</label>
@@ -60,4 +60,5 @@
   </form>
   <div id="stats-result" style="margin-top:1.25rem;"></div>
 </div>
+<script src="/static/reports.js"></script>
 {% endblock %}

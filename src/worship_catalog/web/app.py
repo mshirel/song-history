@@ -93,9 +93,12 @@ app = FastAPI(title="Worship Catalog", lifespan=_lifespan)
 # responses are logged correctly. Secret is read from env; a random value is
 # generated on first start (sufficient for a single-process deployment).
 _CSRF_SECRET = os.environ.get("CSRF_SECRET") or secrets.token_hex(32)
+# cookie_name is set explicitly so the coupling with client-side JS
+# (upload.js, reports.js) and CsrfAwareClient in conftest.py is visible (#239).
 app.add_middleware(
     CSRFMiddleware,
     secret=_CSRF_SECRET,
+    cookie_name="csrftoken",
     exempt_urls=[re.compile(r"^/health$")],
 )
 app.add_middleware(RequestLoggingMiddleware)
