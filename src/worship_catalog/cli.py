@@ -462,13 +462,7 @@ def ccli(start_date: str, end_date: str, out: str, db: str) -> None:
             # Header
             writer.writerow(["Date", "Service", "Title", "CCLI#", "Reproduction Type", "Count"])
 
-            # Group events for cleaner output
-            current_date = None
             for event in events:
-                if event["service_date"] != current_date:
-                    current_date = event["service_date"]
-                    f.write(f"\n# {event['service_date']} - {event['service_name']}\n")
-
                 writer.writerow([
                     event["service_date"],
                     event["service_name"],
@@ -776,10 +770,16 @@ def repair_credits(
                                         f"    [ocr] no parseable credits: {ocr_text!r}",
                                         err=True,
                                     )
+                                    if ocr_budget is not None:
+                                        ocr_budget.refund()
                             else:
                                 click.echo("    [ocr] no text returned", err=True)
+                                if ocr_budget is not None:
+                                    ocr_budget.refund()
                         except Exception as e:
                             click.echo(f"    [ocr] error: {e}", err=True)
+                            if ocr_budget is not None:
+                                ocr_budget.refund()
                     else:
                         click.echo("    [ocr] source file not found", err=True)
 

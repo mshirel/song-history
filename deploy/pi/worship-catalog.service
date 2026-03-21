@@ -1,0 +1,15 @@
+[Unit]
+Description=Worship Catalog
+After=docker.service
+Requires=docker.service
+
+[Service]
+User=songs
+Group=songs
+WorkingDirectory=/opt/song-history
+ExecStart=/usr/bin/docker compose up
+ExecStop=/usr/bin/docker compose down
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
