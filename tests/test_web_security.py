@@ -644,3 +644,40 @@ class TestUploadRateLimiterUnit:
         finally:
             app_module._UPLOAD_RATE_LIMIT = original_limit
             app_module._UPLOAD_RATE_WINDOW_SECONDS = original_window
+
+
+# ---------------------------------------------------------------------------
+# Issue #197 — Content-Security-Policy header
+# ---------------------------------------------------------------------------
+
+
+class TestContentSecurityPolicy:
+    """All HTML responses must include a Content-Security-Policy header."""
+
+    def test_songs_page_has_csp_header(self, client):
+        resp = client.get("/songs")
+        assert resp.status_code == 200
+        csp = resp.headers.get("content-security-policy")
+        assert csp is not None, "Response missing Content-Security-Policy header"
+        assert "script-src" in csp, "CSP must restrict script sources"
+
+    def test_csp_disallows_unsafe_inline(self, client):
+        resp = client.get("/songs")
+        csp = resp.headers.get("content-security-policy", "")
+        if "script-src" in csp:
+            script_src_value = csp.split("script-src")[1].split(";")[0]
+            assert "'unsafe-inline'" not in script_src_value, (
+                "CSP script-src must not allow 'unsafe-inline'"
+            )
+
+    def test_csp_restricts_to_self(self, client):
+        """script-src should include 'self' to allow same-origin scripts."""
+        resp = client.get("/songs")
+        csp = resp.headers.get("content-security-policy", "")
+        assert "'self'" in csp, "CSP must include 'self' directive"
+
+    def test_reports_page_has_csp_header(self, client):
+        resp = client.get("/reports")
+        assert resp.status_code == 200
+        csp = resp.headers.get("content-security-policy")
+        assert csp is not None, "Reports page missing CSP header"
