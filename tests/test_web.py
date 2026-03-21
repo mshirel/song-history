@@ -94,11 +94,13 @@ class TestReportsPage:
         assert response.status_code == 200
         assert "text/html" in response.headers["content-type"]
 
-    def test_reports_page_does_not_show_ccli_form(self, client):
-        """CCLI form must be hidden until format is validated (#93)."""
+    def test_reports_page_shows_ccli_section(self, client):
+        """The reports page must have a CCLI report section (#201)."""
         response = client.get("/reports")
-        assert 'action="/reports/ccli"' not in response.text, (
-            "CCLI form must not appear until the column format is validated against CCLI spec"
+        assert response.status_code == 200
+        assert "CCLI" in response.text, (
+            "Reports page has no CCLI section — church admins cannot "
+            "generate the compliance report from the web UI"
         )
 
     def test_reports_page_has_stats_form(self, client):
@@ -508,6 +510,88 @@ class TestStatsExport:
             data={"start_date": "2026-01-01", "end_date": "2026-12-31"},
         )
         assert "/reports/stats/csv" in response.text
+
+
+class TestCcliReportWebRoute:
+    """Web UI must provide CCLI report generation (#201)."""
+
+    def test_reports_page_shows_ccli_section(self, client):
+        """The reports page must have a CCLI report section."""
+        resp = client.get("/reports")
+        assert resp.status_code == 200
+        assert "CCLI" in resp.text, (
+            "Reports page has no CCLI section — church admins cannot "
+            "generate the compliance report from the web UI"
+        )
+
+    def test_ccli_report_download_returns_csv(self, client):
+        """POST /reports/ccli should return a downloadable CSV file."""
+        resp = client.post(
+            "/reports/ccli",
+            data={"start_date": "2025-01-01", "end_date": "2025-12-31"},
+        )
+        assert resp.status_code == 200
+        content_type = resp.headers.get("content-type", "")
+        assert "text/csv" in content_type or "application/octet-stream" in content_type, (
+            f"Expected CSV content type, got {content_type}"
+        )
+
+    def test_ccli_report_has_content_disposition(self, client):
+        """CCLI report download should have a filename header."""
+        resp = client.post(
+            "/reports/ccli",
+            data={"start_date": "2025-01-01", "end_date": "2025-12-31"},
+        )
+        disposition = resp.headers.get("content-disposition", "")
+        assert "attachment" in disposition, (
+            "CCLI report should be a file download with Content-Disposition: attachment"
+        )
+
+    def test_ccli_report_csv_has_header_row(self, client):
+        """CSV must have a header row with expected CCLI columns."""
+        resp = client.post(
+            "/reports/ccli",
+            data={"start_date": "2026-01-01", "end_date": "2026-12-31"},
+        )
+        first_line = resp.text.splitlines()[0]
+        assert "Title" in first_line
+        assert "Reproduction Type" in first_line
+
+    def test_ccli_report_csv_contains_copy_events(self, client):
+        """CSV should contain data from the test fixture's copy events."""
+        resp = client.post(
+            "/reports/ccli",
+            data={"start_date": "2026-01-01", "end_date": "2026-12-31"},
+        )
+        assert "Amazing Grace" in resp.text or "How Great Thou Art" in resp.text
+
+    def test_ccli_report_csv_empty_range_still_has_header(self, client):
+        """An empty date range should return CSV with just the header row."""
+        resp = client.post(
+            "/reports/ccli",
+            data={"start_date": "2020-01-01", "end_date": "2020-01-31"},
+        )
+        assert resp.status_code == 200
+        non_empty_lines = [line for line in resp.text.splitlines() if line.strip()]
+        assert len(non_empty_lines) == 1  # header only
+
+    def test_ccli_report_filename_includes_dates(self, client):
+        """Content-Disposition filename should include the date range."""
+        resp = client.post(
+            "/reports/ccli",
+            data={"start_date": "2026-01-01", "end_date": "2026-12-31"},
+        )
+        cd = resp.headers.get("content-disposition", "")
+        assert "2026-01-01" in cd
+        assert "2026-12-31" in cd
+
+    def test_ccli_report_validates_dates(self, client):
+        """Invalid dates should return 422."""
+        resp = client.post(
+            "/reports/ccli",
+            data={"start_date": "bad-date", "end_date": "2026-12-31"},
+        )
+        assert resp.status_code == 422
 
 
 class TestPagination:
@@ -1234,11 +1318,11 @@ class TestInputBoundaryConditions:
     def test_services_page_negative_page_does_not_500(self, client):
         assert client.get("/services?page=-1").status_code != 500
 
-    def test_ccli_route_removed_returns_404_or_405(self, client):
-        """POST /reports/ccli must not exist — CCLI removed until format validated (#93)."""
+    def test_ccli_route_exists_and_returns_csv(self, client):
+        """POST /reports/ccli must return a CSV download (#201)."""
         resp = client.post("/reports/ccli",
                            data={"start_date": "2026-01-01", "end_date": "2026-12-31"})
-        assert resp.status_code in (404, 405, 410)
+        assert resp.status_code == 200
 
 
 # ---------------------------------------------------------------------------
