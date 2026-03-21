@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{% block title %}Worship Catalog{% endblock %}</title>
+  <title>{% block title %}Highland Worship Catalog{% endblock %}</title>
   <script src="https://unpkg.com/htmx.org@1.9.12/dist/htmx.min.js"
           integrity="sha384-ujb1lZYygJmzgSwoxRggbCHcjc0rB2XoQrxeTUQyRjrOnlCoYta87iKBWq3EsdM2"
           crossorigin="anonymous"></script>
@@ -25,6 +25,7 @@
       align-items: center;
       gap: 2rem;
     }
+    nav .brand-logo { height: 2rem; width: auto; border-radius: 4px; }
     nav .brand { font-weight: 700; font-size: 1.1rem; letter-spacing: .02em; }
     nav a { color: #ccc; text-decoration: none; font-size: 0.95rem; }
     nav a:hover, nav a.active { color: #fff; }
@@ -104,7 +105,8 @@
 <a href="#main" class="skip-nav">Skip to main content</a>
 <header>
 <nav>
-  <span class="brand">Worship Catalog</span>
+  <img src="/static/highland-logo.jpg" alt="Highland logo" class="brand-logo">
+  <span class="brand">Highland Worship Catalog</span>
   <a href="/songs" {% if request.url.path.startswith('/songs') %}class="active"{% endif %}>Songs</a>
   <a href="/services" {% if request.url.path.startswith('/services') %}class="active"{% endif %}>Services</a>
   <a href="/reports" {% if request.url.path == '/reports' %}class="active"{% endif %}>Reports</a>

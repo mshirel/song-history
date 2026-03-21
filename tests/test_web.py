@@ -2738,3 +2738,19 @@ class TestUploadPage:
         assert "/upload" in resp.text, (
             "Navigation bar has no link to upload page"
         )
+
+
+class TestBranding:
+    def test_logo_served_as_static_asset(self, client):
+        response = client.get("/static/highland-logo.jpg")
+        assert response.status_code == 200
+        assert "image" in response.headers["content-type"]
+
+    def test_base_template_includes_logo(self, client):
+        response = client.get("/songs")
+        assert response.status_code == 200
+        assert b"highland-logo" in response.content
+
+    def test_page_title_includes_church_name(self, client):
+        response = client.get("/songs")
+        assert b"Highland" in response.content
