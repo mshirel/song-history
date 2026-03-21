@@ -44,6 +44,18 @@ class TestSendPushover:
             send_pushover(title="Test", message="Test message")
             mock_urlopen.assert_not_called()
 
+    def test_missing_credentials_logs_debug(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """When credentials are missing, send_pushover should log at DEBUG level."""
+        monkeypatch.delenv("PUSHOVER_USER_KEY", raising=False)
+        monkeypatch.delenv("PUSHOVER_APP_TOKEN", raising=False)
+        from worship_catalog.notify import send_pushover
+
+        with patch("worship_catalog.notify._log") as mock_log:
+            send_pushover(title="Test", message="Test message")
+            mock_log.debug.assert_called_once()
+            assert "not configured" in mock_log.debug.call_args[0][0].lower() or \
+                   "skipped" in mock_log.debug.call_args[0][0].lower()
+
     def test_failure_notification_includes_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Failed import notification should include the error summary."""
         monkeypatch.setenv("PUSHOVER_USER_KEY", "u")

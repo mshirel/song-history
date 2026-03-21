@@ -35,6 +35,7 @@ def send_pushover(
     app_token = os.environ.get("PUSHOVER_APP_TOKEN", "")
 
     if not user_key or not app_token:
+        _log.debug("Pushover notification skipped — credentials not configured")
         return
 
     payload = urllib.parse.urlencode(
