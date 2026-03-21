@@ -3173,3 +3173,115 @@ class TestUploadRejectionPushover:
         mock_pushover.assert_called_once()
         call_kwargs = mock_pushover.call_args[1]
         assert call_kwargs["priority"] == -1
+
+
+# ---------------------------------------------------------------------------
+# CSV header contract tests (#286)
+# ---------------------------------------------------------------------------
+
+
+class TestCsvHeaderContracts:
+    """CSV downloads must have the exact expected column headers (#286)."""
+
+    def test_ccli_csv_full_header_schema(self, client):
+        resp = client.post(
+            "/reports/ccli",
+            data={"start_date": "2020-01-01", "end_date": "2030-12-31"},
+        )
+        assert resp.status_code == 200
+        import csv as csvmod
+        reader = csvmod.reader(io.StringIO(resp.text))
+        header = next(reader)
+        assert header == ["Date", "Service", "Title", "CCLI#", "Reproduction Type", "Count"]
+
+    def test_stats_csv_full_header_schema(self, client):
+        resp = client.post(
+            "/reports/stats/csv",
+            data={"start_date": "2020-01-01", "end_date": "2030-12-31"},
+        )
+        assert resp.status_code == 200
+        import csv as csvmod
+        reader = csvmod.reader(io.StringIO(resp.text))
+        header = next(reader)
+        assert header == ["Rank", "Title", "Credits", "Count"]
+
+    def test_leader_csv_full_header_schema(self, client):
+        resp = client.get("/leaders/Matt/top-songs/csv")
+        assert resp.status_code == 200
+        import csv as csvmod
+        reader = csvmod.reader(io.StringIO(resp.text))
+        header = next(reader)
+        assert header == ["Rank", "Title", "Credits", "Count"]
+
+
+# ---------------------------------------------------------------------------
+# XLSX output schema contract tests (#299)
+# ---------------------------------------------------------------------------
+
+
+class TestXlsxOutputContract:
+    """Stats XLSX downloads must have expected sheet names and headers (#299)."""
+
+    def test_xlsx_has_top_songs_sheet(self, client):
+        resp = client.post(
+            "/reports/stats/xlsx",
+            data={"start_date": "2020-01-01", "end_date": "2030-12-31"},
+        )
+        assert resp.status_code == 200
+        import openpyxl
+        wb = openpyxl.load_workbook(io.BytesIO(resp.content))
+        assert "Top Songs" in wb.sheetnames
+
+    def test_xlsx_top_songs_headers(self, client):
+        resp = client.post(
+            "/reports/stats/xlsx",
+            data={"start_date": "2020-01-01", "end_date": "2030-12-31"},
+        )
+        import openpyxl
+        wb = openpyxl.load_workbook(io.BytesIO(resp.content))
+        ws = wb["Top Songs"]
+        headers = [cell.value for cell in ws[1]]
+        assert headers == ["Rank", "Title", "Credits", "Count"]
+
+    def test_xlsx_content_disposition(self, client):
+        resp = client.post(
+            "/reports/stats/xlsx",
+            data={"start_date": "2026-01-01", "end_date": "2026-12-31"},
+        )
+        cd = resp.headers.get("content-disposition", "")
+        assert "stats_2026-01-01_2026-12-31.xlsx" in cd
+
+
+# ---------------------------------------------------------------------------
+# Upload rate limiter persistence tests (#300)
+# ---------------------------------------------------------------------------
+
+
+class TestUploadRateLimiterPersistence:
+    """Rate limiter with SQLite persistence survives reinstantiation (#300)."""
+
+    def test_rate_limit_survives_reinstantiation(self, tmp_path):
+        from worship_catalog.web.app import _UploadRateLimiter, _UPLOAD_RATE_LIMIT
+        db_path = tmp_path / "rate_limits.db"
+        limiter1 = _UploadRateLimiter(db_path=db_path)
+        for _ in range(_UPLOAD_RATE_LIMIT):
+            allowed, _ = limiter1.is_allowed("192.168.1.1")
+            assert allowed
+        allowed, _ = limiter1.is_allowed("192.168.1.1")
+        assert not allowed
+
+        # Re-instantiate (simulates process restart)
+        limiter2 = _UploadRateLimiter(db_path=db_path)
+        allowed, _ = limiter2.is_allowed("192.168.1.1")
+        assert not allowed
+
+    def test_rate_limit_different_ips_independent(self, tmp_path):
+        from worship_catalog.web.app import _UploadRateLimiter, _UPLOAD_RATE_LIMIT
+        db_path = tmp_path / "rate_limits.db"
+        limiter = _UploadRateLimiter(db_path=db_path)
+        for _ in range(_UPLOAD_RATE_LIMIT):
+            limiter.is_allowed("1.1.1.1")
+        allowed, _ = limiter.is_allowed("1.1.1.1")
+        assert not allowed
+        allowed, _ = limiter.is_allowed("2.2.2.2")
+        assert allowed

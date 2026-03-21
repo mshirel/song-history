@@ -48,18 +48,16 @@ worship-catalog cleanup find-duplicates --db data/worship.db
 
 ## Docker Usage
 
-On the Pi (production), run commands inside the container:
+Use the `cli` service defined in `compose.yml`. It mounts `./data:/data` but
+the CLI `--db` flag defaults to `data/worship.db` (a relative path that does
+not exist inside the container). Always pass `--db /data/worship.db`:
 
 ```bash
 # Using the cli compose service (volumes pre-configured)
-docker compose run --rm cli cleanup find-duplicates
-docker compose run --rm cli cleanup delete-service --date 0000-00-00 --yes
-docker compose run --rm cli cleanup orphaned-songs --dry-run
-docker compose run --rm cli cleanup orphaned-songs --yes
-
-# Or using docker compose exec on the running service
-docker compose exec song-history worship-catalog cleanup find-duplicates --db /data/worship.db
-docker compose exec song-history worship-catalog cleanup delete-service --id 30 --db /data/worship.db --yes
+docker compose run --rm cli worship-catalog cleanup find-duplicates --db /data/worship.db
+docker compose run --rm cli worship-catalog cleanup delete-service --date 0000-00-00 --db /data/worship.db --yes
+docker compose run --rm cli worship-catalog cleanup orphaned-songs --db /data/worship.db --dry-run
+docker compose run --rm cli worship-catalog cleanup orphaned-songs --db /data/worship.db --yes
 ```
 
 ## Re-import Workflow
@@ -71,13 +69,13 @@ After fixing a bug that caused bad data, follow this workflow:
 /opt/song-history/scripts/backup.sh /opt/song-history/data/worship.db /opt/song-history/backups-usb
 
 # 2. Delete the bad services
-docker compose run --rm cli cleanup delete-service --date 0000-00-00 --yes
+docker compose run --rm cli worship-catalog cleanup delete-service --date 0000-00-00 --db /data/worship.db --yes
 
 # 3. Re-import the affected files
-docker compose run --rm cli import /inbox/"AM Worship 2025.09.28.pptx"
+docker compose run --rm cli worship-catalog import /inbox/"AM Worship 2025.09.28.pptx" --db /data/worship.db
 
 # 4. Clean up orphaned songs left behind
-docker compose run --rm cli cleanup orphaned-songs --yes
+docker compose run --rm cli worship-catalog cleanup orphaned-songs --db /data/worship.db --yes
 ```
 
 ## Safety

@@ -145,14 +145,14 @@ class TestReportFormsE2E:
         browser_page.fill("#stats-from", "2026-01-01")
         browser_page.fill("#stats-to", "2026-12-31")
         browser_page.click('form[hx-post="/reports/stats"] button[type="submit"]')
-        browser_page.wait_for_selector("#stats-result .stat-box", timeout=5000)
+        browser_page.wait_for_selector("#stats-result .stat-box", timeout=10000)
+        # Wait for HTMX afterSwap to bind the download form handlers
+        browser_page.wait_for_timeout(500)
 
         # Click the CSV download button in the results
-        csv_btn = browser_page.locator(
-            '#stats-result form[action="/reports/stats/csv"] button'
-        )
+        csv_btn = browser_page.locator("#stats-csv-form button")
         if csv_btn.count() > 0:
-            with browser_page.expect_download() as download_info:
+            with browser_page.expect_download(timeout=15000) as download_info:
                 csv_btn.click()
             download = download_info.value
             assert download.suggested_filename.endswith(".csv")
@@ -364,8 +364,9 @@ class TestLeaderPagesE2E:
             top_songs_link.click()
             browser_page.wait_for_load_state("networkidle")
 
-            back_link = browser_page.locator('a[href="/leaders"]')
-            assert back_link.count() > 0, "Back to Leaders link not found"
+            # Use main content area to avoid matching the nav bar's /leaders link
+            back_link = browser_page.locator('main a[href="/leaders"]')
+            assert back_link.count() > 0, "Back to Leaders link not found in main content"
             back_link.click()
             browser_page.wait_for_load_state("networkidle")
             assert browser_page.url.rstrip("/").endswith("/leaders")

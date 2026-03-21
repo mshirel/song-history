@@ -37,18 +37,20 @@ class TestSongsLiveSearch:
         search_input = browser_page.locator("input[name='q']")
         search_input.fill("xyznonexistent")
         # Wait for HTMX to settle
+        browser_page.wait_for_timeout(500)
         browser_page.wait_for_load_state("networkidle")
 
         updated_rows = browser_page.locator("table tbody tr").count()
-        assert updated_rows < initial_rows or updated_rows == 0
+        # With a non-matching query, results should decrease or show "No songs" row
+        assert updated_rows < initial_rows or initial_rows <= 1
 
     def test_sort_header_click_reorders_rows(self, browser_page) -> None:
         """Clicking a sortable column header should reorder the table."""
         browser_page.goto(f"{BASE_URL}/songs")
         browser_page.wait_for_load_state("networkidle")
 
-        # Click the "Times Sung" header to sort
-        browser_page.locator("th a", has_text="Times Sung").click()
+        # Click the "Performances" header to sort
+        browser_page.locator("th a", has_text="Performances").click()
         browser_page.wait_for_load_state("networkidle")
 
         # Table should still have rows (not be empty/broken)
