@@ -484,3 +484,69 @@ class TestOcrModelConstant:
 
         assert isinstance(_MAX_OCR_TOKENS, int)
         assert _MAX_OCR_TOKENS > 0
+
+
+class TestValidateOcrOutput:
+    """Tests for _validate_ocr_output (#339)."""
+
+    def test_rejects_long_text(self):
+        from worship_catalog.ocr import _validate_ocr_output
+        assert _validate_ocr_output("Words: " + "A" * 300) is None
+
+    def test_rejects_no_credits_keywords(self):
+        from worship_catalog.ocr import _validate_ocr_output
+        assert _validate_ocr_output("Hello World") is None
+
+    def test_rejects_no_name_pattern(self):
+        from worship_catalog.ocr import _validate_ocr_output
+        assert _validate_ocr_output("Words by the congregation") is None
+
+    def test_accepts_valid_credits(self):
+        from worship_catalog.ocr import _validate_ocr_output
+        result = _validate_ocr_output("Words: John Newton / Music: Traditional Hymn")
+        assert result is not None
+        assert "John Newton" in result
+
+    def test_accepts_arranger_credits(self):
+        from worship_catalog.ocr import _validate_ocr_output
+        result = _validate_ocr_output("Arr. Ken Young")
+        assert result is not None
+
+
+class TestExtractCreditsViaVision:
+    """Tests for the Vision API call with mocked client (#339)."""
+
+    def test_returns_none_when_api_says_none(self, monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+        msg = MagicMock()
+        msg.content = [MagicMock(text="none")]
+        mock_client = MagicMock()
+        mock_client.messages.create.return_value = msg
+        mock_anthropic = MagicMock()
+        mock_anthropic.Anthropic.return_value = mock_client
+        mock_anthropic.RateLimitError = type("RateLimitError", (Exception,), {})
+        mock_anthropic.APIStatusError = type("APIStatusError", (Exception,), {})
+        monkeypatch.setitem(sys.modules, "anthropic", mock_anthropic)
+        # Re-import to pick up the mock
+        result = extract_credits_via_vision(b"\xff\xd8fake-jpeg")
+        assert result is None
+
+    def test_returns_validated_credits(self, monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+        msg = MagicMock()
+        msg.content = [MagicMock(text="Words: John Newton / Music: Traditional")]
+        mock_client = MagicMock()
+        mock_client.messages.create.return_value = msg
+        mock_anthropic = MagicMock()
+        mock_anthropic.Anthropic.return_value = mock_client
+        mock_anthropic.RateLimitError = type("RateLimitError", (Exception,), {})
+        mock_anthropic.APIStatusError = type("APIStatusError", (Exception,), {})
+        monkeypatch.setitem(sys.modules, "anthropic", mock_anthropic)
+        result = extract_credits_via_vision(b"\xff\xd8fake-jpeg")
+        assert result is not None
+        assert "John Newton" in result
+
+    def test_raises_without_api_key(self, monkeypatch):
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        with pytest.raises(OSError, match="ANTHROPIC_API_KEY"):
+            extract_credits_via_vision(b"\xff\xd8fake")

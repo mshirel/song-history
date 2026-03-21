@@ -2378,3 +2378,40 @@ class TestLikeEscaping:
         rows, total = temp_db.query_songs_paginated(search="test_")
         assert total == 1
         assert rows[0]["canonical_title"] == "test_song"
+
+
+@pytest.mark.integration
+class TestPurgeValidation:
+    """Tests for purge_old_import_jobs parameter validation (#338)."""
+
+    @pytest.fixture
+    def temp_db(self):
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "test.db"
+            db = Database(db_path)
+            db.connect()
+            db.init_schema()
+            yield db
+            db.close()
+
+    def test_negative_days_raises(self, temp_db):
+        with pytest.raises(ValueError, match="days must be"):
+            temp_db.purge_old_import_jobs(days=-1)
+
+    def test_zero_days_purges_old(self, temp_db):
+        temp_db.create_import_job("j1", "f.pptx", started_at="2020-01-01T00:00:00Z")
+        temp_db.purge_old_import_jobs(days=0)
+        assert temp_db.list_import_jobs() == []
+
+    def test_positive_days_keeps_recent(self, temp_db):
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc).isoformat()
+        temp_db.create_import_job("j1", "f.pptx", started_at=now)
+        temp_db.purge_old_import_jobs(days=1)
+        assert len(temp_db.list_import_jobs()) == 1
+
+    def test_keep_overrides_days_validation(self, temp_db):
+        """keep=N mode should not trigger days validation."""
+        temp_db.create_import_job("j1", "f.pptx", started_at="2020-01-01T00:00:00Z")
+        temp_db.purge_old_import_jobs(days=-999, keep=1)  # no error
+        assert len(temp_db.list_import_jobs()) == 1

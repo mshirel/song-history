@@ -7,6 +7,46 @@ Each review produces GitHub issues for every significant finding.
 
 ---
 
+## Review 9 — 2026-03-21
+
+**Branch:** `main`
+**Reviewer:** Claude Code (full-code-review skill)
+**Issues created:** #335–#344
+
+### Findings
+
+| Issue | Persona | Title | Severity |
+|-------|---------|-------|----------|
+| #335 | Accessibility | Report form checkbox and date inputs missing accessible error feedback | MED |
+| #336 | Accessibility | Services table empty action header and missing captions on detail tables | MED |
+| #337 | Accessibility | stat-box label and badge-missing colors have marginal WCAG AA contrast | MED |
+| #338 | Developer | purge_old_import_jobs accepts negative days parameter without validation | LOW |
+| #339 | QA | No dedicated test file for ocr.py Vision API module | MED |
+| #340 | QA | test_report_service.py has minimal assertions — leader filter and date boundaries untested | MED |
+| #341 | Developer | _UploadRateLimiter reopens SQLite connection on every rate-limit check | LOW |
+| #342 | Accessibility | Pagination links missing aria-label for screen reader context | LOW |
+| #343 | Database | query_services uses SELECT * pulling all columns including source_file path | LOW |
+| #344 | DevOps | CSRF_SECRET generated randomly on startup — breaks multi-process deployments | MED |
+
+### Grades
+
+| Persona | Grade | Notes |
+|---------|-------|-------|
+| Senior Architect | A | Excellent module separation; CreditResolver, import_service, report_service abstractions are clean and well-bounded |
+| Senior Developer | A- | Clean code, strong typing, good error handling; minor purge validation and rate limiter efficiency gaps |
+| Senior DevOps | A | Comprehensive CI with E2E, smoke test, lockfile verification, Trivy scanning; CSRF_SECRET startup logging needed |
+| Senior Security Architect | A | CSP, CSRF, parameterized queries, ZIP magic bytes, LIKE escaping all solid; no injection vectors found |
+| Senior DevSecOps | A | SHA-pinned actions, Trivy scan-before-push, SBOM baseline, gitleaks, pip-audit; lockfile used in all jobs |
+| Senior QA Engineer | A- | 1,007 tests with strong markers and fixtures; OCR module and report service need deeper test coverage |
+| Product Manager | A- | Functional features, good reporting, upload progress feedback; only deferred items remain |
+| UAT Analyst | A- | 38+ Playwright tests cover upload, download, CSRF, navigation; good scenario coverage |
+| Accessibility Specialist | B+ | Skip-nav, aria-sort, aria-live, labels, captions present; contrast and form feedback gaps remain |
+| Database / Data Engineer | A- | WAL mode, indexes, migrations, parameterized queries; SELECT * in web queries and rate limiter connection churn are minor |
+
+**Overall: A-**
+
+---
+
 ## Review 8 — 2026-03-21
 
 **Branch:** `fix/qa-sweep`

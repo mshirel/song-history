@@ -2,6 +2,9 @@
 
 import pytest
 
+from worship_catalog.db import Database
+from worship_catalog.services.report_service import compute_stats_data
+
 
 class TestReportService:
     @pytest.fixture
@@ -102,3 +105,79 @@ class TestReportService:
         assert "James Last" in credits, (
             f"Arranger should appear in credits string, got: {credits!r}"
         )
+
+
+class TestComputeStatsDataExtended:
+    """Extended tests for compute_stats_data (#340)."""
+
+    @pytest.fixture
+    def seeded_db(self, tmp_path):
+        db = Database(tmp_path / "test.db")
+        db.connect()
+        db.init_schema()
+        s1 = db.insert_or_get_song("song a", "Song A")
+        s2 = db.insert_or_get_song("song b", "Song B")
+        svc1 = db.insert_or_update_service(
+            "2026-01-10", "AM", "a.pptx", "h1", song_leader="Matt"
+        )
+        svc2 = db.insert_or_update_service(
+            "2026-01-17", "AM", "b.pptx", "h2", song_leader="John"
+        )
+        db.insert_service_song(svc1, s1, ordinal=1)
+        db.insert_service_song(svc1, s2, ordinal=2)
+        db.insert_service_song(svc2, s1, ordinal=1)
+        db.insert_or_get_copy_event(svc1, s1, "projection")
+        db.insert_or_get_copy_event(svc1, s2, "projection")
+        db.insert_or_get_copy_event(svc2, s1, "projection")
+        yield db
+        db.close()
+
+    def test_leader_filter_returns_only_matching(self, seeded_db):
+        data = compute_stats_data(seeded_db, "2020-01-01", "2030-12-31", "Matt", False)
+        assert len(data["services"]) == 1
+        assert data["services"][0]["song_leader"] == "Matt"
+
+    def test_leader_filter_excludes_others(self, seeded_db):
+        data = compute_stats_data(seeded_db, "2020-01-01", "2030-12-31", "Matt", False)
+        leaders = [s["song_leader"] for s in data["services"]]
+        assert "John" not in leaders
+
+    def test_all_songs_false_limits_to_top_20(self, tmp_path):
+        db = Database(tmp_path / "top20.db")
+        db.connect()
+        db.init_schema()
+        svc = db.insert_or_update_service("2026-01-01", "AM", "a.pptx", "h1")
+        for i in range(25):
+            sid = db.insert_or_get_song(f"song {i}", f"Song {i}")
+            db.insert_service_song(svc, sid, ordinal=i + 1)
+            db.insert_or_get_copy_event(svc, sid, "projection")
+        data = compute_stats_data(db, "2020-01-01", "2030-12-31", None, False)
+        assert len(data["sorted_songs"]) == 20
+        db.close()
+
+    def test_all_songs_true_returns_all(self, tmp_path):
+        db = Database(tmp_path / "all.db")
+        db.connect()
+        db.init_schema()
+        svc = db.insert_or_update_service("2026-01-01", "AM", "a.pptx", "h1")
+        for i in range(25):
+            sid = db.insert_or_get_song(f"song {i}", f"Song {i}")
+            db.insert_service_song(svc, sid, ordinal=i + 1)
+            db.insert_or_get_copy_event(svc, sid, "projection")
+        data = compute_stats_data(db, "2020-01-01", "2030-12-31", None, True)
+        assert len(data["sorted_songs"]) == 25
+        db.close()
+
+    def test_date_boundary_includes_exact_match(self, seeded_db):
+        data = compute_stats_data(seeded_db, "2026-01-10", "2026-01-10", None, False)
+        assert len(data["services"]) == 1
+        assert data["services"][0]["service_date"] == "2026-01-10"
+
+    def test_leader_breakdown_present_when_no_filter(self, seeded_db):
+        data = compute_stats_data(seeded_db, "2020-01-01", "2030-12-31", None, False)
+        assert "Matt" in data["leader_breakdown"]
+        assert "John" in data["leader_breakdown"]
+
+    def test_leader_breakdown_empty_when_filter_set(self, seeded_db):
+        data = compute_stats_data(seeded_db, "2020-01-01", "2030-12-31", "Matt", False)
+        assert data["leader_breakdown"] == {}

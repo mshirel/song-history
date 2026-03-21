@@ -46,14 +46,15 @@
     </div>
     <div style="margin-bottom:0.75rem;">
       <label for="stats-leader" style="display:block;font-size:0.8rem;font-weight:600;color:#495057;margin-bottom:0.25rem;">
-        Filter by Song Leader <span style="font-weight:400;color:#6c757d;">(optional — partial match)</span>
+        Filter by Song Leader
       </label>
-      <input type="text" id="stats-leader" name="leader" placeholder="e.g. Matt" style="width:100%;max-width:320px;">
+      <input type="text" id="stats-leader" name="leader" placeholder="e.g. Matt" style="width:100%;max-width:320px;" aria-describedby="leader-help">
+      <span id="leader-help" style="font-size:0.75rem;color:#6c757d;">Optional — partial match</span>
     </div>
     <div style="display:flex;align-items:center;gap:1rem;flex-wrap:wrap;">
       <button type="submit">Generate</button>
-      <label style="font-size:0.85rem;display:flex;align-items:center;gap:0.4rem;">
-        <input type="checkbox" name="all_songs" value="true"> Show all songs (not just top 20)
+      <label for="all-songs" style="font-size:0.85rem;display:flex;align-items:center;gap:0.4rem;">
+        <input type="checkbox" id="all-songs" name="all_songs" value="true"> Show all songs (not just top 20)
       </label>
       <span id="stats-spinner" class="htmx-indicator" style="color:#6c757d;font-size:0.85rem;">loading…</span>
     </div>
