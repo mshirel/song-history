@@ -42,8 +42,16 @@ def strip_title_prefix(line: str) -> str:
         prefix_match = re.match(r'^\s*([\dA-Za-z][\dA-Za-z-]{0,3})', stripped)
         if prefix_match:
             prefix = prefix_match.group(1)
-            # Accept if: has dash, starts with digit, or is letter+digits (like V1, C2, V1a)
-            if '-' in prefix or prefix[0].isdigit() or re.match(r'^[A-Za-z]\d', prefix):
+            # Accept if: has dash, starts with digit (but NOT "N. Text" patterns
+            # which are sermon outlines #314), or is letter+digits (like V1, C2, V1a)
+            is_sermon_outline = (
+                prefix[0].isdigit()
+                and re.match(r'^\s*\d+\.\s', stripped) is not None
+            )
+            if not is_sermon_outline and (
+                '-' in prefix or prefix[0].isdigit()
+                or re.match(r'^[A-Za-z]\d', prefix)
+            ):
                 stripped = match.group(1).strip()
                 return _normalize_whitespace(stripped)
 
@@ -125,10 +133,11 @@ def select_best_title(candidates: list[str]) -> str | None:
     return min(normalized, key=len)
 
 
-# Scripture reference pattern: "John 3:16", "1 Peter 1:3-4", "2 Corinthians 4:7", "Psalm 23:1-3"
-# Matches: optional numeric book prefix + book name + chapter:verse[-verse]
+# Scripture reference pattern: "John 3:16", "1 Peter 1:3-4", "MICAH 6:6 – 8"
+# Matches: optional numeric book prefix + book name + chapter:verse[(-|–|—) verse]
+# Accepts hyphens, en-dashes, em-dashes, and optional spaces around the separator (#313).
 _SCRIPTURE_RE = re.compile(
-    r"^(1|2|3)?\s*[A-Za-z][a-z]+(\s[A-Za-z][a-z]+)?\s+\d{1,3}:\d{1,3}(-\d{1,3})?$",
+    r"^(1|2|3)?\s*[A-Za-z][a-z]+(\s[A-Za-z][a-z]+)?\s+\d{1,3}:\d{1,3}(\s*[-–—]\s*\d{1,3})?$",
     re.IGNORECASE,
 )
 

@@ -926,6 +926,17 @@ async def upload(
             break
         chunks.append(chunk)
     content = b"".join(chunks)
+    # Validate ZIP magic bytes — PPTX is a ZIP archive (PK\x03\x04) (#320)
+    if len(content) < 4 or content[:4] != b"PK\x03\x04":
+        send_pushover(
+            title="Upload rejected",
+            message=f"{filename} — not a valid PPTX (bad magic bytes)",
+            priority=-1,
+        )
+        return JSONResponse(
+            content={"detail": "File is not a valid PPTX archive"},
+            status_code=400,
+        )
     if total_read > MAX_UPLOAD_BYTES:
         limit_mb = MAX_UPLOAD_BYTES // (1024 * 1024)
         send_pushover(

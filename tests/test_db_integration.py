@@ -2319,3 +2319,62 @@ class TestDatabaseIndexes:
         cursor = temp_db.cursor()
         cursor.execute("PRAGMA user_version")
         assert cursor.fetchone()[0] == 2
+
+
+@pytest.mark.integration
+class TestSortDirValidation:
+    """Tests for _safe_sort_dir validation (#316)."""
+
+    @pytest.fixture
+    def temp_db(self):
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "test.db"
+            db = Database(db_path)
+            db.connect()
+            db.init_schema()
+            yield db
+            db.close()
+
+    def test_valid_asc(self, temp_db):
+        from worship_catalog.db import _safe_sort_dir
+        assert _safe_sort_dir("asc") == "ASC"
+
+    def test_valid_desc(self, temp_db):
+        from worship_catalog.db import _safe_sort_dir
+        assert _safe_sort_dir("DESC") == "DESC"
+
+    def test_invalid_sort_dir_raises(self, temp_db):
+        from worship_catalog.db import _safe_sort_dir
+        with pytest.raises(ValueError, match="Invalid sort direction"):
+            _safe_sort_dir("DROP TABLE songs;")
+
+
+@pytest.mark.integration
+class TestLikeEscaping:
+    """Tests for LIKE pattern escaping (#319)."""
+
+    @pytest.fixture
+    def temp_db(self):
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "test.db"
+            db = Database(db_path)
+            db.connect()
+            db.init_schema()
+            yield db
+            db.close()
+
+    def test_search_percent_in_query_does_not_match_all(self, temp_db):
+        """A search containing '%' should not match everything."""
+        temp_db.insert_or_get_song("amazing grace", "Amazing Grace")
+        temp_db.insert_or_get_song("how great", "How Great Thou Art")
+        rows, total = temp_db.query_songs_paginated(search="%")
+        # '%' should not match any real titles (it's escaped)
+        assert total == 0
+
+    def test_search_underscore_in_query_literal(self, temp_db):
+        """A search containing '_' should match literally, not as wildcard."""
+        temp_db.insert_or_get_song("test_song", "Test_Song")
+        temp_db.insert_or_get_song("testing", "Testing")
+        rows, total = temp_db.query_songs_paginated(search="test_")
+        assert total == 1
+        assert rows[0]["canonical_title"] == "test_song"

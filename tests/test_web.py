@@ -2092,10 +2092,15 @@ class TestUploadInboxCleanup:
         reload(app_module)
         client = CsrfAwareClient(TestClient(app_module.app))
 
-        # Upload a garbage PPTX that will fail extraction
+        # Upload a valid ZIP (passes magic bytes check) but not a real PPTX (fails extraction)
+        import zipfile
+        bad_zip = io.BytesIO()
+        with zipfile.ZipFile(bad_zip, "w") as zf:
+            zf.writestr("dummy.txt", "not a pptx")
+        bad_zip.seek(0)
         resp = client.post(
             "/upload",
-            files={"file": ("bad.pptx", io.BytesIO(b"not a real pptx"), VALID_PPTX_MIME)},
+            files={"file": ("bad.pptx", bad_zip, VALID_PPTX_MIME)},
         )
         assert resp.status_code == 202
         job_id = resp.json()["job_id"]
@@ -3363,3 +3368,26 @@ class TestLogoContrast:
         # Logo CSS should include background for contrast
         assert "brand-logo" in resp.text
         assert "background:" in resp.text or "background-color:" in resp.text
+
+
+# ---------------------------------------------------------------------------
+# Upload magic bytes validation (#320)
+# ---------------------------------------------------------------------------
+
+
+class TestUploadMagicBytes:
+    """Upload endpoint should reject files that aren't ZIP archives (#320)."""
+
+    def test_upload_rejects_non_zip_content(self, client):
+        """A file with correct MIME and extension but wrong content should be rejected."""
+        fake_content = b"This is not a ZIP file at all"
+        resp = client.post(
+            "/upload",
+            files={"file": (
+                "fake.pptx",
+                io.BytesIO(fake_content),
+                "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            )},
+        )
+        assert resp.status_code == 400
+        assert "not a valid PPTX" in resp.json()["detail"]
