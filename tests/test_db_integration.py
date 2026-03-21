@@ -1764,3 +1764,252 @@ class TestInsertCopyEventDeprecation:
             f"insert_or_get_copy_event must return same id for duplicate insert, "
             f"got {id1} and {id2}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Web query methods moved to Database (#166)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+class TestQuerySongsPaginated:
+    """Tests for Database.query_songs_paginated (#166)."""
+
+    @pytest.fixture
+    def temp_db(self):
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "test.db"
+            db = Database(db_path)
+            db.connect()
+            db.init_schema()
+            yield db
+            db.close()
+
+    def test_returns_songs_with_performance_count(self, temp_db):
+        song_id = temp_db.insert_or_get_song("amazing grace", "Amazing Grace")
+        service_id = temp_db.insert_or_update_service(
+            "2026-01-01", "AM Worship", "test.pptx", "abc", song_leader="Matt"
+        )
+        temp_db.insert_service_song(service_id, song_id, ordinal=1)
+        rows, total = temp_db.query_songs_paginated()
+        assert total == 1
+        assert rows[0]["performance_count"] == 1
+
+    def test_search_filters_by_title(self, temp_db):
+        temp_db.insert_or_get_song("amazing grace", "Amazing Grace")
+        temp_db.insert_or_get_song("holy holy holy", "Holy Holy Holy")
+        rows, total = temp_db.query_songs_paginated(search="amazing")
+        assert total == 1
+        assert rows[0]["display_title"] == "Amazing Grace"
+
+    def test_search_filters_by_credits(self, temp_db):
+        song_id = temp_db.insert_or_get_song("amazing grace", "Amazing Grace")
+        temp_db.insert_or_get_song_edition(song_id, words_by="John Newton")
+        rows, total = temp_db.query_songs_paginated(search="Newton")
+        assert total == 1
+
+    def test_pagination(self, temp_db):
+        for i in range(5):
+            temp_db.insert_or_get_song(f"song {i}", f"Song {i}")
+        rows, total = temp_db.query_songs_paginated(page=1, per_page=2)
+        assert total == 5
+        assert len(rows) == 2
+        rows2, _ = temp_db.query_songs_paginated(page=2, per_page=2)
+        assert len(rows2) == 2
+
+    def test_sort_by_display_title(self, temp_db):
+        temp_db.insert_or_get_song("b song", "B Song")
+        temp_db.insert_or_get_song("a song", "A Song")
+        rows, _ = temp_db.query_songs_paginated(sort="display_title", sort_dir="asc")
+        assert rows[0]["display_title"] == "A Song"
+
+    def test_invalid_sort_column_raises(self, temp_db):
+        with pytest.raises(ValueError, match="Invalid sort column"):
+            temp_db.query_songs_paginated(sort="DROP TABLE songs")
+
+    def test_empty_database(self, temp_db):
+        rows, total = temp_db.query_songs_paginated()
+        assert total == 0
+        assert rows == []
+
+
+@pytest.mark.integration
+class TestQueryAllServicesPaginated:
+    """Tests for Database.query_all_services_paginated (#166)."""
+
+    @pytest.fixture
+    def temp_db(self):
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "test.db"
+            db = Database(db_path)
+            db.connect()
+            db.init_schema()
+            yield db
+            db.close()
+
+    def test_returns_services_with_song_count(self, temp_db):
+        sid = temp_db.insert_or_update_service(
+            "2026-01-01", "AM", "f.pptx", "h1", song_leader="Alice"
+        )
+        song_id = temp_db.insert_or_get_song("test song", "Test Song")
+        temp_db.insert_service_song(sid, song_id, ordinal=1)
+        rows, total = temp_db.query_all_services_paginated()
+        assert total == 1
+        assert rows[0]["song_count"] == 1
+
+    def test_filter_by_leader(self, temp_db):
+        temp_db.insert_or_update_service("2026-01-01", "AM", "f.pptx", "h1", song_leader="Alice")
+        temp_db.insert_or_update_service("2026-01-08", "PM", "g.pptx", "h2", song_leader="Bob")
+        rows, total = temp_db.query_all_services_paginated(q_leader="Alice")
+        assert total == 1
+        assert rows[0]["song_leader"] == "Alice"
+
+    def test_filter_by_date_range(self, temp_db):
+        temp_db.insert_or_update_service("2026-01-01", "AM", "f.pptx", "h1")
+        temp_db.insert_or_update_service("2026-06-01", "AM", "g.pptx", "h2")
+        rows, total = temp_db.query_all_services_paginated(
+            start_date="2026-05-01", end_date="2026-07-01"
+        )
+        assert total == 1
+
+    def test_invalid_sort_column_raises(self, temp_db):
+        with pytest.raises(ValueError, match="Invalid sort column"):
+            temp_db.query_all_services_paginated(sort="malicious")
+
+    def test_empty_database(self, temp_db):
+        rows, total = temp_db.query_all_services_paginated()
+        assert total == 0
+        assert rows == []
+
+
+@pytest.mark.integration
+class TestQuerySongById:
+    """Tests for Database.query_song_by_id (#166)."""
+
+    @pytest.fixture
+    def temp_db(self):
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "test.db"
+            db = Database(db_path)
+            db.connect()
+            db.init_schema()
+            yield db
+            db.close()
+
+    def test_returns_song(self, temp_db):
+        song_id = temp_db.insert_or_get_song("amazing grace", "Amazing Grace")
+        result = temp_db.query_song_by_id(song_id)
+        assert result is not None
+        assert result["display_title"] == "Amazing Grace"
+
+    def test_returns_none_for_missing(self, temp_db):
+        assert temp_db.query_song_by_id(99999) is None
+
+
+@pytest.mark.integration
+class TestQuerySongEditions:
+    """Tests for Database.query_song_editions (#166)."""
+
+    @pytest.fixture
+    def temp_db(self):
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "test.db"
+            db = Database(db_path)
+            db.connect()
+            db.init_schema()
+            yield db
+            db.close()
+
+    def test_returns_editions_for_song(self, temp_db):
+        song_id = temp_db.insert_or_get_song("amazing grace", "Amazing Grace")
+        temp_db.insert_or_get_song_edition(song_id, words_by="John Newton")
+        editions = temp_db.query_song_editions(song_id)
+        assert len(editions) == 1
+        assert editions[0]["words_by"] == "John Newton"
+
+    def test_returns_empty_for_no_editions(self, temp_db):
+        song_id = temp_db.insert_or_get_song("new song", "New Song")
+        assert temp_db.query_song_editions(song_id) == []
+
+
+@pytest.mark.integration
+class TestQuerySongServices:
+    """Tests for Database.query_song_services (#166)."""
+
+    @pytest.fixture
+    def temp_db(self):
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "test.db"
+            db = Database(db_path)
+            db.connect()
+            db.init_schema()
+            yield db
+            db.close()
+
+    def test_returns_services_for_song(self, temp_db):
+        song_id = temp_db.insert_or_get_song("amazing grace", "Amazing Grace")
+        service_id = temp_db.insert_or_update_service(
+            "2026-01-01", "AM", "f.pptx", "h1", song_leader="Matt"
+        )
+        temp_db.insert_service_song(service_id, song_id, ordinal=1)
+        services = temp_db.query_song_services(song_id)
+        assert len(services) == 1
+        assert services[0]["service_date"] == "2026-01-01"
+        assert services[0]["song_leader"] == "Matt"
+
+    def test_returns_empty_for_unplayed_song(self, temp_db):
+        song_id = temp_db.insert_or_get_song("new song", "New Song")
+        assert temp_db.query_song_services(song_id) == []
+
+
+@pytest.mark.integration
+class TestQueryServiceById:
+    """Tests for Database.query_service_by_id (#166)."""
+
+    @pytest.fixture
+    def temp_db(self):
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "test.db"
+            db = Database(db_path)
+            db.connect()
+            db.init_schema()
+            yield db
+            db.close()
+
+    def test_returns_service(self, temp_db):
+        sid = temp_db.insert_or_update_service("2026-01-01", "AM", "f.pptx", "h1")
+        result = temp_db.query_service_by_id(sid)
+        assert result is not None
+        assert result["service_date"] == "2026-01-01"
+
+    def test_returns_none_for_missing(self, temp_db):
+        assert temp_db.query_service_by_id(99999) is None
+
+
+@pytest.mark.integration
+class TestQueryServiceSongs:
+    """Tests for Database.query_service_songs (#166)."""
+
+    @pytest.fixture
+    def temp_db(self):
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "test.db"
+            db = Database(db_path)
+            db.connect()
+            db.init_schema()
+            yield db
+            db.close()
+
+    def test_returns_songs_for_service(self, temp_db):
+        song_id = temp_db.insert_or_get_song("amazing grace", "Amazing Grace")
+        edition_id = temp_db.insert_or_get_song_edition(song_id, words_by="John Newton")
+        service_id = temp_db.insert_or_update_service("2026-01-01", "AM", "f.pptx", "h1")
+        temp_db.insert_service_song(service_id, song_id, ordinal=1, song_edition_id=edition_id)
+        songs = temp_db.query_service_songs(service_id)
+        assert len(songs) == 1
+        assert songs[0]["display_title"] == "Amazing Grace"
+        assert songs[0]["words_by"] == "John Newton"
+
+    def test_returns_empty_for_empty_service(self, temp_db):
+        sid = temp_db.insert_or_update_service("2026-01-01", "AM", "f.pptx", "h1")
+        assert temp_db.query_service_songs(sid) == []
