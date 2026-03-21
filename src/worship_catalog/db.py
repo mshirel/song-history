@@ -857,3 +857,189 @@ class Database:
                 (threshold,),
             )
         self._maybe_commit()
+
+    # ------------------------------------------------------------------
+    # Web query methods (moved from web/app.py — #166)
+    # ------------------------------------------------------------------
+
+    _SONGS_SORT_COLS: frozenset[str] = frozenset(
+        {"display_title", "words_by", "music_by", "arranger", "performance_count"}
+    )
+    _SERVICES_SORT_COLS: frozenset[str] = frozenset(
+        {"service_date", "service_name", "song_leader", "preacher", "song_count"}
+    )
+
+    def query_songs_paginated(
+        self,
+        search: str | None = None,
+        sort: str = "performance_count",
+        sort_dir: str = "desc",
+        page: int = 1,
+        per_page: int = 50,
+    ) -> tuple[list[dict[str, Any]], int]:
+        """Return songs with performance count, optionally filtered and sorted."""
+        sort = _safe_order_by(sort, self._SONGS_SORT_COLS)
+        order = f"{sort} {sort_dir.upper()}, s.display_title"
+        cursor = self._conn.cursor()
+        base = """
+            SELECT s.id, s.display_title, s.canonical_title,
+                   se.words_by, se.music_by, se.arranger,
+                   COUNT(DISTINCT ss.service_id) AS performance_count
+            FROM songs s
+            LEFT JOIN song_editions se ON se.song_id = s.id
+            LEFT JOIN service_songs ss ON ss.song_id = s.id
+        """
+        count_base = """
+            SELECT COUNT(DISTINCT s.id)
+            FROM songs s
+            LEFT JOIN song_editions se ON se.song_id = s.id
+            LEFT JOIN service_songs ss ON ss.song_id = s.id
+        """
+        offset = (page - 1) * per_page
+        if search:
+            like = f"%{search}%"
+            where = """
+                WHERE LOWER(s.display_title) LIKE LOWER(?)
+                   OR LOWER(COALESCE(se.words_by, '')) LIKE LOWER(?)
+                   OR LOWER(COALESCE(se.music_by, '')) LIKE LOWER(?)
+            """
+            cursor.execute(count_base + where, (like, like, like))
+            total: int = cursor.fetchone()[0]
+            cursor.execute(
+                base + where + "GROUP BY s.id ORDER BY " + order + " LIMIT ? OFFSET ?",
+                (like, like, like, per_page, offset),
+            )
+        else:
+            cursor.execute(count_base)
+            total = cursor.fetchone()[0]
+            cursor.execute(
+                base + "GROUP BY s.id ORDER BY " + order + " LIMIT ? OFFSET ?",
+                (per_page, offset),
+            )
+        return [dict(row) for row in cursor.fetchall()], total
+
+    def query_all_services_paginated(
+        self,
+        sort: str = "service_date",
+        sort_dir: str = "desc",
+        q_service: str = "",
+        q_leader: str = "",
+        q_preacher: str = "",
+        q_sermon: str = "",
+        start_date: str = "",
+        end_date: str = "",
+        page: int = 1,
+        per_page: int = 50,
+    ) -> tuple[list[dict[str, Any]], int]:
+        """Return services with optional filtering, sorting, and pagination."""
+        where_clauses: list[str] = []
+        params: list[Any] = []
+        if q_service:
+            where_clauses.append("LOWER(sv.service_name) LIKE LOWER(?)")
+            params.append(f"%{q_service}%")
+        if q_leader:
+            where_clauses.append("LOWER(COALESCE(sv.song_leader,'')) LIKE LOWER(?)")
+            params.append(f"%{q_leader}%")
+        if q_preacher:
+            where_clauses.append("LOWER(COALESCE(sv.preacher,'')) LIKE LOWER(?)")
+            params.append(f"%{q_preacher}%")
+        if q_sermon:
+            where_clauses.append("LOWER(COALESCE(sv.sermon_title,'')) LIKE LOWER(?)")
+            params.append(f"%{q_sermon}%")
+        if start_date:
+            where_clauses.append("sv.service_date >= ?")
+            params.append(start_date)
+        if end_date:
+            where_clauses.append("sv.service_date <= ?")
+            params.append(end_date)
+
+        where_sql = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
+        sort = _safe_order_by(sort, self._SERVICES_SORT_COLS)
+        order = f"{sort} {sort_dir.upper()}, sv.service_name"
+        offset = (page - 1) * per_page
+        cursor = self._conn.cursor()
+        cursor.execute(
+            f"SELECT COUNT(DISTINCT sv.id) FROM services sv {where_sql}",
+            params,
+        )
+        total: int = cursor.fetchone()[0]
+        cursor.execute(
+            f"""
+            SELECT sv.*, COUNT(DISTINCT ss.song_id) AS song_count
+            FROM services sv
+            LEFT JOIN service_songs ss ON ss.service_id = sv.id
+            {where_sql}
+            GROUP BY sv.id
+            ORDER BY {order}
+            LIMIT ? OFFSET ?
+            """,
+            params + [per_page, offset],
+        )
+        return [dict(row) for row in cursor.fetchall()], total
+
+    def query_song_by_id(self, song_id: int) -> dict[str, Any] | None:
+        """Return a single song row or None."""
+        cursor = self._conn.cursor()
+        cursor.execute("SELECT * FROM songs WHERE id = ?", (song_id,))
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+    def query_song_editions(self, song_id: int) -> list[dict[str, Any]]:
+        """Return all editions for a song."""
+        cursor = self._conn.cursor()
+        cursor.execute(
+            "SELECT * FROM song_editions WHERE song_id = ? ORDER BY id",
+            (song_id,),
+        )
+        return [dict(row) for row in cursor.fetchall()]
+
+    def query_song_services(self, song_id: int) -> list[dict[str, Any]]:
+        """Return all services where a song was performed."""
+        cursor = self._conn.cursor()
+        cursor.execute(
+            """
+            SELECT sv.id AS service_id, sv.service_date, sv.service_name, sv.song_leader,
+                   ss.ordinal,
+                   GROUP_CONCAT(DISTINCT ce.reproduction_type) AS copy_types
+            FROM services sv
+            JOIN service_songs ss ON ss.service_id = sv.id
+            LEFT JOIN copy_events ce ON ce.service_id = sv.id
+                                     AND ce.song_id = ss.song_id
+                                     AND ce.reportable = 1
+            WHERE ss.song_id = ?
+            GROUP BY sv.id
+            ORDER BY sv.service_date DESC
+            """,
+            (song_id,),
+        )
+        return [dict(row) for row in cursor.fetchall()]
+
+    def query_service_by_id(self, service_id: int) -> dict[str, Any] | None:
+        """Return a single service row or None."""
+        cursor = self._conn.cursor()
+        cursor.execute("SELECT * FROM services WHERE id = ?", (service_id,))
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+    def query_service_songs(self, service_id: int) -> list[dict[str, Any]]:
+        """Return songs for a service in setlist order, with full credits."""
+        cursor = self._conn.cursor()
+        cursor.execute(
+            """
+            SELECT ss.ordinal, ss.occurrences,
+                   s.id AS song_id, s.display_title, s.canonical_title,
+                   se.publisher, se.words_by, se.music_by, se.arranger, se.copyright_notice,
+                   GROUP_CONCAT(ce.reproduction_type, ', ') AS copy_types
+            FROM service_songs ss
+            JOIN songs s ON ss.song_id = s.id
+            LEFT JOIN song_editions se ON ss.song_edition_id = se.id
+            LEFT JOIN copy_events ce ON ce.service_id = ss.service_id
+                                     AND ce.song_id = ss.song_id
+                                     AND ce.reportable = 1
+            WHERE ss.service_id = ?
+            GROUP BY ss.id
+            ORDER BY ss.ordinal
+            """,
+            (service_id,),
+        )
+        return [dict(row) for row in cursor.fetchall()]

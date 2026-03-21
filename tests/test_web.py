@@ -1526,6 +1526,123 @@ class TestBackgroundImportPersistsSongsToDB:
             f"found {song_count} song rows after import"
         )
 
+    def test_upload_creates_copy_events(self, tmp_path, monkeypatch, minimal_pptx_bytes):
+        """After a successful upload, projection and recording copy events must exist (#176)."""
+        client, db_path = self._make_upload_client(tmp_path, monkeypatch)
+
+        resp = client.post(
+            "/upload",
+            files={"file": ("AM Worship 2026.01.04.pptx", io.BytesIO(minimal_pptx_bytes), VALID_PPTX_MIME)},
+        )
+        assert resp.status_code == 202
+        job_id = resp.json()["job_id"]
+
+        import time
+        deadline = time.monotonic() + 5.0
+        status = "pending"
+        while time.monotonic() < deadline and status not in ("complete", "failed"):
+            status = client.get(f"/jobs/{job_id}").json()["status"]
+            time.sleep(0.05)
+        assert status == "complete"
+
+        _db = Database(db_path)
+        _db.connect()
+        events = _db.query_copy_events("0000-01-01", "9999-12-31")
+        _db.close()
+        types = {e["reproduction_type"] for e in events}
+        assert "projection" in types, (
+            "Background import must create 'projection' copy events"
+        )
+
+    def test_upload_idempotent_reimport(self, tmp_path, monkeypatch, minimal_pptx_bytes):
+        """Uploading the same PPTX twice must not create duplicate services (#176)."""
+        client, db_path = self._make_upload_client(tmp_path, monkeypatch)
+
+        import time
+
+        def upload_and_wait():
+            resp = client.post(
+                "/upload",
+                files={"file": ("AM Worship 2026.01.04.pptx", io.BytesIO(minimal_pptx_bytes), VALID_PPTX_MIME)},
+            )
+            job_id = resp.json()["job_id"]
+            deadline = time.monotonic() + 5.0
+            status = "pending"
+            while time.monotonic() < deadline and status not in ("complete", "failed"):
+                status = client.get(f"/jobs/{job_id}").json()["status"]
+                time.sleep(0.05)
+            return status
+
+        s1 = upload_and_wait()
+        assert s1 == "complete"
+        s2 = upload_and_wait()
+        assert s2 == "complete"
+
+        _db = Database(db_path)
+        _db.connect()
+        services = _db.query_services("2026-01-01", "2026-12-31")
+        _db.close()
+        assert len(services) == 1, (
+            f"Expected 1 service after idempotent re-import, got {len(services)}"
+        )
+
+    def test_upload_persists_service_songs_join(self, tmp_path, monkeypatch, minimal_pptx_bytes):
+        """service_songs rows must link the imported song to its service (#176)."""
+        client, db_path = self._make_upload_client(tmp_path, monkeypatch)
+
+        resp = client.post(
+            "/upload",
+            files={"file": ("AM Worship 2026.01.04.pptx", io.BytesIO(minimal_pptx_bytes), VALID_PPTX_MIME)},
+        )
+        job_id = resp.json()["job_id"]
+
+        import time
+        deadline = time.monotonic() + 5.0
+        status = "pending"
+        while time.monotonic() < deadline and status not in ("complete", "failed"):
+            status = client.get(f"/jobs/{job_id}").json()["status"]
+            time.sleep(0.05)
+        assert status == "complete"
+
+        _db = Database(db_path)
+        _db.connect()
+        cursor = _db.cursor()
+        cursor.execute("SELECT COUNT(*) FROM service_songs")
+        count = cursor.fetchone()[0]
+        _db.close()
+        assert count > 0, (
+            "service_songs must contain rows linking songs to the service"
+        )
+
+    def test_upload_songs_imported_count_matches_db(self, tmp_path, monkeypatch, minimal_pptx_bytes):
+        """Job record songs_imported must match actual songs in DB (#176)."""
+        client, db_path = self._make_upload_client(tmp_path, monkeypatch)
+
+        resp = client.post(
+            "/upload",
+            files={"file": ("AM Worship 2026.01.04.pptx", io.BytesIO(minimal_pptx_bytes), VALID_PPTX_MIME)},
+        )
+        job_id = resp.json()["job_id"]
+
+        import time
+        deadline = time.monotonic() + 5.0
+        status = "pending"
+        while time.monotonic() < deadline and status not in ("complete", "failed"):
+            status = client.get(f"/jobs/{job_id}").json()["status"]
+            time.sleep(0.05)
+        assert status == "complete"
+
+        job = client.get(f"/jobs/{job_id}").json()
+        _db = Database(db_path)
+        _db.connect()
+        cursor = _db.cursor()
+        cursor.execute("SELECT COUNT(*) FROM songs")
+        song_count = cursor.fetchone()[0]
+        _db.close()
+        assert job["songs_imported"] == song_count, (
+            f"Job says {job['songs_imported']} songs imported but DB has {song_count}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Issue #112: Contract tests for Content-Disposition filename format
@@ -1720,12 +1837,13 @@ class TestDownloadFilenameContract:
 
 
 # ---------------------------------------------------------------------------
-# Issue #132 — ORDER BY whitelist guard inside _query_songs / _query_all_services
+# Issue #132 — ORDER BY whitelist guard inside query_songs_paginated / query_all_services_paginated
+# Methods moved from app.py to Database (#166)
 # ---------------------------------------------------------------------------
 
 
 class TestQuerySongsInternalWhitelist:
-    """_query_songs() must validate sort column internally — issue #132."""
+    """Database.query_songs_paginated() must validate sort column — issue #132."""
 
     @pytest.fixture
     def temp_db(self, tmp_path):
@@ -1737,40 +1855,35 @@ class TestQuerySongsInternalWhitelist:
         db.close()
 
     def test_valid_sort_col_works(self, temp_db):
-        """Passing a valid sort column to _query_songs succeeds without error."""
-        from worship_catalog.web.app import _query_songs
-        # Should not raise
-        rows, total = _query_songs(temp_db, sort="display_title", sort_dir="asc")
+        """Passing a valid sort column succeeds without error."""
+        rows, total = temp_db.query_songs_paginated(sort="display_title", sort_dir="asc")
         assert isinstance(rows, list)
 
     def test_invalid_sort_col_raises_value_error(self, temp_db):
-        """Passing an invalid sort column directly to _query_songs raises ValueError."""
-        from worship_catalog.web.app import _query_songs
+        """Invalid sort column raises ValueError."""
         with pytest.raises(ValueError, match="Invalid sort column"):
-            _query_songs(temp_db, sort="not_a_real_column")
+            temp_db.query_songs_paginated(sort="not_a_real_column")
 
     def test_sql_injection_sort_raises_value_error(self, temp_db):
-        """SQL injection string as sort column is rejected by _query_songs."""
-        from worship_catalog.web.app import _query_songs
+        """SQL injection string as sort column is rejected."""
         with pytest.raises(ValueError):
-            _query_songs(temp_db, sort="title; DROP TABLE songs--")
+            temp_db.query_songs_paginated(sort="title; DROP TABLE songs--")
 
     def test_empty_sort_col_raises_value_error(self, temp_db):
         """Empty string sort column is rejected."""
-        from worship_catalog.web.app import _query_songs
         with pytest.raises(ValueError):
-            _query_songs(temp_db, sort="")
+            temp_db.query_songs_paginated(sort="")
 
     def test_all_valid_songs_sort_cols_work(self, temp_db):
         """Every column in _SONGS_SORT_COLS must be accepted without error."""
-        from worship_catalog.web.app import _query_songs, _SONGS_SORT_COLS
-        for col in _SONGS_SORT_COLS:
-            rows, total = _query_songs(temp_db, sort=col)
+        from worship_catalog.db import Database
+        for col in Database._SONGS_SORT_COLS:
+            rows, total = temp_db.query_songs_paginated(sort=col)
             assert isinstance(rows, list), f"Column {col!r} failed unexpectedly"
 
 
 class TestQueryServicesInternalWhitelist:
-    """_query_all_services() must validate sort column internally — issue #132."""
+    """Database.query_all_services_paginated() must validate sort column — issue #132."""
 
     @pytest.fixture
     def temp_db(self, tmp_path):
@@ -1782,28 +1895,25 @@ class TestQueryServicesInternalWhitelist:
         db.close()
 
     def test_valid_sort_col_works(self, temp_db):
-        """Passing a valid sort column to _query_all_services succeeds."""
-        from worship_catalog.web.app import _query_all_services
-        rows, total = _query_all_services(temp_db, sort="service_date", sort_dir="asc")
+        """Passing a valid sort column succeeds."""
+        rows, total = temp_db.query_all_services_paginated(sort="service_date", sort_dir="asc")
         assert isinstance(rows, list)
 
     def test_invalid_sort_col_raises_value_error(self, temp_db):
-        """Invalid sort column to _query_all_services raises ValueError."""
-        from worship_catalog.web.app import _query_all_services
+        """Invalid sort column raises ValueError."""
         with pytest.raises(ValueError, match="Invalid sort column"):
-            _query_all_services(temp_db, sort="not_valid_col")
+            temp_db.query_all_services_paginated(sort="not_valid_col")
 
     def test_sql_injection_sort_raises_value_error(self, temp_db):
-        """SQL injection string as sort column raises ValueError in _query_all_services."""
-        from worship_catalog.web.app import _query_all_services
+        """SQL injection string as sort column raises ValueError."""
         with pytest.raises(ValueError):
-            _query_all_services(temp_db, sort="service_date; DROP TABLE services--")
+            temp_db.query_all_services_paginated(sort="service_date; DROP TABLE services--")
 
     def test_all_valid_services_sort_cols_work(self, temp_db):
         """Every column in _SERVICES_SORT_COLS must be accepted without error."""
-        from worship_catalog.web.app import _query_all_services, _SERVICES_SORT_COLS
-        for col in _SERVICES_SORT_COLS:
-            rows, total = _query_all_services(temp_db, sort=col)
+        from worship_catalog.db import Database
+        for col in Database._SERVICES_SORT_COLS:
+            rows, total = temp_db.query_all_services_paginated(sort=col)
             assert isinstance(rows, list), f"Column {col!r} failed unexpectedly"
 
 
@@ -2457,3 +2567,55 @@ class TestGetDbSchemaInit:
                 assert app_module._schema_ready
 
         app_module._schema_ready = False
+
+
+# ---------------------------------------------------------------------------
+# Issue #179 — Empty state messages for first-run experience
+# ---------------------------------------------------------------------------
+
+
+class TestEmptyStateMessages:
+    """Empty DB pages must show onboarding guidance, not just blank tables (#179)."""
+
+    @pytest.fixture
+    def empty_client(self, tmp_path, monkeypatch):
+        db_path = tmp_path / "empty.db"
+        db = Database(db_path)
+        db.connect()
+        db.init_schema()
+        db.close()
+
+        monkeypatch.setenv("DB_PATH", str(db_path))
+        monkeypatch.setenv("INBOX_DIR", str(tmp_path / "inbox"))
+        (tmp_path / "inbox").mkdir()
+        from importlib import reload
+        import worship_catalog.web.app as app_module
+        reload(app_module)
+        return TestClient(app_module.app)
+
+    def test_songs_page_shows_empty_state_when_db_empty(self, empty_client):
+        """Songs page must show a helpful message when no songs have been imported."""
+        resp = empty_client.get("/songs")
+        assert resp.status_code == 200
+        body = resp.text.lower()
+        assert any(kw in body for kw in [
+            "no songs yet", "import", "get started", "upload",
+        ]), "Songs page must show an empty-state onboarding message when no data exists"
+
+    def test_services_page_shows_empty_state_when_db_empty(self, empty_client):
+        """Services page must show a helpful message when no services have been imported."""
+        resp = empty_client.get("/services")
+        assert resp.status_code == 200
+        body = resp.text.lower()
+        assert any(kw in body for kw in [
+            "no services yet", "import", "get started", "upload",
+        ]), "Services page must show an empty-state onboarding message when no data exists"
+
+    def test_leaders_page_shows_empty_state_when_db_empty(self, empty_client):
+        """Leaders page must show a helpful message when no leaders have been imported."""
+        resp = empty_client.get("/leaders")
+        assert resp.status_code == 200
+        body = resp.text.lower()
+        assert any(kw in body for kw in [
+            "no leaders yet", "import", "get started", "upload",
+        ]), "Leaders page must show an empty-state onboarding message when no data exists"

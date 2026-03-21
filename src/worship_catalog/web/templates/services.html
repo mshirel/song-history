@@ -68,6 +68,14 @@
 </th>
 {% endmacro %}
 
+{% if total == 0 and not q_service and not q_leader and not q_preacher and not q_sermon and not start_date and not end_date %}
+<div class="card" style="text-align:center;padding:2rem;">
+  <h2>No services yet</h2>
+  <p>Import your first worship service to get started.</p>
+  <p>Upload a PPTX file on the <a href="/reports">Reports</a> page, or run:</p>
+  <p><code>worship-catalog import "AM Worship 2026.01.01.pptx"</code></p>
+</div>
+{% else %}
 <div class="card" style="padding:0;overflow:hidden;">
   <table>
     <thead>
@@ -86,6 +94,7 @@
     </tbody>
   </table>
 </div>
+{% endif %}
 
 {% if total_pages > 1 %}
 <div class="pagination">
