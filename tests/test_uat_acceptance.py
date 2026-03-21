@@ -10,22 +10,18 @@ Covers:
 
 These tests require:
 1. Playwright installed: pip install playwright && playwright install chromium
-2. A running server: uvicorn worship_catalog.web.app:app --host 0.0.0.0 --port 8000
+2. A running server (or set E2E_BASE_URL env var):
+   uvicorn worship_catalog.web.app:app --host 0.0.0.0 --port 8000
 
 Run with:
     python3 -m pytest tests/test_uat_acceptance.py -v
 
 Skip in CI / normal test runs:
     python3 -m pytest -m "not e2e"
-
-These tests WILL skip in CI (no running server) -- that is expected and correct.
-They are designed to be run manually against a live instance.
 """
 
 from __future__ import annotations
 
-import socket
-from collections.abc import Generator
 from typing import Any
 
 import pytest
@@ -33,37 +29,8 @@ import pytest
 # Skip entire module if playwright is not installed
 pytest.importorskip("playwright", reason="playwright not installed -- run: pip install playwright")
 
-BASE_URL = "http://localhost:8000"
-
-
-def _server_is_running() -> bool:
-    """Return True if the server at BASE_URL is accepting connections."""
-    try:
-        with socket.create_connection(("localhost", 8000), timeout=1):
-            return True
-    except (ConnectionRefusedError, OSError):
-        return False
-
-
-_server_available = _server_is_running()
-
-
-@pytest.fixture(scope="module")
-def browser_page() -> Generator[Any, None, None]:
-    """Launch a Chromium browser and yield a page. Skip if server not running."""
-    if not _server_available:
-        pytest.skip(
-            "No server running at http://localhost:8000 -- start the server to run UAT tests"
-        )
-
-    from playwright.sync_api import sync_playwright
-
-    with sync_playwright() as p:
-        browser = p.chromium.launch()
-        page = browser.new_page()
-        yield page
-        browser.close()
-
+# browser_page fixture and BASE_URL come from conftest.py
+from tests.conftest import E2E_BASE_URL as BASE_URL
 
 # ---------------------------------------------------------------------------
 # #242 -- Upload form E2E
