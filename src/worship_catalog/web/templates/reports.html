@@ -3,6 +3,27 @@
 {% block content %}
 <h1>Generate Reports</h1>
 
+<!-- CCLI Compliance Report -->
+<div class="card" style="margin-bottom:1.5rem;">
+  <h2>CCLI Compliance Report <small style="font-weight:400;color:#6c757d;font-size:0.85rem">(CSV download)</small></h2>
+  <p style="font-size:0.85rem;color:#495057;margin-bottom:0.75rem;">
+    Generate the CSV report of song reproductions required for CCLI licence compliance.
+  </p>
+  <form method="post" action="/reports/ccli">
+    <div class="form-grid" style="margin-bottom:0.75rem;">
+      <div>
+        <label for="ccli-from">From</label>
+        <input type="date" id="ccli-from" name="start_date" required>
+      </div>
+      <div>
+        <label for="ccli-to">To</label>
+        <input type="date" id="ccli-to" name="end_date" required>
+      </div>
+    </div>
+    <button type="submit">Download CSV</button>
+  </form>
+</div>
+
 <!-- Stats Report -->
 <div class="card">
   <h2>Song Statistics <small style="font-weight:400;color:#6c757d;font-size:0.85rem">(view in browser)</small></h2>
