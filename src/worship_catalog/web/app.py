@@ -101,6 +101,11 @@ app = FastAPI(title="Worship Catalog", lifespan=_lifespan)
 # responses are logged correctly. Secret is read from env; a random value is
 # generated on first start (sufficient for a single-process deployment).
 _CSRF_SECRET = os.environ.get("CSRF_SECRET") or secrets.token_hex(32)
+if not os.environ.get("CSRF_SECRET"):
+    _log.warning(
+        "CSRF_SECRET not set — using random secret (single-process only). "
+        "Set CSRF_SECRET in .env for multi-process or load-balanced deployments."
+    )
 # cookie_name is set explicitly so the coupling with client-side JS
 # (upload.js, reports.js) and CsrfAwareClient in conftest.py is visible (#239).
 app.add_middleware(
@@ -248,6 +253,7 @@ class _UploadRateLimiter:
     def __init__(self, db_path: Path | None = None) -> None:
         self._lock = threading.Lock()
         self._db_path = db_path
+        self._conn: Any = None  # persistent SQLite connection (#341)
         # In-memory fallback when no db_path is given
         self._timestamps: dict[str, list[float]] = defaultdict(list)
         if db_path is not None:
@@ -258,52 +264,44 @@ class _UploadRateLimiter:
     def _init_db(self) -> None:
         import sqlite3
 
-        conn = sqlite3.connect(self._db_path)  # type: ignore[arg-type]
-        try:
-            conn.execute(self._CREATE_TABLE)
-            conn.execute(self._CREATE_INDEX)
-            conn.commit()
-        finally:
-            conn.close()
+        self._conn = sqlite3.connect(self._db_path, check_same_thread=False)  # type: ignore[arg-type]
+        self._conn.execute(self._CREATE_TABLE)
+        self._conn.execute(self._CREATE_INDEX)
+        self._conn.commit()
 
     def _db_is_allowed(self, client_ip: str) -> tuple[bool, int]:
-        import sqlite3
-
         now = time.time()
         window_start = now - _UPLOAD_RATE_WINDOW_SECONDS
 
-        conn = sqlite3.connect(self._db_path)  # type: ignore[arg-type]
-        try:
-            # Prune expired entries for this IP
-            conn.execute(
-                "DELETE FROM rate_limit_events WHERE client_ip = ? AND timestamp <= ?",
-                (client_ip, window_start),
-            )
-            row = conn.execute(
-                "SELECT COUNT(*) FROM rate_limit_events WHERE client_ip = ? AND timestamp > ?",
+        conn = self._conn
+        # Prune expired entries for this IP
+        conn.execute(
+            "DELETE FROM rate_limit_events WHERE client_ip = ? AND timestamp <= ?",
+            (client_ip, window_start),
+        )
+        row = conn.execute(
+            "SELECT COUNT(*) FROM rate_limit_events WHERE client_ip = ? AND timestamp > ?",
+            (client_ip, window_start),
+        ).fetchone()
+        count = row[0] if row else 0
+
+        if count >= _UPLOAD_RATE_LIMIT:
+            oldest_row = conn.execute(
+                "SELECT MIN(timestamp) FROM rate_limit_events "
+                "WHERE client_ip = ? AND timestamp > ?",
                 (client_ip, window_start),
             ).fetchone()
-            count = row[0] if row else 0
-
-            if count >= _UPLOAD_RATE_LIMIT:
-                oldest_row = conn.execute(
-                    "SELECT MIN(timestamp) FROM rate_limit_events "
-                    "WHERE client_ip = ? AND timestamp > ?",
-                    (client_ip, window_start),
-                ).fetchone()
-                oldest_ts = oldest_row[0] if oldest_row and oldest_row[0] else now
-                retry_after = int(oldest_ts - window_start) + 1
-                conn.commit()
-                return False, max(retry_after, 1)
-
-            conn.execute(
-                "INSERT INTO rate_limit_events (client_ip, timestamp) VALUES (?, ?)",
-                (client_ip, now),
-            )
+            oldest_ts = oldest_row[0] if oldest_row and oldest_row[0] else now
+            retry_after = int(oldest_ts - window_start) + 1
             conn.commit()
-            return True, 0
-        finally:
-            conn.close()
+            return False, max(retry_after, 1)
+
+        conn.execute(
+            "INSERT INTO rate_limit_events (client_ip, timestamp) VALUES (?, ?)",
+            (client_ip, now),
+        )
+        conn.commit()
+        return True, 0
 
     def _mem_is_allowed(self, client_ip: str) -> tuple[bool, int]:
         now = time.monotonic()

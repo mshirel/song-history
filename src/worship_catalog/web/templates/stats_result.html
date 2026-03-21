@@ -42,12 +42,13 @@
 
 <h3 style="font-size:1rem;margin:1rem 0 0.5rem;">{% if all_songs %}All Songs{% else %}Top Songs{% endif %}</h3>
 <table>
+  <caption class="sr-only">{% if all_songs %}All songs{% else %}Top songs{% endif %} by performance count</caption>
   <thead>
     <tr>
-      <th>#</th>
-      <th>Song</th>
-      <th>Credits</th>
-      <th style="text-align:right">Count</th>
+      <th scope="col">#</th>
+      <th scope="col">Song</th>
+      <th scope="col">Credits</th>
+      <th scope="col" style="text-align:right">Count</th>
     </tr>
   </thead>
   <tbody>

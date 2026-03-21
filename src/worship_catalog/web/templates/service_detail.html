@@ -53,15 +53,16 @@
 {% else %}
 <div class="card" style="padding:0;overflow:hidden;">
   <table>
+    <caption class="sr-only">Setlist for {{ service.service_name }} on {{ service.service_date }}</caption>
     <thead>
       <tr>
-        <th style="width:2.5rem;">#</th>
-        <th>Song</th>
-        <th>Words By</th>
-        <th>Music By</th>
-        <th>Arranger</th>
-        <th>Publisher</th>
-        <th>Reproductions</th>
+        <th scope="col" style="width:2.5rem;">#</th>
+        <th scope="col">Song</th>
+        <th scope="col">Words By</th>
+        <th scope="col">Music By</th>
+        <th scope="col">Arranger</th>
+        <th scope="col">Publisher</th>
+        <th scope="col">Reproductions</th>
       </tr>
     </thead>
     <tbody>

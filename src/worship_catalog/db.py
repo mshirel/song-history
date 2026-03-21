@@ -580,10 +580,14 @@ class Database:
     ) -> list[dict]:
         """Query services by date range, with optional case-insensitive song leader filter."""
         cursor = self._conn.cursor()
+        _svc_cols = (
+            "id, service_date, service_name, song_leader, preacher,"
+            " sermon_title, source_hash, imported_at"
+        )
         if song_leader:
             cursor.execute(
-                """
-                SELECT * FROM services
+                f"""
+                SELECT {_svc_cols} FROM services
                 WHERE service_date >= ? AND service_date <= ?
                   AND LOWER(song_leader) LIKE LOWER(?) ESCAPE '\\'
                 ORDER BY service_date
@@ -592,8 +596,8 @@ class Database:
             )
         else:
             cursor.execute(
-                """
-                SELECT * FROM services
+                f"""
+                SELECT {_svc_cols} FROM services
                 WHERE service_date >= ? AND service_date <= ?
                 ORDER BY service_date
                 """,
@@ -899,8 +903,9 @@ class Database:
                   many days.
             keep: If specified, keep only this many jobs (newest first).
         """
+        if keep is None and days < 0:
+            raise ValueError(f"days must be >= 0, got {days}")
         if keep is not None:
-            # Delete all jobs except the *keep* newest by started_at.
             # Use a sub-select to identify the IDs to keep, then delete the rest.
             self._conn.execute(
                 """

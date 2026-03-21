@@ -93,7 +93,7 @@
         {{ sort_th("Preacher", "preacher") }}
         <th scope="col">Sermon</th>
         {{ sort_th("Songs", "song_count", align="right") }}
-        <th scope="col"></th>
+        <th scope="col"><span class="sr-only">Actions</span></th>
       </tr>
     </thead>
     <tbody id="services-tbody">
@@ -106,11 +106,11 @@
 {% if total_pages > 1 %}
 <div class="pagination">
   {% if page > 1 %}
-    <a href="/services?page={{ page - 1 }}&per_page={{ per_page }}&sort={{ sort }}&sort_dir={{ sort_dir }}&q_service={{ q_service | urlencode }}&q_leader={{ q_leader | urlencode }}&q_preacher={{ q_preacher | urlencode }}&q_sermon={{ q_sermon | urlencode }}&start_date={{ start_date }}&end_date={{ end_date }}">← Prev</a>
+    <a href="/services?page={{ page - 1 }}&per_page={{ per_page }}&sort={{ sort }}&sort_dir={{ sort_dir }}&q_service={{ q_service | urlencode }}&q_leader={{ q_leader | urlencode }}&q_preacher={{ q_preacher | urlencode }}&q_sermon={{ q_sermon | urlencode }}&start_date={{ start_date }}&end_date={{ end_date }}" aria-label="Previous page">← Prev</a>
   {% endif %}
   <span>Page {{ page }} of {{ total_pages }}</span>
   {% if page < total_pages %}
-    <a href="/services?page={{ page + 1 }}&per_page={{ per_page }}&sort={{ sort }}&sort_dir={{ sort_dir }}&q_service={{ q_service | urlencode }}&q_leader={{ q_leader | urlencode }}&q_preacher={{ q_preacher | urlencode }}&q_sermon={{ q_sermon | urlencode }}&start_date={{ start_date }}&end_date={{ end_date }}">Next →</a>
+    <a href="/services?page={{ page + 1 }}&per_page={{ per_page }}&sort={{ sort }}&sort_dir={{ sort_dir }}&q_service={{ q_service | urlencode }}&q_leader={{ q_leader | urlencode }}&q_preacher={{ q_preacher | urlencode }}&q_sermon={{ q_sermon | urlencode }}&start_date={{ start_date }}&end_date={{ end_date }}" aria-label="Next page">Next →</a>
   {% endif %}
 </div>
 {% endif %}
