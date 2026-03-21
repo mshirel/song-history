@@ -625,6 +625,9 @@ def repair_credits(
             )
             ocr_budget = OcrBudget(max_calls=None if unlimited_ocr else max_ocr_calls)
 
+        # Cache parsed slides per source file to avoid reloading the same PPTX (#293)
+        _slide_cache: dict[str, list[Any]] = {}
+
         updated = 0
         for row in missing:
             title = row["display_title"]
@@ -659,8 +662,11 @@ def repair_credits(
                                     err=True,
                                 )
                                 continue
-                            prs = load_pptx(source_file)
-                            all_slides = parse_all_slides(prs)
+                            # Reuse cached slides for the same source file (#293)
+                            if source_file not in _slide_cache:
+                                prs = load_pptx(source_file)
+                                _slide_cache[source_file] = parse_all_slides(prs)
+                            all_slides = _slide_cache[source_file]
                             song_slides = [
                                 s for s in all_slides[1:]
                                 if any(canonical in line.lower() for line in s.text.text_lines)

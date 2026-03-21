@@ -379,3 +379,71 @@ class TestLeaderPagesE2E:
         browser_page.wait_for_load_state("networkidle")
         assert response.status == 200, f"/leaders returned status {response.status}"
         assert not errors, f"JS errors on /leaders: {errors}"
+
+
+# ---------------------------------------------------------------------------
+# #303 -- CCLI CSV download end-to-end
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.e2e
+class TestCcliDownloadE2E:
+    """UAT for #303: CCLI CSV download must work in a real browser."""
+
+    def test_ccli_download_produces_csv(self, browser_page: Any) -> None:
+        """Fill CCLI form, submit, verify CSV download occurs."""
+        browser_page.goto(f"{BASE_URL}/reports")
+        browser_page.wait_for_load_state("networkidle")
+
+        browser_page.fill("#ccli-from", "2020-01-01")
+        browser_page.fill("#ccli-to", "2030-12-31")
+
+        with browser_page.expect_download(timeout=15000) as download_info:
+            browser_page.click('#ccli-form button[type="submit"]')
+
+        download = download_info.value
+        assert download.suggested_filename.startswith("ccli_report_")
+        assert download.suggested_filename.endswith(".csv")
+
+    def test_ccli_download_has_csrf_cookie(self, browser_page: Any) -> None:
+        """CSRF cookie must be set on /reports for the JS to read."""
+        browser_page.goto(f"{BASE_URL}/reports")
+        browser_page.wait_for_load_state("networkidle")
+        cookies = browser_page.context.cookies()
+        assert any(c["name"] == "csrftoken" for c in cookies)
+
+
+# ---------------------------------------------------------------------------
+# #304 -- Upload workflow end-to-end
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.e2e
+class TestUploadWorkflowE2E:
+    """UAT for #304: full upload workflow in a real browser."""
+
+    def test_upload_form_loads(self, browser_page: Any) -> None:
+        """Upload page loads with form and CSRF cookie."""
+        browser_page.goto(f"{BASE_URL}/upload")
+        browser_page.wait_for_load_state("networkidle")
+        assert browser_page.locator("#upload-form").is_visible()
+        cookies = browser_page.context.cookies()
+        assert any(c["name"] == "csrftoken" for c in cookies)
+
+    def test_upload_invalid_file_shows_error_in_result(self, browser_page: Any) -> None:
+        """Uploading a non-PPTX file shows an error in the result div."""
+        browser_page.goto(f"{BASE_URL}/upload")
+        browser_page.wait_for_load_state("networkidle")
+
+        browser_page.set_input_files('input[type="file"]', {
+            "name": "bad.txt",
+            "mimeType": "text/plain",
+            "buffer": b"not a pptx",
+        })
+        browser_page.click('button[type="submit"]')
+        browser_page.wait_for_timeout(2000)
+
+        result_text = browser_page.text_content("#upload-result") or ""
+        assert "failed" in result_text.lower() or "pptx" in result_text.lower(), (
+            f"Expected error for non-PPTX file, got: {result_text}"
+        )

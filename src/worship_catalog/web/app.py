@@ -51,6 +51,13 @@ _log = logging.getLogger("worship_catalog.web")
 
 # Bounded thread pool for background import jobs (#52)
 # Declared here (before lifespan) so the lifespan can shut it down gracefully (#135).
+#
+# Shutdown timeline (#295):
+#   SIGTERM → uvicorn stops accepting connections → lifespan __aexit__ fires
+#   → _shutdown_executor waits up to _EXECUTOR_SHUTDOWN_TIMEOUT seconds
+#   → compose stop_grace_period (35s) > timeout (30s), so SIGKILL comes after
+#   → SQLite WAL mode recovers automatically if SIGKILL hits mid-write
+#   Requires init:true in compose.yml (#289) so SIGTERM reaches uvicorn.
 _MAX_IMPORT_WORKERS: int = 4
 _EXECUTOR_SHUTDOWN_TIMEOUT: int = 30  # seconds to wait for in-flight jobs before giving up
 _import_executor = ThreadPoolExecutor(max_workers=_MAX_IMPORT_WORKERS)
@@ -192,6 +199,20 @@ _PPTX_MIME = (
 # Per-client upload rate limiting (#173)
 _UPLOAD_RATE_LIMIT: int = 10  # max uploads per window
 _UPLOAD_RATE_WINDOW_SECONDS: int = 3600  # 1 hour
+# Env-configurable trusted proxy header (#283).  When TRUSTED_PROXY=1 the rate
+# limiter reads the leftmost X-Forwarded-For value so that clients behind a
+# reverse proxy are identified individually instead of all sharing one bucket.
+_TRUST_PROXY: bool = os.environ.get("TRUSTED_PROXY", "").strip() in ("1", "true", "yes")
+
+
+def _get_client_ip(request: Request) -> str:
+    """Return the real client IP, respecting X-Forwarded-For if trusted (#283)."""
+    if _TRUST_PROXY:
+        xff = request.headers.get("x-forwarded-for", "")
+        if xff:
+            # Leftmost entry is the original client IP
+            return xff.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
 
 
 class _UploadRateLimiter:
@@ -766,14 +787,25 @@ def _run_import_in_background(job_id: str, pptx_path: Path) -> None:
     try:
         result = run_import(db, pptx_path)
 
-        db.update_import_job(
-            job_id, status="complete", songs_imported=result.songs_imported
-        )
-        _notify_title = "Import complete"
-        _notify_message = (
-            f"{pptx_path.name} — {result.songs_imported} songs imported"
-        )
-        _notify_priority = 0
+        if result.songs_imported == 0:
+            db.update_import_job(
+                job_id,
+                status="complete",
+                songs_imported=0,
+                error_message="No songs found — file may not be a worship slide deck",
+            )
+            _notify_title = "Import complete (0 songs)"
+            _notify_message = f"{pptx_path.name} — no songs found"
+            _notify_priority = -1
+        else:
+            db.update_import_job(
+                job_id, status="complete", songs_imported=result.songs_imported
+            )
+            _notify_title = "Import complete"
+            _notify_message = (
+                f"{pptx_path.name} — {result.songs_imported} songs imported"
+            )
+            _notify_priority = 0
     except Exception as exc:  # noqa: BLE001
         # update_import_job runs outside the transaction block — commits even on rollback
         db.update_import_job(
@@ -817,8 +849,9 @@ async def upload(
     db: Database = Depends(get_db),  # noqa: B008
 ) -> JSONResponse:
     """Accept a PPTX file, create an import job, and kick off background import."""
-    # Rate limiting (#173) — check before reading the body to save bandwidth
-    client_ip = request.client.host if request.client else "unknown"
+    # Rate limiting (#173) — check before reading the body to save bandwidth.
+    # Prefer X-Forwarded-For when behind a reverse proxy (#283).
+    client_ip = _get_client_ip(request)
     allowed, retry_after = _upload_limiter.is_allowed(client_ip)
     if not allowed:
         _log.warning(
