@@ -41,30 +41,30 @@ def client(db_with_songs, tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-class TestHtmxSriIntegrity:
-    def test_htmx_script_has_sri_integrity_attribute(self, client):
-        """HTMX CDN script tag must include integrity= for SRI protection."""
+class TestHtmxSelfHosted:
+    """htmx is self-hosted (#196) — no CDN references, no SRI needed."""
+
+    def test_htmx_script_is_self_hosted(self, client):
+        """HTMX script tag must reference our own /static/ path, not a CDN."""
         resp = client.get("/songs")
         assert resp.status_code == 200
-        assert 'integrity="sha384-' in resp.text, (
-            "HTMX <script> tag is missing SRI integrity attribute (sha384-...)"
+        assert "/static/htmx.min.js" in resp.text, (
+            "HTMX <script> tag should reference /static/htmx.min.js"
+        )
+        assert "unpkg.com" not in resp.text, (
+            "HTMX should not be loaded from unpkg CDN"
         )
 
-    def test_htmx_script_has_crossorigin_anonymous(self, client):
-        """HTMX CDN script tag must include crossorigin=anonymous for SRI to work."""
-        resp = client.get("/songs")
-        assert resp.status_code == 200
-        assert 'crossorigin="anonymous"' in resp.text, (
-            "HTMX <script> tag is missing crossorigin=\"anonymous\" attribute"
-        )
-
-    def test_htmx_sri_appears_on_all_pages(self, client):
-        """Every page that extends base.html should have SRI on the HTMX script."""
+    def test_no_cdn_references_on_any_page(self, client):
+        """Every page that extends base.html should use self-hosted htmx."""
         for path in ["/songs", "/services", "/reports", "/leaders"]:
             resp = client.get(path)
             assert resp.status_code == 200
-            assert 'integrity="sha384-' in resp.text, (
-                f"SRI integrity attribute missing on {path}"
+            assert "unpkg.com" not in resp.text, (
+                f"CDN reference found on {path} — should self-host htmx"
+            )
+            assert "/static/htmx.min.js" in resp.text, (
+                f"Self-hosted htmx reference missing on {path}"
             )
 
 

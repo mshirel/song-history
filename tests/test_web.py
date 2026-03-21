@@ -2754,3 +2754,25 @@ class TestBranding:
     def test_page_title_includes_church_name(self, client):
         response = client.get("/songs")
         assert b"Highland" in response.content
+
+
+class TestHtmxSelfHosted:
+    """htmx must be served from our own static files, not a CDN."""
+
+    def test_no_external_cdn_script_tags(self, client):
+        """base.html should not reference unpkg or other CDNs."""
+        resp = client.get("/songs")
+        assert resp.status_code == 200
+        html = resp.text
+        assert "unpkg.com" not in html, (
+            "Page loads scripts from unpkg CDN — should self-host htmx.js"
+        )
+        assert "cdn.jsdelivr.net" not in html, (
+            "Page loads scripts from jsdelivr CDN — should self-host"
+        )
+
+    def test_htmx_served_from_static(self, client):
+        """htmx.min.js should be available at /static/htmx.min.js."""
+        resp = client.get("/static/htmx.min.js")
+        assert resp.status_code == 200
+        assert "htmx" in resp.text
