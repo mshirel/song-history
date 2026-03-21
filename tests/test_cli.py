@@ -1668,6 +1668,134 @@ class TestCcliCsvValidity:
             )
 
 
+class TestCliImportUsesSharedPipeline:
+    """CLI import must delegate to import_service.run_import() (#248)."""
+
+    def test_cli_import_delegates_to_run_import(self, synthetic_pptx, tmp_path):
+        """CLI import must call run_import() from import_service, not inline the pipeline."""
+        from unittest.mock import MagicMock, patch
+
+        from worship_catalog.import_service import ImportResult
+
+        db_path = tmp_path / "test.db"
+        database = Database(db_path)
+        database.connect()
+        database.init_schema()
+        database.close()
+
+        mock_result = ImportResult(
+            service_date="2026-02-15",
+            service_name="Morning Worship",
+            songs_imported=2,
+            anomalies=[],
+        )
+
+        runner = CliRunner()
+        with patch("worship_catalog.cli.run_import", return_value=mock_result) as mock_run:
+            result = runner.invoke(
+                main,
+                ["import", str(synthetic_pptx), "--db", str(db_path), "--non-interactive"],
+            )
+            assert mock_run.called, (
+                "CLI import must delegate to run_import() — found inline pipeline instead"
+            )
+
+    def test_cli_import_passes_library_index(self, synthetic_pptx, tmp_path):
+        """CLI import must pass the loaded library index dict to run_import()."""
+        from unittest.mock import patch
+
+        from worship_catalog.import_service import ImportResult
+
+        db_path = tmp_path / "test.db"
+        database = Database(db_path)
+        database.connect()
+        database.init_schema()
+        database.close()
+
+        mock_result = ImportResult(
+            service_date="2026-02-15",
+            service_name="Morning Worship",
+            songs_imported=2,
+            anomalies=[],
+        )
+
+        runner = CliRunner()
+        with patch("worship_catalog.cli.run_import", return_value=mock_result) as mock_run:
+            result = runner.invoke(
+                main,
+                ["import", str(synthetic_pptx), "--db", str(db_path), "--non-interactive"],
+            )
+            assert mock_run.called
+            call_kwargs = mock_run.call_args
+            # library_index should be passed as a keyword arg
+            assert "library_index" in call_kwargs.kwargs or (
+                len(call_kwargs.args) > 2
+            ), "run_import must receive library_index"
+
+    def test_cli_import_passes_ocr_budget(self, synthetic_pptx, tmp_path):
+        """CLI import must pass ocr_budget and use_ocr to run_import()."""
+        from unittest.mock import patch
+
+        from worship_catalog.import_service import ImportResult
+
+        db_path = tmp_path / "test.db"
+        database = Database(db_path)
+        database.connect()
+        database.init_schema()
+        database.close()
+
+        mock_result = ImportResult(
+            service_date="2026-02-15",
+            service_name="Morning Worship",
+            songs_imported=0,
+            anomalies=[],
+        )
+
+        runner = CliRunner()
+        with patch("worship_catalog.cli.run_import", return_value=mock_result) as mock_run:
+            result = runner.invoke(
+                main,
+                [
+                    "import", str(synthetic_pptx),
+                    "--db", str(db_path),
+                    "--non-interactive",
+                    "--ocr",
+                    "--max-ocr-calls", "10",
+                ],
+            )
+            assert mock_run.called
+            call_kwargs = mock_run.call_args.kwargs
+            assert call_kwargs.get("use_ocr") is True
+            assert call_kwargs.get("ocr_budget") is not None
+
+    def test_cli_import_uses_run_import_songs_imported_count(self, synthetic_pptx, tmp_path):
+        """CLI output must reflect the songs_imported from run_import result."""
+        from unittest.mock import patch
+
+        from worship_catalog.import_service import ImportResult
+
+        db_path = tmp_path / "test.db"
+        database = Database(db_path)
+        database.connect()
+        database.init_schema()
+        database.close()
+
+        mock_result = ImportResult(
+            service_date="2026-02-15",
+            service_name="Morning Worship",
+            songs_imported=5,
+            anomalies=[],
+        )
+
+        runner = CliRunner()
+        with patch("worship_catalog.cli.run_import", return_value=mock_result) as mock_run:
+            result = runner.invoke(
+                main,
+                ["import", str(synthetic_pptx), "--db", str(db_path), "--non-interactive"],
+            )
+            assert "5 songs imported" in result.output
+
+
 class TestReportHelpDiscoverability:
     """Verify report subcommands are discoverable via --help (#178)."""
 
