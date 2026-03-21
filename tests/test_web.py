@@ -3015,3 +3015,75 @@ class TestDbConnectionCleanup:
             f"Found {direct_calls} direct _get_db() call(s) in route handlers. "
             "Routes must use Depends(get_db) for automatic connection cleanup."
         )
+
+
+# ---------------------------------------------------------------------------
+# Pushover notifications on early upload rejections (#267)
+# ---------------------------------------------------------------------------
+
+
+class TestUploadRejectionPushover:
+    """Early upload rejection paths (413, 400) must send Pushover notifications."""
+
+    def test_pushover_called_on_oversized_upload(self, client, monkeypatch):
+        """413 rejection must send a Pushover notification with low priority."""
+        from unittest.mock import MagicMock
+        import worship_catalog.web.app as app_module
+
+        mock_pushover = MagicMock()
+        monkeypatch.setattr(app_module, "send_pushover", mock_pushover)
+        monkeypatch.setattr(app_module, "MAX_UPLOAD_BYTES", 10)
+
+        resp = _upload(client, b"X" * 100, "big.pptx", VALID_PPTX_MIME)
+        assert resp.status_code == 413
+        mock_pushover.assert_called_once()
+        call_kwargs = mock_pushover.call_args[1]
+        assert call_kwargs["priority"] == -1
+        assert "rejected" in call_kwargs["title"].lower() or "upload" in call_kwargs["title"].lower()
+
+    def test_pushover_called_on_bad_mime_type(self, client, monkeypatch):
+        """400 wrong MIME rejection must send a Pushover notification."""
+        from unittest.mock import MagicMock
+        import worship_catalog.web.app as app_module
+
+        mock_pushover = MagicMock()
+        monkeypatch.setattr(app_module, "send_pushover", mock_pushover)
+
+        resp = _upload(client, b"hello", "test.txt", "text/plain")
+        assert resp.status_code == 400
+        mock_pushover.assert_called_once()
+        call_kwargs = mock_pushover.call_args[1]
+        assert call_kwargs["priority"] == -1
+
+    def test_pushover_called_on_bad_extension(self, client, monkeypatch):
+        """400 wrong extension rejection must send a Pushover notification."""
+        from unittest.mock import MagicMock
+        import worship_catalog.web.app as app_module
+
+        mock_pushover = MagicMock()
+        monkeypatch.setattr(app_module, "send_pushover", mock_pushover)
+
+        resp = _upload(client, SMALL_PPTX_BYTES, "sunday.ppt", VALID_PPTX_MIME)
+        assert resp.status_code == 400
+        mock_pushover.assert_called_once()
+        call_kwargs = mock_pushover.call_args[1]
+        assert call_kwargs["priority"] == -1
+
+    def test_pushover_called_on_content_length_rejection(self, client, monkeypatch):
+        """413 from Content-Length pre-flight must also send a notification."""
+        from unittest.mock import MagicMock
+        import worship_catalog.web.app as app_module
+
+        mock_pushover = MagicMock()
+        monkeypatch.setattr(app_module, "send_pushover", mock_pushover)
+        monkeypatch.setattr(app_module, "MAX_UPLOAD_BYTES", 10)
+
+        resp = client.post(
+            "/upload",
+            files={"file": ("big.pptx", io.BytesIO(b"X" * 5), VALID_PPTX_MIME)},
+            headers={"content-length": "999999"},
+        )
+        assert resp.status_code == 413
+        mock_pushover.assert_called_once()
+        call_kwargs = mock_pushover.call_args[1]
+        assert call_kwargs["priority"] == -1

@@ -814,6 +814,12 @@ async def upload(
     if cl_header is not None:
         try:
             if int(cl_header) > MAX_UPLOAD_BYTES:
+                _max_mb = MAX_UPLOAD_BYTES // (1024 * 1024)
+                send_pushover(
+                    title="Upload rejected",
+                    message=f"File exceeds {_max_mb} MB limit (Content-Length: {cl_header})",
+                    priority=-1,
+                )
                 return JSONResponse(
                     content={"detail": f"File exceeds maximum allowed size of {MAX_UPLOAD_BYTES} bytes"},  # noqa: E501
                     status_code=413,
@@ -824,6 +830,11 @@ async def upload(
             )
     # Validate MIME type
     if file.content_type != _PPTX_MIME:
+        send_pushover(
+            title="Upload rejected",
+            message=f"Wrong MIME type: {file.content_type}",
+            priority=-1,
+        )
         return JSONResponse(
             content={"detail": "Only PPTX files are accepted (pptx mime type required)"},
             status_code=400,
@@ -833,6 +844,11 @@ async def upload(
     filename = _sanitize_header_filename(raw_filename)
     # Validate extension (re-check after sanitization)
     if not filename.lower().endswith(".pptx"):
+        send_pushover(
+            title="Upload rejected",
+            message=f"{filename} — file must have a .pptx extension",
+            priority=-1,
+        )
         return JSONResponse(
             content={"detail": "File must have a .pptx extension"},
             status_code=400,
@@ -847,6 +863,12 @@ async def upload(
     # Read and enforce size limit
     content = await file.read()
     if len(content) > MAX_UPLOAD_BYTES:
+        _max_mb = MAX_UPLOAD_BYTES // (1024 * 1024)
+        send_pushover(
+            title="Upload rejected",
+            message=f"{filename} — file exceeds {_max_mb} MB limit",
+            priority=-1,
+        )
         return JSONResponse(
             content={"detail": f"File exceeds maximum allowed size of {MAX_UPLOAD_BYTES} bytes"},
             status_code=413,
