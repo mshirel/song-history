@@ -40,7 +40,16 @@ jobs:
       # This step explicitly runs the integration subset to surface any
       # unexpected skip-all regressions — closes #137.
       - name: Integration tests (DB-only subset)
-        run: python3 -m pytest -m "integration and not slow" -v --tb=short
+        run: |
+          python3 -m pytest -m "integration and not slow" -v --tb=short 2>&1 | tee /tmp/integration.log
+          # Verify at least 5 integration tests actually passed.
+          # Without this check, pytest -m exits 0 even when zero tests match,
+          # silently defeating the purpose of this step (#200).
+          count=$(grep -oP '\d+ passed' /tmp/integration.log | grep -oP '\d+')
+          if [ -z "$count" ] || [ "$count" -lt 5 ]; then
+            echo "ERROR: Expected at least 5 integration tests to pass, got ${count:-0}"
+            exit 1
+          fi
 
   security:
     runs-on: ubuntu-latest
