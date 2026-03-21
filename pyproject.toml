@@ -140,7 +140,7 @@ tests_dir = ["tests/"]
 [tool.pytest.ini_options]
 minversion = "7.0"
 testpaths = ["tests"]
-addopts = "--cov=src/worship_catalog --cov-report=term-missing --strict-markers"
+addopts = "--strict-markers"
 markers = [
     "unit: unit tests",
     "integration: integration tests",

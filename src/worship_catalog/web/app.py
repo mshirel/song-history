@@ -17,7 +17,7 @@ from collections import defaultdict
 from collections.abc import AsyncGenerator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -188,6 +188,18 @@ def _sanitize_header_filename(raw: str) -> str:
 # Docker-baked version/build metadata (#261, #262)
 _VERSION_FILE: Path = Path("/app/.version")
 _BUILD_DATE_FILE: Path = Path("/app/.build-date")
+
+def _format_build_date(raw: str) -> str:
+    """Format an ISO-8601 build timestamp to human-readable local time (#331)."""
+    if not raw or raw == "development":
+        return raw
+    try:
+        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        local_dt = dt.astimezone()  # convert to server local timezone
+        return local_dt.strftime("%B %-d, %Y at %-I:%M %p %Z")
+    except (ValueError, OSError):
+        return raw
+
 
 # Upload constants (#45)
 MAX_UPLOAD_BYTES: int = 200 * 1024 * 1024  # 200 MB
@@ -464,7 +476,7 @@ async def about_page(request: Request) -> HTMLResponse:
     db_path = Path(os.environ.get("DB_PATH", "data/worship.db")).name
     # Prefer baked-in file from Docker build; fall back to "development" (#262)
     if _BUILD_DATE_FILE.is_file():
-        build_date = _BUILD_DATE_FILE.read_text().strip()
+        build_date = _format_build_date(_BUILD_DATE_FILE.read_text().strip())
     else:
         build_date = "development"
     return templates.TemplateResponse(
