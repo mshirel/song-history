@@ -29,7 +29,7 @@
 {% macro sort_th(label, col, align="left") %}
 {% set next_dir = "asc" if (sort == col and sort_dir == "desc") else "desc" %}
 {% set aria_sort_val = ("ascending" if sort_dir == "asc" else "descending") if sort == col else "none" %}
-<th style="text-align:{{ align }};white-space:nowrap;user-select:none;cursor:pointer;" aria-sort="{{ aria_sort_val }}">
+<th scope="col" style="text-align:{{ align }};white-space:nowrap;user-select:none;cursor:pointer;" aria-sort="{{ aria_sort_val }}">
   <a href="/songs?sort={{ col }}&sort_dir={{ next_dir }}{% if q %}&q={{ q | urlencode }}{% endif %}"
      style="color:inherit;text-decoration:none;">
     {{ label }}{% if sort == col %}&nbsp;{{ '▲' if sort_dir == 'asc' else '▼' }}{% endif %}
@@ -47,6 +47,7 @@
 {% else %}
 <div class="card" style="padding:0;overflow:hidden;" aria-live="polite">
   <table>
+    <caption class="sr-only">Song library — sortable by title, credits, or performance count</caption>
     <thead>
       <tr>
         {{ sort_th("Title", "display_title") }}
