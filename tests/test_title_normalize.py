@@ -267,3 +267,36 @@ class TestScriptureGuard:
     def test_partial_reference_not_flagged(self):
         # No chapter:verse pattern → not a scripture ref
         assert _is_invalid_line("John") is False
+
+    def test_scripture_with_en_dash(self):
+        """Scripture with en-dash verse range should be flagged (#313)."""
+        assert _is_invalid_line("MICAH 6:6 – 8") is True
+
+    def test_scripture_with_em_dash(self):
+        """Scripture with em-dash verse range should be flagged (#313)."""
+        assert _is_invalid_line("Psalm 23:1—6") is True
+
+    def test_scripture_with_spaced_range(self):
+        """Scripture with spaces around hyphen should be flagged (#313)."""
+        assert _is_invalid_line("Romans 8:28 - 30") is True
+
+
+@pytest.mark.unit
+class TestSermonOutlineNotStripped:
+    """Sermon outline numbered points should not be stripped (#314)."""
+
+    def test_numbered_period_not_stripped(self):
+        """'1. SALVATION' should NOT have '1.' stripped."""
+        result = strip_title_prefix("1. SALVATION THEN SANCTIFICATION")
+        assert "SALVATION" in result
+        # Should not strip the number — it's a sermon outline, not a verse prefix
+        assert result.startswith("1.")
+
+    def test_regular_verse_prefix_still_stripped(self):
+        """'1 - Amazing Grace' should still be stripped normally."""
+        assert strip_title_prefix("1 - Amazing Grace") == "Amazing Grace"
+
+    def test_numbered_period_short(self):
+        """'2. Grace' — even short entries with period should not strip."""
+        result = strip_title_prefix("2. Grace")
+        assert result.startswith("2.")

@@ -54,6 +54,9 @@ _IMPORT_JOB_MUTABLE_FIELDS: frozenset[str] = frozenset(
 )
 
 
+_VALID_SORT_DIRS: frozenset[str] = frozenset({"ASC", "DESC"})
+
+
 def _safe_order_by(col: str, whitelist: frozenset[str]) -> str:
     """Validate *col* against *whitelist* and return it if safe.
 
@@ -65,6 +68,19 @@ def _safe_order_by(col: str, whitelist: frozenset[str]) -> str:
     if not stripped or stripped not in whitelist:
         raise ValueError(f"Invalid sort column: {col!r}")
     return stripped
+
+
+def _safe_sort_dir(direction: str) -> str:
+    """Validate sort direction to prevent SQL injection (#316)."""
+    upper = direction.strip().upper()
+    if upper not in _VALID_SORT_DIRS:
+        raise ValueError(f"Invalid sort direction: {direction!r}")
+    return upper
+
+
+def _escape_like(value: str) -> str:
+    """Escape LIKE special characters (%, _) in user input (#319)."""
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 class SchemaVersionError(RuntimeError):
@@ -569,10 +585,10 @@ class Database:
                 """
                 SELECT * FROM services
                 WHERE service_date >= ? AND service_date <= ?
-                  AND LOWER(song_leader) LIKE LOWER(?)
+                  AND LOWER(song_leader) LIKE LOWER(?) ESCAPE '\\'
                 ORDER BY service_date
                 """,
-                (start_date, end_date, f"%{song_leader}%"),
+                (start_date, end_date, f"%{_escape_like(song_leader)}%"),
             )
         else:
             cursor.execute(
@@ -731,12 +747,12 @@ class Database:
             JOIN services sv ON ss.service_id = sv.id
             JOIN songs s ON ss.song_id = s.id
             LEFT JOIN song_editions se ON ss.song_edition_id = se.id
-            WHERE LOWER(COALESCE(sv.song_leader, '')) LIKE LOWER(?)
+            WHERE LOWER(COALESCE(sv.song_leader, '')) LIKE LOWER(?) ESCAPE '\\'
             GROUP BY s.id
             HAVING COUNT(DISTINCT ss.service_id) >= ?
             ORDER BY performance_count DESC, s.display_title
             """,
-            (f"%{leader}%", min_count),
+            (f"%{_escape_like(leader)}%", min_count),
         )
         return [dict(row) for row in cursor.fetchall()]
 
@@ -746,9 +762,9 @@ class Database:
         cursor.execute(
             """
             SELECT COUNT(*) FROM services
-            WHERE LOWER(COALESCE(song_leader, '')) LIKE LOWER(?)
+            WHERE LOWER(COALESCE(song_leader, '')) LIKE LOWER(?) ESCAPE '\\'
             """,
-            (f"%{leader}%",),
+            (f"%{_escape_like(leader)}%",),
         )
         row = cursor.fetchone()
         return row[0] if row else 0
@@ -926,7 +942,7 @@ class Database:
     ) -> tuple[list[dict[str, Any]], int]:
         """Return songs with performance count, optionally filtered and sorted."""
         sort = _safe_order_by(sort, self._SONGS_SORT_COLS)
-        order = f"{sort} {sort_dir.upper()}, s.display_title"
+        order = f"{sort} {_safe_sort_dir(sort_dir)}, s.display_title"
         cursor = self._conn.cursor()
         base = """
             SELECT s.id, s.display_title, s.canonical_title,
@@ -944,11 +960,11 @@ class Database:
         """
         offset = (page - 1) * per_page
         if search:
-            like = f"%{search}%"
+            like = f"%{_escape_like(search)}%"
             where = """
-                WHERE LOWER(s.display_title) LIKE LOWER(?)
-                   OR LOWER(COALESCE(se.words_by, '')) LIKE LOWER(?)
-                   OR LOWER(COALESCE(se.music_by, '')) LIKE LOWER(?)
+                WHERE (LOWER(s.display_title) LIKE LOWER(?) ESCAPE '\\'
+                   OR LOWER(COALESCE(se.words_by, '')) LIKE LOWER(?) ESCAPE '\\'
+                   OR LOWER(COALESCE(se.music_by, '')) LIKE LOWER(?) ESCAPE '\\')
             """
             cursor.execute(count_base + where, (like, like, like))
             total: int = cursor.fetchone()[0]
@@ -982,17 +998,17 @@ class Database:
         where_clauses: list[str] = []
         params: list[Any] = []
         if q_service:
-            where_clauses.append("LOWER(sv.service_name) LIKE LOWER(?)")
-            params.append(f"%{q_service}%")
+            where_clauses.append("LOWER(sv.service_name) LIKE LOWER(?) ESCAPE '\\'")
+            params.append(f"%{_escape_like(q_service)}%")
         if q_leader:
-            where_clauses.append("LOWER(COALESCE(sv.song_leader,'')) LIKE LOWER(?)")
-            params.append(f"%{q_leader}%")
+            where_clauses.append("LOWER(COALESCE(sv.song_leader,'')) LIKE LOWER(?) ESCAPE '\\'")
+            params.append(f"%{_escape_like(q_leader)}%")
         if q_preacher:
-            where_clauses.append("LOWER(COALESCE(sv.preacher,'')) LIKE LOWER(?)")
-            params.append(f"%{q_preacher}%")
+            where_clauses.append("LOWER(COALESCE(sv.preacher,'')) LIKE LOWER(?) ESCAPE '\\'")
+            params.append(f"%{_escape_like(q_preacher)}%")
         if q_sermon:
-            where_clauses.append("LOWER(COALESCE(sv.sermon_title,'')) LIKE LOWER(?)")
-            params.append(f"%{q_sermon}%")
+            where_clauses.append("LOWER(COALESCE(sv.sermon_title,'')) LIKE LOWER(?) ESCAPE '\\'")
+            params.append(f"%{_escape_like(q_sermon)}%")
         if start_date:
             where_clauses.append("sv.service_date >= ?")
             params.append(start_date)
@@ -1002,7 +1018,7 @@ class Database:
 
         where_sql = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
         sort = _safe_order_by(sort, self._SERVICES_SORT_COLS)
-        order = f"{sort} {sort_dir.upper()}, sv.service_name"
+        order = f"{sort} {_safe_sort_dir(sort_dir)}, sv.service_name"
         offset = (page - 1) * per_page
         cursor = self._conn.cursor()
         cursor.execute(
@@ -1035,10 +1051,10 @@ class Database:
             cursor.execute(
                 """
                 SELECT * FROM services
-                WHERE service_date = ? AND LOWER(service_name) LIKE LOWER(?)
+                WHERE service_date = ? AND LOWER(service_name) LIKE LOWER(?) ESCAPE '\\'
                 ORDER BY id
                 """,
-                (date, f"%{name_pattern}%"),
+                (date, f"%{_escape_like(name_pattern)}%"),
             )
         else:
             cursor.execute(

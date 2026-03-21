@@ -160,7 +160,9 @@ jobs:
           python-version: "3.12"
 
       - name: Install dependencies
-        run: pip install -e ".[dev,web,ocr]"
+        run: |
+          pip install -r requirements.lock          # locked runtime deps (#321)
+          pip install -e ".[dev]"                    # dev tools (bandit, pip-audit)
 
       - name: Verify lockfile is up to date (#174)
         run: |
