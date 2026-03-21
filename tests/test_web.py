@@ -2747,7 +2747,7 @@ class TestUploadPage:
 
 class TestBranding:
     def test_logo_served_as_static_asset(self, client):
-        response = client.get("/static/highland-logo.jpg")
+        response = client.get("/static/highland-logo.png")
         assert response.status_code == 200
         assert "image" in response.headers["content-type"]
 
