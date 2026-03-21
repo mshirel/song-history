@@ -209,10 +209,17 @@ crontab -e
 Add:
 ```
 # Nightly backup at 2 AM — sources Pushover keys, writes to USB drive
-0 2 * * * . /home/songs/.pushover.env && /opt/song-history/scripts/backup.sh /opt/song-history/data/worship.db /opt/song-history/backups-usb
+# Output logged to ~/backup.log because cron silently discards output when no MTA is installed.
+0 2 * * * . /home/songs/.pushover.env && /opt/song-history/scripts/backup.sh /opt/song-history/data/worship.db /opt/song-history/backups-usb >> /home/songs/backup.log 2>&1
 ```
 
 `backup.sh` sends a Pushover notification if the backup fails. Success is silent.
+
+> **Important:** Without the `>> ~/backup.log 2>&1` redirect, cron silently
+> discards all output when no MTA (mail server) is installed — which is the
+> default on Raspberry Pi OS Lite. If the backup fails, you get no error
+> message and no Pushover alert (because the error may occur before the
+> script's trap handler runs). Always redirect to a log file.
 
 ---
 
@@ -288,12 +295,12 @@ Once the Let's Encrypt cert is issued, `https://songs.highland-coc.com` will be 
 docker compose ps
 # Expected: traefik, watcher, and song-history all running/healthy
 
-# 2. Health endpoint
-curl -s http://localhost:8000/health
+# 2. Health endpoint (via Traefik — port 8000 is internal to Docker)
+curl -sf http://localhost/health
 # Expected: {"status":"ok"}
 
 # 3. Songs page loads with data
-curl -sf http://localhost:8000/songs | grep -q "Worship Catalog" && echo "PASS" || echo "FAIL"
+curl -sf http://localhost/songs | grep -q "Worship Catalog" && echo "PASS" || echo "FAIL"
 
 # 4. Manual backup test
 . /home/songs/.pushover.env && /opt/song-history/scripts/backup.sh \
@@ -304,15 +311,19 @@ ls /opt/song-history/backups-usb/worship-*.sql.gz | tail -1
 
 # 5. HTTPS cert (check after ~30s)
 curl -sf https://songs.highland-coc.com/health | grep -q "ok" && echo "PASS" || echo "FAIL"
+
+# 6. Backup log writable
+touch /home/songs/backup.log && echo "PASS" || echo "FAIL"
 ```
 
 | Check | Expected |
 |---|---|
 | `docker compose ps` | traefik + watcher + song-history running |
-| `GET /health` | `{"status":"ok"}` |
+| `GET /health` (via localhost:80) | `{"status":"ok"}` |
 | `/songs` page | loads with song data |
 | Backup file | `worship-YYYYMMDD-HHMMSS.sql.gz` present |
 | HTTPS cert | no browser cert warning |
+| Backup log | `~/backup.log` writable |
 
 ---
 
@@ -334,15 +345,19 @@ Use the `cleanup` CLI commands to fix bad data. Always back up first.
 /opt/song-history/scripts/backup.sh /opt/song-history/data/worship.db /opt/song-history/backups-usb
 
 # Find duplicate services (same date+name, different file hash)
-docker compose run --rm cli cleanup find-duplicates
+docker compose run --rm song-history worship-catalog cleanup find-duplicates --db /data/worship.db
 
 # Delete services with bad date from a buggy import
-docker compose run --rm cli cleanup delete-service --date 0000-00-00 --yes
+docker compose run --rm song-history worship-catalog cleanup delete-service --date 0000-00-00 --db /data/worship.db --yes
 
 # Remove orphaned songs left after service deletion
-docker compose run --rm cli cleanup orphaned-songs --dry-run
-docker compose run --rm cli cleanup orphaned-songs --yes
+docker compose run --rm song-history worship-catalog cleanup orphaned-songs --db /data/worship.db --dry-run
+docker compose run --rm song-history worship-catalog cleanup orphaned-songs --db /data/worship.db --yes
 ```
+
+> **Note:** The `--db /data/worship.db` flag is required because the CLI
+> defaults to `data/worship.db` (a relative path that doesn't exist inside
+> the container). The Docker volume mounts the DB at `/data/worship.db`.
 
 See [docs/data-cleanup.md](data-cleanup.md) for the full command reference and re-import workflow.
 
@@ -357,7 +372,9 @@ See [docs/data-cleanup.md](data-cleanup.md) for the full command reference and r
 | App not reachable | `docker compose ps` — all services healthy? |
 | Wrong DNS | `nslookup songs.highland-coc.com` from LAN — should return Pi IP |
 | DB permission error | `sudo chown -R 1001:1001 /opt/song-history/data` (matches app UID) |
-| Backup fails | Run manually and check stderr; verify `sqlite3` is installed |
+| Backup fails silently | Check `~/backup.log`; run manually with `. ~/.pushover.env && /opt/song-history/scripts/backup.sh ...` and watch stderr |
+| No Pushover on failure | Verify `~/backup.log` redirect is in crontab; check `~/.pushover.env` has valid tokens |
+| `curl localhost:8000` fails | Port 8000 is internal to Docker — use `curl localhost/health` (via Traefik on port 80) |
 
 ---
 
