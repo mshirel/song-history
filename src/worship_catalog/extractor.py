@@ -28,7 +28,7 @@ from worship_catalog.pptx_reader import (
 _log = logging.getLogger(__name__)
 
 # Pre-flight guards (issue #40 — CWE-400 resource exhaustion)
-_MAX_PPTX_SIZE_BYTES: int = 50 * 1024 * 1024  # 50 MB
+_MAX_PPTX_SIZE_BYTES: int = 200 * 1024 * 1024  # 200 MB — matches web upload limit (#263)
 _MAX_SLIDE_COUNT: int = 500
 
 # Wall-clock timeout for a single file extraction (#73 — prevents runaway on adversarial PPTX)
