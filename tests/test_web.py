@@ -2567,3 +2567,55 @@ class TestGetDbSchemaInit:
                 assert app_module._schema_ready
 
         app_module._schema_ready = False
+
+
+# ---------------------------------------------------------------------------
+# Issue #179 — Empty state messages for first-run experience
+# ---------------------------------------------------------------------------
+
+
+class TestEmptyStateMessages:
+    """Empty DB pages must show onboarding guidance, not just blank tables (#179)."""
+
+    @pytest.fixture
+    def empty_client(self, tmp_path, monkeypatch):
+        db_path = tmp_path / "empty.db"
+        db = Database(db_path)
+        db.connect()
+        db.init_schema()
+        db.close()
+
+        monkeypatch.setenv("DB_PATH", str(db_path))
+        monkeypatch.setenv("INBOX_DIR", str(tmp_path / "inbox"))
+        (tmp_path / "inbox").mkdir()
+        from importlib import reload
+        import worship_catalog.web.app as app_module
+        reload(app_module)
+        return TestClient(app_module.app)
+
+    def test_songs_page_shows_empty_state_when_db_empty(self, empty_client):
+        """Songs page must show a helpful message when no songs have been imported."""
+        resp = empty_client.get("/songs")
+        assert resp.status_code == 200
+        body = resp.text.lower()
+        assert any(kw in body for kw in [
+            "no songs yet", "import", "get started", "upload",
+        ]), "Songs page must show an empty-state onboarding message when no data exists"
+
+    def test_services_page_shows_empty_state_when_db_empty(self, empty_client):
+        """Services page must show a helpful message when no services have been imported."""
+        resp = empty_client.get("/services")
+        assert resp.status_code == 200
+        body = resp.text.lower()
+        assert any(kw in body for kw in [
+            "no services yet", "import", "get started", "upload",
+        ]), "Services page must show an empty-state onboarding message when no data exists"
+
+    def test_leaders_page_shows_empty_state_when_db_empty(self, empty_client):
+        """Leaders page must show a helpful message when no leaders have been imported."""
+        resp = empty_client.get("/leaders")
+        assert resp.status_code == 200
+        body = resp.text.lower()
+        assert any(kw in body for kw in [
+            "no leaders yet", "import", "get started", "upload",
+        ]), "Leaders page must show an empty-state onboarding message when no data exists"
