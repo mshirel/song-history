@@ -1,6 +1,32 @@
-"""Tests for Dockerfile correctness (#102)."""
+"""Tests for Dockerfile correctness (#102, #174)."""
 
 from pathlib import Path
+
+_PROJECT_ROOT = Path(__file__).parent.parent
+
+
+class TestDependencyReproducibility:
+    """A lockfile must exist and be used in the Dockerfile (#174)."""
+
+    def test_requirements_lock_exists(self):
+        """A lockfile must exist at the project root for reproducible builds."""
+        lockfiles = [
+            _PROJECT_ROOT / "requirements.lock",
+            _PROJECT_ROOT / "requirements.txt",
+            _PROJECT_ROOT / "constraints.txt",
+        ]
+        assert any(f.exists() for f in lockfiles), (
+            "No Python dependency lockfile found. "
+            "Run: pip-compile pyproject.toml --output-file requirements.lock"
+        )
+
+    def test_lockfile_is_used_in_dockerfile(self):
+        """Dockerfile must reference the lockfile in its pip install step."""
+        dockerfile = (_PROJECT_ROOT / "Dockerfile").read_text()
+        assert any(
+            lock in dockerfile
+            for lock in ["requirements.lock", "requirements.txt", "constraints.txt"]
+        ), "Dockerfile does not reference any lockfile — builds are non-reproducible"
 
 
 class TestDockerfileCMD:

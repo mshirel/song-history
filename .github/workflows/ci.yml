@@ -68,6 +68,17 @@ jobs:
       - name: Install dependencies
         run: pip install -e ".[dev,web,ocr]"
 
+      - name: Verify lockfile is up to date (#174)
+        run: |
+          pipx run --spec pip-tools pip-compile --strip-extras --extra web --extra ocr --output-file /tmp/requirements.lock pyproject.toml
+          # Compare non-comment lines only (header contains the output path which differs)
+          grep -v '^#' requirements.lock > /tmp/lock-current.txt
+          grep -v '^#' /tmp/requirements.lock > /tmp/lock-fresh.txt
+          diff /tmp/lock-current.txt /tmp/lock-fresh.txt || {
+            echo "::error::requirements.lock is out of date — run: pip-compile --strip-extras --extra web --extra ocr --output-file requirements.lock pyproject.toml"
+            exit 1
+          }
+
       - name: Dependency audit (pip-audit)
         run: python3 -m pip_audit --skip-editable
 
@@ -118,6 +129,7 @@ jobs:
             app:
               - "Dockerfile"
               - "pyproject.toml"
+              - "requirements.lock"
               - "src/**"
               - "config/**"
               - "scripts/**"
