@@ -29,10 +29,10 @@ from fastapi import (
     UploadFile,
 )
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
-from starlette.staticfiles import StaticFiles
 from starlette_csrf import CSRFMiddleware  # type: ignore[attr-defined]
 
 from worship_catalog.db import Database
@@ -122,7 +122,9 @@ app.add_middleware(_CSPMiddleware)
 
 
 _TEMPLATES_DIR = Path(__file__).parent / "templates"
+_STATIC_DIR = Path(__file__).parent / "static"
 templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
+app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
 
 _STATIC_DIR = Path(__file__).parent / "static"
 app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
