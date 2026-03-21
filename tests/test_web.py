@@ -2619,3 +2619,38 @@ class TestEmptyStateMessages:
         assert any(kw in body for kw in [
             "no leaders yet", "import", "get started", "upload",
         ]), "Leaders page must show an empty-state onboarding message when no data exists"
+
+
+class TestUploadPage:
+    """Web UI must have a browser-accessible upload page."""
+
+    def test_upload_page_exists(self, client):
+        """GET /upload should return an HTML page with a file input form."""
+        resp = client.get("/upload")
+        assert resp.status_code == 200
+        assert "text/html" in resp.headers.get("content-type", "")
+
+    def test_upload_page_has_file_input(self, client):
+        """The upload page must have a file input for PPTX files."""
+        resp = client.get("/upload")
+        assert resp.status_code == 200
+        assert 'type="file"' in resp.text, (
+            "Upload page has no file input element"
+        )
+
+    def test_upload_page_has_submit_button(self, client):
+        """The upload page must have a submit button."""
+        resp = client.get("/upload")
+        assert resp.status_code == 200
+        html = resp.text.lower()
+        assert "submit" in html or "upload" in html, (
+            "Upload page has no submit/upload button"
+        )
+
+    def test_nav_has_upload_link(self, client):
+        """Navigation bar should include a link to the upload page."""
+        resp = client.get("/songs")
+        assert resp.status_code == 200
+        assert "/upload" in resp.text, (
+            "Navigation bar has no link to upload page"
+        )

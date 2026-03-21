@@ -625,6 +625,12 @@ def _run_import_in_background(job_id: str, pptx_path: Path) -> None:
             )
 
 
+@app.get("/upload", response_class=HTMLResponse)
+async def upload_page(request: Request) -> HTMLResponse:
+    """Render the browser upload form for PPTX files."""
+    return templates.TemplateResponse(request, "upload.html")
+
+
 @app.post("/upload")
 async def upload(request: Request, file: UploadFile) -> JSONResponse:
     """Accept a PPTX file, create an import job, and kick off background import."""
