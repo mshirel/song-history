@@ -1807,3 +1807,175 @@ class TestReportHelpDiscoverability:
         assert "ccli" in result.output, (
             f"'ccli' not found in report --help output:\n{result.output}"
         )
+
+
+class TestCleanupCommand:
+    """Tests for cleanup command group (#266)."""
+
+    @pytest.fixture
+    def runner(self):
+        """Click CLI test runner."""
+        return CliRunner()
+
+    def test_cleanup_help(self, runner):
+        """cleanup --help lists subcommands."""
+        result = runner.invoke(main, ["cleanup", "--help"])
+        assert result.exit_code == 0
+        assert "delete-service" in result.output
+        assert "orphaned-songs" in result.output
+        assert "find-duplicates" in result.output
+
+    def test_delete_service_by_id(self, runner, db_with_songs):
+        """cleanup delete-service --id <N> removes the service and related data."""
+        result = runner.invoke(main, [
+            "cleanup", "delete-service", "--id", "1", "--db", str(db_with_songs), "--yes"
+        ])
+        assert result.exit_code == 0
+        db = Database(db_with_songs)
+        db.connect()
+        assert db.query_service_by_id(1) is None
+        db.close()
+
+    def test_delete_service_by_id_shows_details(self, runner, db_with_songs):
+        """cleanup delete-service --id <N> shows service details before deleting."""
+        result = runner.invoke(main, [
+            "cleanup", "delete-service", "--id", "1", "--db", str(db_with_songs), "--yes"
+        ])
+        assert result.exit_code == 0
+        assert "2026-02-15" in result.output
+        assert "AM Worship" in result.output
+
+    def test_delete_service_by_id_not_found(self, runner, db_with_songs):
+        """cleanup delete-service --id <N> exits 1 when service not found."""
+        result = runner.invoke(main, [
+            "cleanup", "delete-service", "--id", "999", "--db", str(db_with_songs), "--yes"
+        ])
+        assert result.exit_code == 1
+
+    def test_delete_service_by_date(self, runner, db_with_songs):
+        """cleanup delete-service --date YYYY-MM-DD removes matching services."""
+        result = runner.invoke(main, [
+            "cleanup", "delete-service", "--date", "2026-02-15",
+            "--db", str(db_with_songs), "--yes"
+        ])
+        assert result.exit_code == 0
+        db = Database(db_with_songs)
+        db.connect()
+        assert db.query_service_by_id(1) is None
+        db.close()
+
+    def test_delete_service_by_date_with_name(self, runner, db_with_songs):
+        """cleanup delete-service --date --name filters by name pattern."""
+        result = runner.invoke(main, [
+            "cleanup", "delete-service", "--date", "2026-02-15", "--name", "AM",
+            "--db", str(db_with_songs), "--yes"
+        ])
+        assert result.exit_code == 0
+        db = Database(db_with_songs)
+        db.connect()
+        assert db.query_service_by_id(1) is None
+        db.close()
+
+    def test_delete_service_by_date_no_match(self, runner, db_with_songs):
+        """cleanup delete-service --date with no matches exits 1."""
+        result = runner.invoke(main, [
+            "cleanup", "delete-service", "--date", "1999-01-01",
+            "--db", str(db_with_songs), "--yes"
+        ])
+        assert result.exit_code == 1
+
+    def test_delete_service_requires_id_or_date(self, runner, db_with_songs):
+        """cleanup delete-service without --id or --date exits with error."""
+        result = runner.invoke(main, [
+            "cleanup", "delete-service", "--db", str(db_with_songs), "--yes"
+        ])
+        assert result.exit_code != 0
+
+    def test_orphaned_songs(self, runner, db_with_songs):
+        """cleanup orphaned-songs removes songs with 0 performances."""
+        # First delete a service to create orphans
+        db = Database(db_with_songs)
+        db.connect()
+        db.delete_service_data(1)
+        db.close()
+
+        result = runner.invoke(main, [
+            "cleanup", "orphaned-songs", "--db", str(db_with_songs), "--yes"
+        ])
+        assert result.exit_code == 0
+        assert "removed" in result.output.lower() or "deleted" in result.output.lower()
+
+        # Verify songs are gone
+        db = Database(db_with_songs)
+        db.connect()
+        assert db.query_song_by_id(1) is None
+        assert db.query_song_by_id(2) is None
+        db.close()
+
+    def test_orphaned_songs_none_found(self, runner, db_with_songs):
+        """cleanup orphaned-songs with no orphans reports none found."""
+        result = runner.invoke(main, [
+            "cleanup", "orphaned-songs", "--db", str(db_with_songs), "--yes"
+        ])
+        assert result.exit_code == 0
+        assert "no orphaned" in result.output.lower() or "0" in result.output
+
+    def test_find_duplicates(self, runner, db_with_songs):
+        """cleanup find-duplicates lists services with same date+name but different hash."""
+        # Insert a duplicate service with different hash
+        db = Database(db_with_songs)
+        db.connect()
+        db.insert_or_update_service(
+            service_date="2026-02-15",
+            service_name="AM Worship",
+            source_file="test2.pptx",
+            source_hash="def456",
+        )
+        db.close()
+
+        result = runner.invoke(main, [
+            "cleanup", "find-duplicates", "--db", str(db_with_songs)
+        ])
+        assert result.exit_code == 0
+        assert "2026-02-15" in result.output
+        assert "AM Worship" in result.output
+
+    def test_find_duplicates_none(self, runner, db_with_songs):
+        """cleanup find-duplicates with no duplicates reports none."""
+        result = runner.invoke(main, [
+            "cleanup", "find-duplicates", "--db", str(db_with_songs)
+        ])
+        assert result.exit_code == 0
+        assert "no duplicate" in result.output.lower()
+
+    def test_dry_run_does_not_delete(self, runner, db_with_songs):
+        """--dry-run shows what would be deleted without actually deleting."""
+        result = runner.invoke(main, [
+            "cleanup", "delete-service", "--id", "1",
+            "--db", str(db_with_songs), "--dry-run"
+        ])
+        assert result.exit_code == 0
+        assert "dry run" in result.output.lower() or "would" in result.output.lower()
+        db = Database(db_with_songs)
+        db.connect()
+        assert db.query_service_by_id(1) is not None  # NOT deleted
+        db.close()
+
+    def test_dry_run_orphaned_songs(self, runner, db_with_songs):
+        """--dry-run on orphaned-songs does not delete."""
+        db = Database(db_with_songs)
+        db.connect()
+        db.delete_service_data(1)
+        db.close()
+
+        result = runner.invoke(main, [
+            "cleanup", "orphaned-songs", "--db", str(db_with_songs), "--dry-run"
+        ])
+        assert result.exit_code == 0
+        assert "would" in result.output.lower() or "dry run" in result.output.lower()
+
+        # Songs still exist
+        db = Database(db_with_songs)
+        db.connect()
+        assert db.query_song_by_id(1) is not None
+        db.close()

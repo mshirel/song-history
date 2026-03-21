@@ -325,6 +325,29 @@ docker compose pull && docker compose up -d
 
 ---
 
+## Data Maintenance
+
+Use the `cleanup` CLI commands to fix bad data. Always back up first.
+
+```bash
+# Back up the database
+/opt/song-history/scripts/backup.sh /opt/song-history/data/worship.db /opt/song-history/backups-usb
+
+# Find duplicate services (same date+name, different file hash)
+docker compose run --rm cli cleanup find-duplicates
+
+# Delete services with bad date from a buggy import
+docker compose run --rm cli cleanup delete-service --date 0000-00-00 --yes
+
+# Remove orphaned songs left after service deletion
+docker compose run --rm cli cleanup orphaned-songs --dry-run
+docker compose run --rm cli cleanup orphaned-songs --yes
+```
+
+See [docs/data-cleanup.md](data-cleanup.md) for the full command reference and re-import workflow.
+
+---
+
 ## Troubleshooting
 
 | Symptom | Check |

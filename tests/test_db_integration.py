@@ -2141,3 +2141,92 @@ class TestQueryServiceSongs:
     def test_returns_empty_for_empty_service(self, temp_db):
         sid = temp_db.insert_or_update_service("2026-01-01", "AM", "f.pptx", "h1")
         assert temp_db.query_service_songs(sid) == []
+
+
+class TestCleanupQueries:
+    """Tests for cleanup-related database methods (#266)."""
+
+    @pytest.fixture
+    def temp_db(self):
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "test.db"
+            db = Database(db_path)
+            db.connect()
+            db.init_schema()
+            yield db
+            db.close()
+
+    def test_query_services_by_date(self, temp_db):
+        """query_services_by_date returns services matching the date."""
+        temp_db.insert_or_update_service("2026-02-15", "AM Worship", "f.pptx", "h1")
+        temp_db.insert_or_update_service("2026-02-16", "PM Worship", "g.pptx", "h2")
+        results = temp_db.query_services_by_date("2026-02-15")
+        assert len(results) == 1
+        assert results[0]["service_name"] == "AM Worship"
+
+    def test_query_services_by_date_with_name_pattern(self, temp_db):
+        """query_services_by_date with name_pattern filters by name."""
+        temp_db.insert_or_update_service("2026-02-15", "AM Worship", "f.pptx", "h1")
+        temp_db.insert_or_update_service("2026-02-15", "PM Worship", "g.pptx", "h2")
+        results = temp_db.query_services_by_date("2026-02-15", name_pattern="AM")
+        assert len(results) == 1
+        assert results[0]["service_name"] == "AM Worship"
+
+    def test_query_services_by_date_no_match(self, temp_db):
+        """query_services_by_date returns empty list for no matches."""
+        temp_db.insert_or_update_service("2026-02-15", "AM Worship", "f.pptx", "h1")
+        assert temp_db.query_services_by_date("1999-01-01") == []
+
+    def test_query_orphaned_songs(self, temp_db):
+        """query_orphaned_songs returns songs with no service_songs rows."""
+        song_id = temp_db.insert_or_get_song("amazing grace", "Amazing Grace")
+        temp_db.insert_or_get_song_edition(song_id, words_by="John Newton")
+        results = temp_db.query_orphaned_songs()
+        assert len(results) == 1
+        assert results[0]["canonical_title"] == "amazing grace"
+
+    def test_query_orphaned_songs_excludes_performed(self, temp_db):
+        """query_orphaned_songs excludes songs with service_songs rows."""
+        song_id = temp_db.insert_or_get_song("amazing grace", "Amazing Grace")
+        service_id = temp_db.insert_or_update_service("2026-02-15", "AM", "f.pptx", "h1")
+        temp_db.insert_service_song(service_id, song_id, ordinal=1)
+        results = temp_db.query_orphaned_songs()
+        assert len(results) == 0
+
+    def test_query_duplicate_services(self, temp_db):
+        """query_duplicate_services returns groups with same date+name, different hash."""
+        temp_db.insert_or_update_service("2026-02-15", "AM Worship", "f.pptx", "h1")
+        temp_db.insert_or_update_service("2026-02-15", "AM Worship", "g.pptx", "h2")
+        results = temp_db.query_duplicate_services()
+        assert len(results) >= 2
+        dates = [r["service_date"] for r in results]
+        assert "2026-02-15" in dates
+
+    def test_query_duplicate_services_none(self, temp_db):
+        """query_duplicate_services returns empty list when no duplicates."""
+        temp_db.insert_or_update_service("2026-02-15", "AM Worship", "f.pptx", "h1")
+        results = temp_db.query_duplicate_services()
+        assert len(results) == 0
+
+    def test_delete_song(self, temp_db):
+        """delete_song removes the song, its editions, and related copy_events."""
+        song_id = temp_db.insert_or_get_song("amazing grace", "Amazing Grace")
+        edition_id = temp_db.insert_or_get_song_edition(song_id, words_by="John Newton")
+
+        temp_db.delete_song(song_id)
+
+        assert temp_db.query_song_by_id(song_id) is None
+        assert temp_db.query_song_editions(song_id) == []
+
+    def test_delete_song_removes_copy_events(self, temp_db):
+        """delete_song removes copy_events referencing the song."""
+        song_id = temp_db.insert_or_get_song("amazing grace", "Amazing Grace")
+        edition_id = temp_db.insert_or_get_song_edition(song_id, words_by="John Newton")
+        service_id = temp_db.insert_or_update_service("2026-02-15", "AM", "f.pptx", "h1")
+        temp_db.insert_or_get_copy_event(service_id, song_id, "projection", song_edition_id=edition_id)
+
+        temp_db.delete_song(song_id)
+
+        cursor = temp_db.cursor()
+        cursor.execute("SELECT COUNT(*) FROM copy_events WHERE song_id = ?", (song_id,))
+        assert cursor.fetchone()[0] == 0
