@@ -1112,6 +1112,163 @@ class TestOcrCapOptions:
             assert "1" in result.output  # 1 song needs OCR
 
 
+@pytest.mark.integration
+class TestRepairCreditsOcrRefund:
+    """repair-credits must refund OCR budget when OCR yields no useful credits (#168)."""
+
+    @pytest.fixture
+    def runner(self):
+        return CliRunner()
+
+    @pytest.fixture
+    def db_with_two_missing(self):
+        """Database with two songs missing credits + fake source .pptx files."""
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "test.db"
+            # Create a dummy source file so Path.exists() returns True
+            source_pptx = Path(tmpdir) / "a.pptx"
+            source_pptx.write_bytes(b"PK dummy")
+
+            db = Database(db_path)
+            db.connect()
+            db.init_schema()
+
+            # Song 1 — OCR will return nothing
+            service_id = db.insert_or_update_service(
+                service_date="2026-02-15",
+                service_name="Morning Worship",
+                source_file=str(source_pptx),
+                source_hash="hash1",
+            )
+            song1_id = db.insert_or_get_song("song one", "Song One")
+            db.insert_service_song(service_id=service_id, song_id=song1_id, ordinal=1)
+
+            # Song 2 — OCR will return nothing too
+            song2_id = db.insert_or_get_song("song two", "Song Two")
+            db.insert_service_song(service_id=service_id, song_id=song2_id, ordinal=2)
+
+            db.close()
+            yield db_path, tmpdir
+
+    def test_budget_refunded_when_ocr_returns_nothing(
+        self, runner, db_with_two_missing, monkeypatch
+    ):
+        """With budget=1, if OCR returns None the budget should be refunded so
+        the second song still gets an OCR attempt."""
+        db_path, tmpdir = db_with_two_missing
+
+        ocr_calls: list[str] = []
+
+        def fake_try_ocr(slides: object) -> None:
+            ocr_calls.append("called")
+            return None  # OCR returns nothing
+
+        def fake_load_pptx(path: object) -> object:
+            """Return a minimal mock presentation."""
+
+            class FakeSlides:
+                def __len__(self) -> int:
+                    return 2
+
+                def __iter__(self):  # type: ignore[override]
+                    return iter([None, None])
+
+            class FakePrs:
+                slides = FakeSlides()
+
+            return FakePrs()
+
+        from worship_catalog.pptx_reader import Slide, SlideText
+
+        def fake_parse_all_slides(prs: object) -> list[Slide]:
+            return [
+                Slide(index=0, hidden=False, text=SlideText(text_lines=["metadata"]), images=[]),
+                Slide(index=1, hidden=False, text=SlideText(text_lines=["song one"]), images=[]),
+                Slide(index=2, hidden=False, text=SlideText(text_lines=["song two"]), images=[]),
+            ]
+
+        monkeypatch.setattr("worship_catalog.extractor._try_ocr_credits", fake_try_ocr)
+        monkeypatch.setattr("worship_catalog.pptx_reader.load_pptx", fake_load_pptx)
+        monkeypatch.setattr("worship_catalog.pptx_reader.parse_all_slides", fake_parse_all_slides)
+
+        import os
+
+        result = runner.invoke(
+            main,
+            [
+                "repair-credits",
+                "--db", str(db_path),
+                "--library-index", str(Path(tmpdir) / "empty.json"),
+                "--ocr",
+                "--max-ocr-calls", "1",
+            ],
+            env={**os.environ, "ANTHROPIC_API_KEY": "sk-ant-test"},
+        )
+        assert result.exit_code == 0
+        # Both songs should get an OCR attempt because the first one's budget
+        # was refunded after returning nothing.
+        assert len(ocr_calls) == 2, (
+            f"Expected 2 OCR attempts (budget refunded on empty result), got {len(ocr_calls)}"
+        )
+
+    def test_budget_not_refunded_when_ocr_returns_credits(
+        self, runner, db_with_two_missing, monkeypatch
+    ):
+        """When OCR returns useful credits, the budget should NOT be refunded."""
+        db_path, tmpdir = db_with_two_missing
+
+        ocr_calls: list[str] = []
+
+        def fake_try_ocr(slides: object) -> str:
+            ocr_calls.append("called")
+            return "Words: John Newton"  # Returns valid credits
+
+        def fake_load_pptx(path: object) -> object:
+            class FakeSlides:
+                def __len__(self) -> int:
+                    return 2
+
+                def __iter__(self):  # type: ignore[override]
+                    return iter([None, None])
+
+            class FakePrs:
+                slides = FakeSlides()
+
+            return FakePrs()
+
+        from worship_catalog.pptx_reader import Slide, SlideText
+
+        def fake_parse_all_slides(prs: object) -> list[Slide]:
+            return [
+                Slide(index=0, hidden=False, text=SlideText(text_lines=["metadata"]), images=[]),
+                Slide(index=1, hidden=False, text=SlideText(text_lines=["song one"]), images=[]),
+                Slide(index=2, hidden=False, text=SlideText(text_lines=["song two"]), images=[]),
+            ]
+
+        monkeypatch.setattr("worship_catalog.extractor._try_ocr_credits", fake_try_ocr)
+        monkeypatch.setattr("worship_catalog.pptx_reader.load_pptx", fake_load_pptx)
+        monkeypatch.setattr("worship_catalog.pptx_reader.parse_all_slides", fake_parse_all_slides)
+
+        import os
+
+        result = runner.invoke(
+            main,
+            [
+                "repair-credits",
+                "--db", str(db_path),
+                "--library-index", str(Path(tmpdir) / "empty.json"),
+                "--ocr",
+                "--max-ocr-calls", "1",
+            ],
+            env={**os.environ, "ANTHROPIC_API_KEY": "sk-ant-test"},
+        )
+        assert result.exit_code == 0
+        # Only the first song gets OCR — budget of 1 is consumed and NOT refunded
+        assert len(ocr_calls) == 1, (
+            f"Expected 1 OCR attempt (budget consumed on success), got {len(ocr_calls)}"
+        )
+
+
 class TestResolveLibraryIndex:
     """Tests for the _resolve_library_index helper."""
 
