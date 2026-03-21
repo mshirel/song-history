@@ -2945,6 +2945,61 @@ class TestUploadSizeLimit:
         )
 
 
+class TestAboutPageVersionFile:
+    """Version and build date must be read from baked-in files (#261, #262)."""
+
+    @staticmethod
+    def _make_client(
+        db_path: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        version_file: Path | None = None,
+        build_date_file: Path | None = None,
+    ) -> CsrfAwareClient:
+        inbox = tmp_path / "inbox"
+        inbox.mkdir(exist_ok=True)
+        monkeypatch.setenv("DB_PATH", db_path)
+        monkeypatch.setenv("INBOX_DIR", str(inbox))
+        from importlib import reload
+        import worship_catalog.web.app as app_module
+        reload(app_module)
+        if version_file is not None:
+            app_module._VERSION_FILE = version_file  # type: ignore[attr-defined]
+        if build_date_file is not None:
+            app_module._BUILD_DATE_FILE = build_date_file  # type: ignore[attr-defined]
+        return CsrfAwareClient(TestClient(app_module.app))
+
+    def test_version_from_file(self, db_with_songs, tmp_path, monkeypatch):
+        """When /app/.version exists, the about page shows its content, not importlib fallback."""
+        version_file = tmp_path / ".version"
+        version_file.write_text("1.2.3\n")
+        c = self._make_client(str(db_with_songs), tmp_path, monkeypatch, version_file=version_file)
+        resp = c.get("/about")
+        assert "1.2.3" in resp.text
+        assert "0.0.0" not in resp.text
+
+    def test_build_date_from_file(self, db_with_songs, tmp_path, monkeypatch):
+        """When /app/.build-date exists, the about page shows its content, not 'development'."""
+        build_date_file = tmp_path / ".build-date"
+        build_date_file.write_text("2026-03-20T12:00:00Z\n")
+        c = self._make_client(str(db_with_songs), tmp_path, monkeypatch, build_date_file=build_date_file)
+        resp = c.get("/about")
+        assert "2026-03-20T12:00:00Z" in resp.text
+
+    def test_version_falls_back_to_importlib(self, db_with_songs, tmp_path, monkeypatch):
+        """When .version file does not exist, fall back to importlib.metadata."""
+        missing = tmp_path / "nonexistent" / ".version"
+        c = self._make_client(str(db_with_songs), tmp_path, monkeypatch, version_file=missing)
+        resp = c.get("/about")
+        assert resp.status_code == 200
+        assert "version" in resp.text.lower()
+
+    def test_build_date_falls_back_to_development(self, db_with_songs, tmp_path, monkeypatch):
+        """When .build-date file does not exist, fall back to 'development'."""
+        missing = tmp_path / "nonexistent" / ".build-date"
+        c = self._make_client(str(db_with_songs), tmp_path, monkeypatch, build_date_file=missing)
+        resp = c.get("/about")
+        assert resp.status_code == 200
+
+
 class TestDbConnectionCleanup:
     """DB connections must be closed via FastAPI Depends(get_db), not manual close (#236)."""
 

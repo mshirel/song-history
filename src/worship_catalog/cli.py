@@ -6,6 +6,7 @@ import json
 import logging
 import sys
 from pathlib import Path
+from typing import Any
 
 import click
 
@@ -773,6 +774,254 @@ def library_index_cmd(path: str, out: str) -> None:
 
     except Exception as e:
         _log.exception("library index error", extra={"error": str(e)})
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+
+@main.group()
+def cleanup() -> None:
+    """Data cleanup commands.
+
+    Find and remove bad imports, orphaned songs, and duplicate services.
+    """
+    pass
+
+
+@cleanup.command(name="delete-service")
+@click.option(
+    "--id",
+    "service_id",
+    type=int,
+    default=None,
+    help="Delete service by ID",
+)
+@click.option(
+    "--date",
+    "service_date",
+    type=str,
+    default=None,
+    help="Delete services matching this date (YYYY-MM-DD)",
+)
+@click.option(
+    "--name",
+    "name_pattern",
+    type=str,
+    default=None,
+    help="Filter by service name pattern (used with --date)",
+)
+@click.option(
+    "--db",
+    type=click.Path(),
+    default="data/worship.db",
+    help="Path to SQLite database",
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help="Show what would be deleted without modifying the database",
+)
+@click.option(
+    "--yes",
+    is_flag=True,
+    help="Skip confirmation prompt",
+)
+def delete_service(
+    service_id: int | None,
+    service_date: str | None,
+    name_pattern: str | None,
+    db: str,
+    dry_run: bool,
+    yes: bool,
+) -> None:
+    """Delete service(s) and all related data.
+
+    Use --id to delete a specific service, or --date to delete all services
+    matching a date (optionally filtered by --name pattern).
+    """
+    if service_id is None and service_date is None:
+        click.echo("Error: must provide --id or --date", err=True)
+        sys.exit(1)
+
+    try:
+        db_path = Path(db)
+        database = Database(db_path)
+        database.connect()
+
+        services_to_delete: list[dict[str, Any]] = []
+
+        if service_id is not None:
+            svc = database.query_service_by_id(service_id)
+            if svc is None:
+                click.echo(f"Error: service {service_id} not found", err=True)
+                database.close()
+                sys.exit(1)
+            services_to_delete = [svc]
+        else:
+            assert service_date is not None  # guaranteed by the check above
+            services_to_delete = database.query_services_by_date(
+                service_date, name_pattern=name_pattern
+            )
+            if not services_to_delete:
+                click.echo(
+                    f"Error: no services found for date {service_date}"
+                    + (f" with name matching '{name_pattern}'" if name_pattern else ""),
+                    err=True,
+                )
+                database.close()
+                sys.exit(1)
+
+        # Show what will be deleted
+        click.echo(f"{'Would delete' if dry_run else 'Deleting'} "
+                    f"{len(services_to_delete)} service(s):")
+        for svc in services_to_delete:
+            click.echo(
+                f"  ID={svc['id']}  {svc['service_date']}  "
+                f"{svc['service_name']}  hash={svc['source_hash']}"
+            )
+
+        if dry_run:
+            click.echo("\nDry run — no changes made.")
+            database.close()
+            sys.exit(0)
+
+        if not yes:
+            click.confirm("Proceed?", abort=True)
+
+        for svc in services_to_delete:
+            database.delete_service_data(int(svc["id"]))
+            _log.info(
+                "Deleted service",
+                extra={"service_id": svc["id"], "date": svc["service_date"]},
+            )
+
+        click.echo(f"Deleted {len(services_to_delete)} service(s).")
+        database.close()
+        sys.exit(0)
+
+    except click.Abort:
+        click.echo("\nAborted.")
+        sys.exit(1)
+    except SystemExit:
+        raise
+    except Exception as e:
+        _log.exception("cleanup delete-service error", extra={"error": str(e)})
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+
+@cleanup.command(name="orphaned-songs")
+@click.option(
+    "--db",
+    type=click.Path(),
+    default="data/worship.db",
+    help="Path to SQLite database",
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help="Show what would be deleted without modifying the database",
+)
+@click.option(
+    "--yes",
+    is_flag=True,
+    help="Skip confirmation prompt",
+)
+def orphaned_songs(db: str, dry_run: bool, yes: bool) -> None:
+    """Find and remove songs with 0 performances.
+
+    Identifies songs that have no service_songs rows (orphaned after service
+    deletion) and removes them along with their editions and copy_events.
+    """
+    try:
+        db_path = Path(db)
+        database = Database(db_path)
+        database.connect()
+
+        orphans = database.query_orphaned_songs()
+
+        if not orphans:
+            click.echo("No orphaned songs found.")
+            database.close()
+            sys.exit(0)
+
+        click.echo(f"Found {len(orphans)} orphaned song(s):")
+        for song in orphans:
+            click.echo(f"  ID={song['song_id']}  {song['display_title']}")
+
+        if dry_run:
+            click.echo(f"\nDry run — would remove {len(orphans)} song(s).")
+            database.close()
+            sys.exit(0)
+
+        if not yes:
+            click.confirm("Proceed?", abort=True)
+
+        for song in orphans:
+            database.delete_song(int(song["song_id"]))
+            _log.info(
+                "Deleted orphaned song",
+                extra={"song_id": song["song_id"], "title": song["display_title"]},
+            )
+
+        click.echo(f"Removed {len(orphans)} orphaned song(s).")
+        database.close()
+        sys.exit(0)
+
+    except click.Abort:
+        click.echo("\nAborted.")
+        sys.exit(1)
+    except SystemExit:
+        raise
+    except Exception as e:
+        _log.exception("cleanup orphaned-songs error", extra={"error": str(e)})
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+
+@cleanup.command(name="find-duplicates")
+@click.option(
+    "--db",
+    type=click.Path(),
+    default="data/worship.db",
+    help="Path to SQLite database",
+)
+def find_duplicates(db: str) -> None:
+    """List services with same date+name but different source hash.
+
+    Helps identify duplicate imports caused by modified files being
+    re-imported (different hash creates a second service row).
+    """
+    try:
+        db_path = Path(db)
+        database = Database(db_path)
+        database.connect()
+
+        dupes = database.query_duplicate_services()
+
+        if not dupes:
+            click.echo("No duplicate services found.")
+            database.close()
+            sys.exit(0)
+
+        # Group by (date, name)
+        groups: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        for svc in dupes:
+            key = (str(svc["service_date"]), str(svc["service_name"]))
+            groups.setdefault(key, []).append(svc)
+
+        click.echo(f"Found {len(groups)} group(s) of duplicate services:\n")
+        for (date, name), svcs in groups.items():
+            click.echo(f"  {date}  {name}  ({len(svcs)} copies)")
+            for svc in svcs:
+                click.echo(f"    ID={svc['id']}  hash={svc['source_hash']}")
+
+        database.close()
+        sys.exit(0)
+
+    except SystemExit:
+        raise
+    except Exception as e:
+        _log.exception("cleanup find-duplicates error", extra={"error": str(e)})
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
 

@@ -4,6 +4,10 @@ FROM python:3.14-slim@sha256:6a27522252aef8432841f224d9baaa6e9fce07b07584154fa0b
 
 WORKDIR /app
 
+# Build-time version and date, baked into files the app reads at runtime (#261, #262)
+ARG APP_VERSION=dev
+ARG BUILD_DATE=development
+
 # Upgrade all Debian packages to pull in any security patches issued since
 # the base image was published, then install runtime deps.
 # This ensures Trivy finds no fixable CVEs even when the base digest is stale.
@@ -31,6 +35,10 @@ RUN chmod +x scripts/import-new.sh
 # Install pinned dependencies from lockfile for reproducible builds (#174),
 # then install the package itself (editable not needed in prod).
 RUN pip install --no-cache-dir -r requirements.lock && pip install --no-cache-dir --no-deps ".[web]"
+
+# Bake version and build date so the About page shows real values (#261, #262)
+RUN echo "${APP_VERSION}" > /app/.version \
+    && echo "${BUILD_DATE}" > /app/.build-date
 
 # Create a non-root user and group for runtime (#26)
 # Fixed UID/GID so host volume permissions can be set to match:
