@@ -181,35 +181,119 @@ _UPLOAD_RATE_WINDOW_SECONDS: int = 3600  # 1 hour
 
 
 class _UploadRateLimiter:
-    """Thread-safe sliding-window rate limiter keyed by client IP."""
+    """Thread-safe sliding-window rate limiter keyed by client IP.
 
-    def __init__(self) -> None:
+    When *db_path* is provided, timestamps are persisted to a SQLite table
+    (``rate_limit_events``) so that rate-limit state survives process restarts
+    (#241).  Without a *db_path* the limiter falls back to an in-memory dict
+    (useful for tests that don't need persistence).
+    """
+
+    _CREATE_TABLE = (
+        "CREATE TABLE IF NOT EXISTS rate_limit_events "
+        "(client_ip TEXT NOT NULL, timestamp REAL NOT NULL)"
+    )
+    _CREATE_INDEX = (
+        "CREATE INDEX IF NOT EXISTS idx_rle_ip_ts "
+        "ON rate_limit_events (client_ip, timestamp)"
+    )
+
+    def __init__(self, db_path: Path | None = None) -> None:
         self._lock = threading.Lock()
+        self._db_path = db_path
+        # In-memory fallback when no db_path is given
         self._timestamps: dict[str, list[float]] = defaultdict(list)
+        if db_path is not None:
+            self._init_db()
+
+    # -- private helpers --------------------------------------------------
+
+    def _init_db(self) -> None:
+        import sqlite3
+
+        conn = sqlite3.connect(self._db_path)  # type: ignore[arg-type]
+        try:
+            conn.execute(self._CREATE_TABLE)
+            conn.execute(self._CREATE_INDEX)
+            conn.commit()
+        finally:
+            conn.close()
+
+    def _db_is_allowed(self, client_ip: str) -> tuple[bool, int]:
+        import sqlite3
+
+        now = time.time()
+        window_start = now - _UPLOAD_RATE_WINDOW_SECONDS
+
+        conn = sqlite3.connect(self._db_path)  # type: ignore[arg-type]
+        try:
+            # Prune expired entries for this IP
+            conn.execute(
+                "DELETE FROM rate_limit_events WHERE client_ip = ? AND timestamp <= ?",
+                (client_ip, window_start),
+            )
+            row = conn.execute(
+                "SELECT COUNT(*) FROM rate_limit_events WHERE client_ip = ? AND timestamp > ?",
+                (client_ip, window_start),
+            ).fetchone()
+            count = row[0] if row else 0
+
+            if count >= _UPLOAD_RATE_LIMIT:
+                oldest_row = conn.execute(
+                    "SELECT MIN(timestamp) FROM rate_limit_events "
+                    "WHERE client_ip = ? AND timestamp > ?",
+                    (client_ip, window_start),
+                ).fetchone()
+                oldest_ts = oldest_row[0] if oldest_row and oldest_row[0] else now
+                retry_after = int(oldest_ts - window_start) + 1
+                conn.commit()
+                return False, max(retry_after, 1)
+
+            conn.execute(
+                "INSERT INTO rate_limit_events (client_ip, timestamp) VALUES (?, ?)",
+                (client_ip, now),
+            )
+            conn.commit()
+            return True, 0
+        finally:
+            conn.close()
+
+    def _mem_is_allowed(self, client_ip: str) -> tuple[bool, int]:
+        now = time.monotonic()
+        window_start = now - _UPLOAD_RATE_WINDOW_SECONDS
+        timestamps = self._timestamps[client_ip]
+        self._timestamps[client_ip] = [
+            t for t in timestamps if t > window_start
+        ]
+        timestamps = self._timestamps[client_ip]
+        if len(timestamps) >= _UPLOAD_RATE_LIMIT:
+            oldest_in_window = timestamps[0]
+            retry_after = int(oldest_in_window - window_start) + 1
+            return False, max(retry_after, 1)
+        timestamps.append(now)
+        return True, 0
+
+    # -- public API -------------------------------------------------------
 
     def is_allowed(self, client_ip: str) -> tuple[bool, int]:
         """Check if the client may upload.
 
         Returns (allowed, retry_after_seconds).
         """
-        now = time.monotonic()
         with self._lock:
-            window_start = now - _UPLOAD_RATE_WINDOW_SECONDS
-            # Prune old timestamps
-            timestamps = self._timestamps[client_ip]
-            self._timestamps[client_ip] = [
-                t for t in timestamps if t > window_start
-            ]
-            timestamps = self._timestamps[client_ip]
-            if len(timestamps) >= _UPLOAD_RATE_LIMIT:
-                oldest_in_window = timestamps[0]
-                retry_after = int(oldest_in_window - window_start) + 1
-                return False, max(retry_after, 1)
-            timestamps.append(now)
-            return True, 0
+            if self._db_path is not None:
+                return self._db_is_allowed(client_ip)
+            return self._mem_is_allowed(client_ip)
 
 
-_upload_limiter = _UploadRateLimiter()
+def _build_upload_limiter() -> _UploadRateLimiter:
+    """Create the module-level rate limiter, persisted next to the app DB."""
+    db_path_str = os.environ.get("DB_PATH", "data/worship.db")
+    limiter_db = Path(db_path_str).parent / "rate_limits.db"
+    return _UploadRateLimiter(db_path=limiter_db)
+
+
+_upload_limiter = _build_upload_limiter()
 
 
 def _validate_date_range(start_date: str, end_date: str) -> None:
