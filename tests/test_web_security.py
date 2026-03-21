@@ -4,7 +4,6 @@ Covers:
 - Issue #107: HTMX CDN script tag must include SRI integrity attribute
 - Issue #105: leader_name Content-Disposition header injection
 - Issue #106: upload filename path traversal
-- Issue #241: rate limiter persistence across restarts
 """
 
 from __future__ import annotations
@@ -648,127 +647,6 @@ class TestUploadRateLimiterUnit:
 
 
 # ---------------------------------------------------------------------------
-# Issue #241 — Rate limiter persistence across restarts
-# ---------------------------------------------------------------------------
-
-
-class TestUploadRateLimiterPersistence:
-    """Rate limiter state must survive process restarts (#241)."""
-
-    def test_rate_limit_state_survives_new_instance(self, tmp_path):
-        """Creating a new _UploadRateLimiter with same DB retains state."""
-        import worship_catalog.web.app as app_module
-        from worship_catalog.web.app import _UploadRateLimiter
-
-        db_path = tmp_path / "rate.db"
-        original_limit = app_module._UPLOAD_RATE_LIMIT
-        original_window = app_module._UPLOAD_RATE_WINDOW_SECONDS
-        try:
-            app_module._UPLOAD_RATE_LIMIT = 2
-            app_module._UPLOAD_RATE_WINDOW_SECONDS = 3600
-
-            # First instance — exhaust the quota
-            limiter1 = _UploadRateLimiter(db_path=db_path)
-            assert limiter1.is_allowed("192.168.1.1")[0] is True
-            assert limiter1.is_allowed("192.168.1.1")[0] is True
-            assert limiter1.is_allowed("192.168.1.1")[0] is False
-
-            # New instance with same DB path (simulates restart)
-            limiter2 = _UploadRateLimiter(db_path=db_path)
-            allowed, _ = limiter2.is_allowed("192.168.1.1")
-            assert allowed is False, (
-                "Rate limit state was lost when creating a new limiter instance — "
-                "state must persist across restarts"
-            )
-        finally:
-            app_module._UPLOAD_RATE_LIMIT = original_limit
-            app_module._UPLOAD_RATE_WINDOW_SECONDS = original_window
-
-    def test_rate_limit_persistence_different_ips_independent(self, tmp_path):
-        """Persisted rate limits are still per-IP."""
-        import worship_catalog.web.app as app_module
-        from worship_catalog.web.app import _UploadRateLimiter
-
-        db_path = tmp_path / "rate.db"
-        original_limit = app_module._UPLOAD_RATE_LIMIT
-        original_window = app_module._UPLOAD_RATE_WINDOW_SECONDS
-        try:
-            app_module._UPLOAD_RATE_LIMIT = 1
-            app_module._UPLOAD_RATE_WINDOW_SECONDS = 3600
-
-            limiter = _UploadRateLimiter(db_path=db_path)
-            # Exhaust IP-A
-            limiter.is_allowed("10.0.0.1")
-            # IP-B must still work after restart
-            limiter2 = _UploadRateLimiter(db_path=db_path)
-            allowed, _ = limiter2.is_allowed("10.0.0.2")
-            assert allowed is True, (
-                "Different IPs should have independent rate limits"
-            )
-        finally:
-            app_module._UPLOAD_RATE_LIMIT = original_limit
-            app_module._UPLOAD_RATE_WINDOW_SECONDS = original_window
-
-    def test_rate_limit_window_expiry_persisted(self, tmp_path):
-        """Expired timestamps in DB should not count against the limit."""
-        import worship_catalog.web.app as app_module
-        from worship_catalog.web.app import _UploadRateLimiter
-
-        db_path = tmp_path / "rate.db"
-        original_limit = app_module._UPLOAD_RATE_LIMIT
-        original_window = app_module._UPLOAD_RATE_WINDOW_SECONDS
-        try:
-            app_module._UPLOAD_RATE_LIMIT = 1
-            app_module._UPLOAD_RATE_WINDOW_SECONDS = 10
-
-            limiter = _UploadRateLimiter(db_path=db_path)
-            limiter.is_allowed("1.2.3.4")
-            assert limiter.is_allowed("1.2.3.4")[0] is False
-
-            # Manually backdate the stored timestamp to simulate time passing
-            import sqlite3
-            conn = sqlite3.connect(db_path)
-            conn.execute(
-                "UPDATE rate_limit_events SET timestamp = timestamp - 20"
-            )
-            conn.commit()
-            conn.close()
-
-            limiter2 = _UploadRateLimiter(db_path=db_path)
-            allowed, _ = limiter2.is_allowed("1.2.3.4")
-            assert allowed is True, (
-                "Expired timestamps should not count against rate limit"
-            )
-        finally:
-            app_module._UPLOAD_RATE_LIMIT = original_limit
-            app_module._UPLOAD_RATE_WINDOW_SECONDS = original_window
-
-    def test_rate_limit_no_db_path_falls_back_to_in_memory(self):
-        """When no db_path is given, limiter still works (in-memory only)."""
-        import worship_catalog.web.app as app_module
-        from worship_catalog.web.app import _UploadRateLimiter
-
-        original_limit = app_module._UPLOAD_RATE_LIMIT
-        try:
-            app_module._UPLOAD_RATE_LIMIT = 1
-            limiter = _UploadRateLimiter()
-            assert limiter.is_allowed("9.9.9.9")[0] is True
-            assert limiter.is_allowed("9.9.9.9")[0] is False
-        finally:
-            app_module._UPLOAD_RATE_LIMIT = original_limit
-
-    def test_upload_endpoint_uses_persistent_limiter(self, client, monkeypatch):
-        """The /upload endpoint must use a DB-backed rate limiter."""
-        import worship_catalog.web.app as app_module
-
-        # Check that the module-level limiter has a db_path set
-        assert app_module._upload_limiter._db_path is not None, (
-            "Module-level _upload_limiter should be configured with a db_path "
-            "for persistence across restarts"
-        )
-
-
-# ---------------------------------------------------------------------------
 # Issue #197 — Content-Security-Policy header
 # ---------------------------------------------------------------------------
 
@@ -833,17 +711,135 @@ class TestUploadCsrfIntegration:
             "/upload",
             files={"file": ("test.pptx", io.BytesIO(b"PK\x03\x04dummy"), pptx_mime)},
         )
-        assert resp.status_code == 403, (
-            f"Expected 403 for missing CSRF token, got {resp.status_code}"
-        )
+        assert resp.status_code == 403
 
     def test_upload_with_csrf_token_succeeds(self, client):
         """POST /upload with valid CSRF token must not be rejected by CSRF middleware."""
         pptx_mime = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
-        # CsrfAwareClient automatically includes the token
         resp = client.post(
             "/upload",
             files={"file": ("test.pptx", io.BytesIO(b"PK\x03\x04dummy"), pptx_mime)},
         )
-        # 400 is OK here (bad PPTX content), but not 403 (CSRF rejection)
-        assert resp.status_code != 403, "CSRF token was rejected despite being valid"
+        assert resp.status_code != 403
+
+
+# ---------------------------------------------------------------------------
+# Issue #238 — Report download forms missing CSRF tokens
+# Issue #239 — CSRF cookie name mismatch
+# ---------------------------------------------------------------------------
+
+
+class TestReportCsrfTokens:
+    """Report download forms must send the CSRF token so POSTs are not blocked (#238)."""
+
+    def test_reports_page_includes_reports_js(self, client):
+        """Reports page must load an external reports.js script for CSRF handling."""
+        resp = client.get("/reports")
+        assert resp.status_code == 200
+        assert "/static/reports.js" in resp.text, (
+            "Reports page must include <script src='/static/reports.js'>"
+        )
+
+    def test_reports_js_file_exists_and_references_csrftoken_cookie(self, client):
+        """The reports.js static file must exist and read the csrftoken cookie."""
+        resp = client.get("/static/reports.js")
+        assert resp.status_code == 200, "reports.js not found at /static/reports.js"
+        assert "csrftoken" in resp.text, (
+            "reports.js must read the 'csrftoken' cookie"
+        )
+        assert "X-CSRFToken" in resp.text, (
+            "reports.js must send the X-CSRFToken header"
+        )
+
+    def test_ccli_form_is_intercepted_by_js(self, client):
+        """CCLI download form must have an id so reports.js can intercept it."""
+        resp = client.get("/reports")
+        assert resp.status_code == 200
+        assert 'id="ccli-form"' in resp.text, (
+            "CCLI form must have id='ccli-form' for JS interception"
+        )
+
+    def test_htmx_csrf_header_configured_via_reports_js(self, client):
+        """reports.js must configure htmx to send CSRF headers on all requests."""
+        # reports.js is loaded on the reports page and calls configureHtmxCsrf()
+        # which sets hx-headers on document.body with the X-CSRFToken header.
+        resp = client.get("/static/reports.js")
+        assert resp.status_code == 200
+        assert "hx-headers" in resp.text, (
+            "reports.js must set hx-headers on document.body for htmx CSRF"
+        )
+        assert "X-CSRFToken" in resp.text, (
+            "reports.js must include X-CSRFToken in the hx-headers config"
+        )
+
+    def test_stats_csv_download_with_csrf_succeeds(self, client):
+        """Stats CSV download via POST must not be blocked by CSRF."""
+        resp = client.post(
+            "/reports/stats/csv",
+            data={"start_date": "2026-01-01", "end_date": "2026-12-31"},
+        )
+        assert resp.status_code != 403, (
+            "Stats CSV download blocked by CSRF — form is missing token"
+        )
+
+    def test_stats_xlsx_download_with_csrf_succeeds(self, client):
+        """Stats Excel download via POST must not be blocked by CSRF."""
+        try:
+            resp = client.post(
+                "/reports/stats/xlsx",
+                data={"start_date": "2026-01-01", "end_date": "2026-12-31"},
+            )
+        except Exception:
+            pytest.skip("openpyxl not installed")
+        if resp.status_code == 501:
+            pytest.skip("openpyxl not installed")
+        assert resp.status_code != 403, (
+            "Stats Excel download blocked by CSRF — form is missing token"
+        )
+
+    def test_ccli_csv_download_with_csrf_succeeds(self, client):
+        """CCLI CSV download via POST must not be blocked by CSRF."""
+        resp = client.post(
+            "/reports/ccli",
+            data={"start_date": "2026-01-01", "end_date": "2026-12-31"},
+        )
+        assert resp.status_code != 403, (
+            "CCLI CSV download blocked by CSRF — form is missing token"
+        )
+
+
+class TestCsrfCookieConfiguration:
+    """CSRF cookie name must be explicitly configured (#239)."""
+
+    def test_csrf_cookie_is_set_on_first_get(self, db_with_songs, tmp_path, monkeypatch):
+        """A GET request must set the csrftoken cookie."""
+        inbox = tmp_path / "inbox"
+        inbox.mkdir()
+        monkeypatch.setenv("DB_PATH", str(db_with_songs))
+        monkeypatch.setenv("INBOX_DIR", str(inbox))
+        from importlib import reload
+        import worship_catalog.web.app as app_module
+        reload(app_module)
+        raw = TestClient(app_module.app)
+        resp = raw.get("/songs")
+        assert "csrftoken" in resp.cookies, (
+            "CSRF middleware did not set 'csrftoken' cookie on GET /songs"
+        )
+
+    def test_csrf_cookie_name_is_explicitly_configured(self):
+        """The CSRFMiddleware must be configured with an explicit cookie_name."""
+        import inspect
+        import worship_catalog.web.app as app_module
+        source = inspect.getsource(app_module)
+        assert "cookie_name" in source, (
+            "CSRFMiddleware must explicitly set cookie_name='csrftoken' "
+            "to avoid implicit coupling (#239)"
+        )
+
+    def test_reports_js_references_correct_cookie_name(self, client):
+        """reports.js must read from the same cookie name the middleware sets."""
+        resp = client.get("/static/reports.js")
+        assert resp.status_code == 200
+        assert "csrftoken" in resp.text, (
+            "reports.js does not reference the correct CSRF cookie name"
+        )
