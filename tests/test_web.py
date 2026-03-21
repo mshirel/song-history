@@ -731,29 +731,29 @@ class TestHealthEndpointDb:
 
         from starlette.testclient import TestClient
         c = TestClient(app_module.app, raise_server_exceptions=False)
-        with patch.object(app_module, "_get_db", broken_get_db):
-            response = c.get("/health")
+        monkeypatch.setattr(app_module, "_get_db", broken_get_db)
+        response = c.get("/health")
         assert response.status_code == 503
         data = response.json()
         assert "db" not in data, "Error response must not expose DB backend details"
 
     def test_health_returns_503_when_db_unavailable(self, monkeypatch, tmp_path):
         """When DB raises on execute, /health returns 503."""
-        from unittest.mock import patch, MagicMock
-
-        # Patch _get_db to raise so we can test the error path
         def broken_get_db():
             raise OSError("simulated DB failure")
 
         import worship_catalog.web.app as app_module
         from importlib import reload
         monkeypatch.setenv("DB_PATH", str(tmp_path / "worship.db"))
+        inbox = tmp_path / "inbox"
+        inbox.mkdir(exist_ok=True)
+        monkeypatch.setenv("INBOX_DIR", str(inbox))
         reload(app_module)
         from starlette.testclient import TestClient
         c = TestClient(app_module.app, raise_server_exceptions=False)
 
-        with patch.object(app_module, "_get_db", broken_get_db):
-            response = c.get("/health")
+        monkeypatch.setattr(app_module, "_get_db", broken_get_db)
+        response = c.get("/health")
         assert response.status_code == 503
 
 
@@ -2978,21 +2978,32 @@ class TestDbConnectionCleanup:
         source = app_path.read_text()
 
         # Count _get_db() calls in route functions (after the "# Routes" comment).
-        # Allowed callers: _get_db definition itself, get_db dependency, _lifespan,
-        # _run_import_in_background (thread-based, can't use Depends).
-        # All route functions should use Depends(get_db) instead.
+        # Allowed callers:
+        #   - _get_db definition itself, get_db dependency, _lifespan
+        #   - _run_import_in_background (thread-based, can't use Depends)
+        #   - health endpoint (must return 503 when _get_db() itself fails)
+        # All other route functions should use Depends(get_db) instead.
         route_section = source.split("# Routes")[1] if "# Routes" in source else source
 
-        # Find direct _get_db() calls in route functions (not in _run_import_in_background)
+        # Exclude _run_import_in_background — it legitimately uses _get_db()
         if "_run_import_in_background" in route_section:
-            # Split out the background import function — it legitimately uses _get_db()
             parts = route_section.split("def _run_import_in_background")
-            # Take everything except the _run_import_in_background function
-            # Find the next top-level def after _run_import_in_background
             if len(parts) > 1:
                 rest = parts[1]
-                # Find next function definition at same indent level
                 next_def = rest.find("\ndef ")
+                if next_def != -1:
+                    route_section = parts[0] + rest[next_def:]
+                else:
+                    route_section = parts[0]
+
+        # Exclude health endpoint — uses manual lifecycle for 503 on connect failure
+        if "async def health" in route_section:
+            parts = route_section.split("async def health")
+            if len(parts) > 1:
+                rest = parts[1]
+                next_def = rest.find("\nasync def ")
+                if next_def == -1:
+                    next_def = rest.find("\ndef ")
                 if next_def != -1:
                     route_section = parts[0] + rest[next_def:]
                 else:

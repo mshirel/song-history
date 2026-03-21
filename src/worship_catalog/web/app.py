@@ -354,13 +354,17 @@ async def get_db() -> AsyncGenerator[Database, None]:
 
 
 @app.get("/health")
-async def health(
-    response: Response,
-    db: Database = Depends(get_db),  # noqa: B008
-) -> dict[str, str]:
-    """Return 200 if DB is reachable; 503 otherwise (issue #31)."""
+async def health(response: Response) -> dict[str, str]:
+    """Return 200 if DB is reachable; 503 otherwise (issue #31).
+
+    Uses manual _get_db()/close() instead of Depends(get_db) because
+    the health check must return 503 (not 500) when the DB is unreachable,
+    including when _get_db() itself raises.
+    """
     try:
+        db = _get_db()
         db.cursor().execute("SELECT 1")
+        db.close()
         return {"status": "ok"}
     except Exception as exc:
         _log.warning("Health check DB failure", extra={"error": str(exc)})
