@@ -14,7 +14,7 @@ import secrets
 import threading
 import time
 from collections import defaultdict
-from collections.abc import AsyncGenerator, Generator
+from collections.abc import AsyncGenerator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from datetime import date
@@ -333,8 +333,14 @@ def _get_db() -> Database:
     return db
 
 
-def get_db() -> Generator[Database, None, None]:
-    """FastAPI dependency that always closes the DB connection (issue #21)."""
+async def get_db() -> AsyncGenerator[Database, None]:
+    """FastAPI dependency that always closes the DB connection (#236).
+
+    Async generator so that FastAPI runs it in the event-loop thread — the
+    same thread used by ``async def`` route handlers.  A sync generator would
+    be dispatched to the default threadpool, causing SQLite's
+    ``check_same_thread`` assertion to fail.
+    """
     db = _get_db()
     try:
         yield db
