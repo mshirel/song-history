@@ -102,7 +102,7 @@ app.add_middleware(RequestLoggingMiddleware)
 # script-src allows 'self' plus the unpkg CDN for htmx.
 _CSP_POLICY: str = (
     "default-src 'self'; "
-    "script-src 'self' https://unpkg.com; "
+    "script-src 'self'; "
     "style-src 'self' 'unsafe-inline'; "
     "img-src 'self' data:; "
     "frame-ancestors 'none'"
