@@ -65,12 +65,13 @@ ssh pi@<PI_IP> "chmod +x /opt/song-history/scripts/backup.sh"
 
 ```
 /opt/song-history/
-├── docker-compose.yml       # Pi-specific stack (Traefik + app)
-├── .env.example             # template — copy to .env and fill in
+├── docker-compose.yml            # Pi-specific stack (Traefik + app)
+├── .env.example                  # template — copy to .env and fill in
+├── worship-catalog.service       # systemd unit for auto-start on boot
 ├── traefik/
-│   └── traefik.yml          # Traefik static config (Cloudflare DNS-01)
+│   └── traefik.yml               # Traefik static config (Cloudflare DNS-01)
 └── scripts/
-    └── backup.sh            # nightly backup script (run via cron)
+    └── backup.sh                 # nightly backup script (run via cron)
 ```
 
 That's it. No source code, no tests, no docs on the Pi.
@@ -222,7 +223,53 @@ In UniFi Network → Settings → Networks → DNS:
 
 ---
 
-## 11. Start the Stack
+## 11. Dedicated Service User
+
+Create a `songs` system user to own the stack. This avoids running containers as your
+personal login account and makes systemd management cleaner.
+
+```bash
+# Create system user with a home directory and docker access
+sudo useradd --system --create-home --shell /bin/bash songs
+sudo usermod -aG docker songs
+
+# Hand ownership of the deployment directory to songs
+sudo chown -R songs:songs /opt/song-history
+```
+
+> **Note:** The `docker` group grants effective root on the host. Real privilege
+> separation comes from the non-root `appuser` inside the container. The `songs`
+> user is a housekeeping measure, not a security boundary.
+
+---
+
+## 12. Systemd Auto-Start
+
+Install the provided `worship-catalog.service` unit so the stack starts
+automatically on boot — critical for a headless Pi in a utility closet.
+
+```bash
+# Copy the unit file
+sudo cp /opt/song-history/worship-catalog.service /etc/systemd/system/
+
+# Reload systemd, enable and start the service
+sudo systemctl daemon-reload
+sudo systemctl enable --now worship-catalog
+```
+
+Useful commands:
+
+```bash
+sudo systemctl status worship-catalog   # check health
+sudo journalctl -u worship-catalog -f   # follow logs
+sudo systemctl restart worship-catalog  # restart after config change
+```
+
+---
+
+## 13. Start the Stack
+
+If you prefer to start manually (or for first-time testing before enabling systemd):
 
 ```bash
 cd /opt/song-history
@@ -234,7 +281,7 @@ Once the Let's Encrypt cert is issued, `https://songs.highland-coc.com` will be 
 
 ---
 
-## 12. Go/No-Go Verification Checklist
+## 14. Go/No-Go Verification Checklist
 
 ```bash
 # 1. All containers running
@@ -269,7 +316,7 @@ curl -sf https://songs.highland-coc.com/health | grep -q "ok" && echo "PASS" || 
 
 ---
 
-## 13. Update Procedure
+## 15. Update Procedure
 
 ```bash
 cd /opt/song-history
