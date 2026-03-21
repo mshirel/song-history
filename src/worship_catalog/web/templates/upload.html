@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Upload — Worship Catalog{% endblock %}
+{% block title %}Upload — Highland Worship Catalog{% endblock %}
 {% block content %}
 <h1>Upload Slide Deck</h1>
 
@@ -8,7 +8,7 @@
     Select a PowerPoint (.pptx) worship slide deck to import.
     Songs and service metadata will be extracted automatically.
   </p>
-  <form method="post" action="/upload" enctype="multipart/form-data" id="upload-form">
+  <form id="upload-form" enctype="multipart/form-data">
     <div style="margin-bottom:1rem;">
       <label for="upload-file" style="display:block;font-size:0.8rem;font-weight:600;color:#495057;margin-bottom:0.25rem;">
         PPTX File
@@ -19,4 +19,40 @@
   </form>
   <div id="upload-result" style="margin-top:1rem;"></div>
 </div>
+
+<script>
+document.getElementById("upload-form").addEventListener("submit", function(e) {
+  e.preventDefault();
+  var form = e.target;
+  var btn = form.querySelector("button[type=submit]");
+  var result = document.getElementById("upload-result");
+  btn.disabled = true;
+  btn.textContent = "Uploading\u2026";
+  result.innerHTML = "";
+
+  var csrfToken = "";
+  document.cookie.split(";").forEach(function(c) {
+    var parts = c.trim().split("=");
+    if (parts[0] === "csrftoken") csrfToken = parts[1];
+  });
+
+  var data = new FormData(form);
+  fetch("/upload", {
+    method: "POST",
+    headers: {"X-CSRFToken": csrfToken},
+    body: data
+  }).then(function(resp) {
+    if (resp.ok) return resp.json();
+    return resp.json().then(function(j) { throw new Error(j.detail || resp.statusText); });
+  }).then(function(j) {
+    result.innerHTML = '<p style="color:green;">Accepted &mdash; job ID: <code>' +
+      j.job_id + '</code>. Import is running in the background.</p>';
+  }).catch(function(err) {
+    result.innerHTML = '<p style="color:#c00;">Upload failed: ' + err.message + '</p>';
+  }).finally(function() {
+    btn.disabled = false;
+    btn.textContent = "Upload";
+  });
+});
+</script>
 {% endblock %}
