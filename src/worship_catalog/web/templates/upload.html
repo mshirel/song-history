@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}Upload — Worship Catalog{% endblock %}
+{% block content %}
+<h1>Upload Slide Deck</h1>
+
+<div class="card">
+  <p style="color:#495057;font-size:0.9rem;margin-top:0;">
+    Select a PowerPoint (.pptx) worship slide deck to import.
+    Songs and service metadata will be extracted automatically.
+  </p>
+  <form method="post" action="/upload" enctype="multipart/form-data" id="upload-form">
+    <div style="margin-bottom:1rem;">
+      <label for="upload-file" style="display:block;font-size:0.8rem;font-weight:600;color:#495057;margin-bottom:0.25rem;">
+        PPTX File
+      </label>
+      <input type="file" id="upload-file" name="file" accept=".pptx" required>
+    </div>
+    <button type="submit">Upload</button>
+  </form>
+  <div id="upload-result" style="margin-top:1rem;"></div>
+</div>
+{% endblock %}
