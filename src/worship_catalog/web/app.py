@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import csv
+import importlib.metadata
 import io
 import logging
 import math
 import os
+import platform
 import re
 import secrets
 import threading
@@ -314,6 +316,27 @@ async def songs(
 async def reports_page(request: Request) -> HTMLResponse:
     return templates.TemplateResponse(request, "reports.html")
 
+
+@app.get("/about", response_class=HTMLResponse)
+async def about_page(request: Request) -> HTMLResponse:
+    """Render the About page with app purpose, version, and copyright (#232)."""
+    try:
+        version = importlib.metadata.version("worship-catalog")
+    except importlib.metadata.PackageNotFoundError:
+        version = "development"
+    python_version = platform.python_version()
+    db_path = Path(os.environ.get("DB_PATH", "data/worship.db")).name
+    build_date = os.environ.get("BUILD_DATE", "development")
+    return templates.TemplateResponse(
+        request,
+        "about.html",
+        {
+            "version": version,
+            "python_version": python_version,
+            "db_path": db_path,
+            "build_date": build_date,
+        },
+    )
 
 
 def _compute_stats(

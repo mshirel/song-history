@@ -2870,3 +2870,45 @@ class TestNoDuplicateStaticMount:
         source = inspect.getsource(app_module)
         count = source.count('app.mount("/static"')
         assert count == 1, f"app.mount('/static') appears {count} times, expected 1"
+
+
+class TestAboutPage:
+    """Tests for GET /about — issue #232."""
+
+    def test_about_page_returns_200(self, client):
+        """GET /about must return a 200 HTML response."""
+        resp = client.get("/about")
+        assert resp.status_code == 200
+        assert "text/html" in resp.headers.get("content-type", "")
+
+    def test_about_page_shows_version(self, client):
+        """About page must display the app version."""
+        resp = client.get("/about")
+        body = resp.text.lower()
+        assert "version" in body
+
+    def test_about_page_shows_purpose(self, client):
+        """About page must explain what the app does in plain language."""
+        resp = client.get("/about")
+        body = resp.text.lower()
+        assert any(kw in body for kw in ["ccli", "worship", "song", "compliance"])
+
+    def test_about_page_shows_copyright(self, client):
+        """About page must include Highland Church of Christ."""
+        resp = client.get("/about")
+        assert "Highland" in resp.text
+
+    def test_about_page_shows_license(self, client):
+        """About page must mention GPL-3.0 license."""
+        resp = client.get("/about")
+        assert "GPL-3.0" in resp.text
+
+    def test_about_page_shows_github_link(self, client):
+        """About page must link to the GitHub repository."""
+        resp = client.get("/about")
+        assert "https://github.com/mshirel/song-history" in resp.text
+
+    def test_nav_has_about_link(self, client):
+        """Navigation bar should include a link to the About page."""
+        resp = client.get("/songs")
+        assert "/about" in resp.text
