@@ -1,5 +1,6 @@
 """Integration tests for database operations."""
 
+import logging
 import sqlite3
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -1682,6 +1683,133 @@ class TestSchemaVersionErrorGuard:
         conn.close()
         db = Database(db_path)
         db.connect()  # Must not raise
+        db.close()
+
+
+# ---------------------------------------------------------------------------
+# Issue #130 — schema migration path
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+class TestSchemaMigration:
+    """Tests for incremental schema migration — issue #130."""
+
+    def test_old_schema_gets_new_table_on_connect(self, tmp_path: Path) -> None:
+        """Connecting to a v0 database applies missing tables before any operation."""
+        import sqlite3
+
+        # Simulate a pre-import_jobs database (no import_jobs table)
+        db_path = tmp_path / "old.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("PRAGMA user_version = 0")
+        conn.execute(
+            "CREATE TABLE songs "
+            "(id INTEGER PRIMARY KEY, canonical_title TEXT, display_title TEXT)"
+        )
+        conn.commit()
+        conn.close()
+        db = Database(db_path)
+        db.connect()
+        db.init_schema()
+        # import_jobs table must now exist
+        cursor = db.cursor()
+        cursor.execute(
+            "SELECT name FROM sqlite_master "
+            "WHERE type='table' AND name='import_jobs'"
+        )
+        assert cursor.fetchone() is not None
+        db.close()
+
+    def test_future_schema_raises_schema_version_error(self, tmp_path: Path) -> None:
+        """DB with version > _SCHEMA_VERSION raises SchemaVersionError."""
+        import sqlite3
+
+        from worship_catalog.db import SchemaVersionError
+
+        db_path = tmp_path / "future.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("PRAGMA user_version = 999")
+        conn.commit()
+        conn.close()
+        db = Database(db_path)
+        with pytest.raises(SchemaVersionError):
+            db.connect()
+
+    def test_migrations_table_created(self, tmp_path: Path) -> None:
+        """init_schema() creates a schema_migrations table."""
+        db_path = tmp_path / "fresh.db"
+        db = Database(db_path)
+        db.connect()
+        db.init_schema()
+        cursor = db.cursor()
+        cursor.execute(
+            "SELECT name FROM sqlite_master "
+            "WHERE type='table' AND name='schema_migrations'"
+        )
+        assert cursor.fetchone() is not None
+        db.close()
+
+    def test_migrations_are_recorded(self, tmp_path: Path) -> None:
+        """Each migration that runs is recorded in schema_migrations."""
+        db_path = tmp_path / "fresh.db"
+        db = Database(db_path)
+        db.connect()
+        db.init_schema()
+        cursor = db.cursor()
+        cursor.execute("SELECT version FROM schema_migrations ORDER BY version")
+        versions = [row[0] for row in cursor.fetchall()]
+        # At minimum, migration 1 should be recorded
+        assert 1 in versions
+        db.close()
+
+    def test_migrations_are_idempotent(self, tmp_path: Path) -> None:
+        """Calling init_schema() twice does not duplicate migration records."""
+        db_path = tmp_path / "fresh.db"
+        db = Database(db_path)
+        db.connect()
+        db.init_schema()
+        db.init_schema()  # second call
+        cursor = db.cursor()
+        cursor.execute("SELECT COUNT(*) FROM schema_migrations WHERE version = 1")
+        assert cursor.fetchone()[0] == 1
+        db.close()
+
+    def test_user_version_updated_after_migration(self, tmp_path: Path) -> None:
+        """After migrations run, PRAGMA user_version equals _SCHEMA_VERSION."""
+        import sqlite3
+
+        from worship_catalog.db import _SCHEMA_VERSION
+
+        db_path = tmp_path / "old.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("PRAGMA user_version = 0")
+        conn.commit()
+        conn.close()
+        db = Database(db_path)
+        db.connect()
+        db.init_schema()
+        cursor = db.cursor()
+        cursor.execute("PRAGMA user_version")
+        assert cursor.fetchone()[0] == _SCHEMA_VERSION
+        db.close()
+
+    def test_migration_log_emitted(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Migrations emit a log message when applied."""
+        import sqlite3
+
+        db_path = tmp_path / "old.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("PRAGMA user_version = 0")
+        conn.commit()
+        conn.close()
+        db = Database(db_path)
+        db.connect()
+        with caplog.at_level(logging.INFO, logger="worship_catalog.db"):
+            db.init_schema()
+        assert any("migration" in r.message.lower() for r in caplog.records)
         db.close()
 
 
