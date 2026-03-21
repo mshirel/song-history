@@ -178,3 +178,24 @@
   run grep -E "sk-ant-|real-password|actual-token" scripts/Submit-WorshipSlides.env.example
   [ "$status" -ne 0 ]
 }
+
+# ---------------------------------------------------------------------------
+# Submit-WorshipSlides.ps1 CSRF token handling (#235)
+# ---------------------------------------------------------------------------
+
+@test "Submit-WorshipSlides.ps1 fetches CSRF token before upload" {
+  # The script must GET a page to obtain the csrftoken cookie
+  grep -q "csrftoken" scripts/Submit-WorshipSlides.ps1
+}
+
+@test "Submit-WorshipSlides.ps1 sends X-CSRFToken header on POST" {
+  grep -q "X-CSRFToken" scripts/Submit-WorshipSlides.ps1
+}
+
+@test "Submit-WorshipSlides.ps1 GETs health or upload page for CSRF cookie" {
+  # Must make a GET request to obtain the CSRF cookie before POSTing
+  grep -qE "Invoke-WebRequest|Invoke-RestMethod" scripts/Submit-WorshipSlides.ps1
+  # Verify it GETs a page (not just POSTs)
+  grep -q "Method.*Get\|GET\|-Method Get" scripts/Submit-WorshipSlides.ps1 || \
+    grep -q "SessionVariable" scripts/Submit-WorshipSlides.ps1
+}
