@@ -310,11 +310,12 @@ class TestExtractSongsFileHash:
 class TestPptxSizeLimits:
     """Tests for PPTX pre-flight size and slide-count checks — issue #40."""
 
-    def test_file_larger_than_limit_is_rejected(self, tmp_path: Path) -> None:
-        """Files above MAX_PPTX_SIZE_BYTES are rejected before loading."""
+    def test_file_larger_than_limit_is_rejected(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Files above _MAX_PPTX_SIZE_BYTES are rejected before loading."""
+        import worship_catalog.extractor as ext_mod
+        monkeypatch.setattr(ext_mod, "_MAX_PPTX_SIZE_BYTES", 1024)  # 1 KB for test
         large_file = tmp_path / "big.pptx"
-        # 60 MB — over any sane limit
-        large_file.write_bytes(b"PK" + b"\x00" * (60 * 1024 * 1024))
+        large_file.write_bytes(b"PK" + b"\x00" * 2048)
         with pytest.raises(ValueError, match="(?i)exceeds maximum"):
             extract_songs(large_file)
 
