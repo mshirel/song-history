@@ -229,3 +229,59 @@ class TestParseFilenameForMetadata:
         from worship_catalog.pptx_reader import parse_filename_for_metadata, ServiceMetadata
         result = parse_filename_for_metadata("AM Worship 2026.01.01.pptx")
         assert isinstance(result, ServiceMetadata)
+
+
+class TestExtractServiceMetadataPartialFallback:
+    """Partial table data should be merged with filename fallback (#169)."""
+
+    def test_filename_fallback_fills_missing_service_name(self):
+        """When table has date but no service_name, filename provides service_name."""
+        from worship_catalog.pptx_reader import extract_service_metadata, Slide
+
+        slide = Slide(
+            index=0, hidden=False,
+            text=SlideText(text_lines=["Date", "2026-02-15"]),
+            images=[],
+        )
+        meta = extract_service_metadata(slide, "AM Worship 2026.02.15.pptx")
+        assert meta.date == "2026-02-15"
+        assert meta.service_name == "Morning Worship"
+
+    def test_filename_fallback_fills_missing_date(self):
+        """When table has service_name but no date, filename provides date."""
+        from worship_catalog.pptx_reader import extract_service_metadata, Slide
+
+        slide = Slide(
+            index=0, hidden=False,
+            text=SlideText(text_lines=["Service", "Morning Worship"]),
+            images=[],
+        )
+        meta = extract_service_metadata(slide, "AM Worship 2026.03.01.pptx")
+        assert meta.service_name == "Morning Worship"
+        assert meta.date == "2026-03-01"
+
+    def test_complete_table_data_does_not_use_filename(self):
+        """When table has both date and service_name, filename is ignored."""
+        from worship_catalog.pptx_reader import extract_service_metadata, Slide
+
+        slide = Slide(
+            index=0, hidden=False,
+            text=SlideText(text_lines=["Date", "2026-01-01", "Service", "PM Worship"]),
+            images=[],
+        )
+        meta = extract_service_metadata(slide, "AM Worship 2026.03.01.pptx")
+        assert meta.date == "2026-01-01"
+        assert meta.service_name == "PM Worship"
+
+    def test_table_leader_preserved_with_filename_fallback(self):
+        """Table-provided song_leader is kept when filename fills missing fields."""
+        from worship_catalog.pptx_reader import extract_service_metadata, Slide
+
+        slide = Slide(
+            index=0, hidden=False,
+            text=SlideText(text_lines=["Date", "2026-02-15", "Song Leader", "Matt"]),
+            images=[],
+        )
+        meta = extract_service_metadata(slide, "AM Worship 2026.02.15.pptx")
+        assert meta.song_leader == "Matt"
+        assert meta.service_name == "Morning Worship"
