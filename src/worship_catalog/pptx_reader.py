@@ -220,8 +220,8 @@ def parse_filename_for_metadata(filename: str) -> ServiceMetadata:
         sermon_title=None,
     )
 
-    # Pattern: (AM|PM) Worship YYYY.MM.DD
-    match = re.match(r"^([AP]M)\s+Worship\s+(\d{4})\.(\d{2})\.(\d{2})", filename)
+    # Pattern: (AM|PM) Worship YYYY.MM.DD — accepts underscores and job_id prefixes (#265)
+    match = re.search(r"([AP]M)[\s_]+Worship[\s_]+(\d{4})\.(\d{2})\.(\d{2})", filename)
     if match:
         am_pm, year, month, day = match.groups()
         result.service_name = "Morning Worship" if am_pm == "AM" else "Evening Worship"

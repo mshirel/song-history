@@ -230,6 +230,26 @@ class TestParseFilenameForMetadata:
         result = parse_filename_for_metadata("AM Worship 2026.01.01.pptx")
         assert isinstance(result, ServiceMetadata)
 
+    def test_underscored_am_worship_filename(self):
+        """Filename with underscores instead of spaces must still parse (#265)."""
+        from worship_catalog.pptx_reader import parse_filename_for_metadata
+        meta = parse_filename_for_metadata("AM_Worship_2025.09.28.pptx")
+        assert meta.date == "2025-09-28"
+        assert meta.service_name == "Morning Worship"
+
+    def test_job_id_prefixed_filename(self):
+        """Filename with job_id prefix must still extract date (#265)."""
+        from worship_catalog.pptx_reader import parse_filename_for_metadata
+        meta = parse_filename_for_metadata("abc123_AM_Worship_2025.09.28.pptx")
+        assert meta.date == "2025-09-28"
+
+    def test_pm_worship_with_underscores(self):
+        """PM Worship with underscores must parse correctly (#265)."""
+        from worship_catalog.pptx_reader import parse_filename_for_metadata
+        meta = parse_filename_for_metadata("PM_Worship_2026.03.15.pptx")
+        assert meta.date == "2026-03-15"
+        assert meta.service_name == "Evening Worship"
+
 
 class TestExtractServiceMetadataPartialFallback:
     """Partial table data should be merged with filename fallback (#169)."""

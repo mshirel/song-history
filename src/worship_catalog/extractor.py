@@ -2,6 +2,7 @@
 
 import concurrent.futures
 import logging
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -35,6 +36,9 @@ _MAX_EXTRACT_SECONDS: int = 120
 
 # Consecutive slides with no text after which the current song group is closed
 _NO_TEXT_STREAK_THRESHOLD: int = 5
+
+# SFP (Songs For Praise) catalog numbers — Paperless Hymnal reference IDs, not song titles (#264)
+_SFP_CATALOG_RE = re.compile(r"^SFP\s+\d{3,4}$", re.IGNORECASE)
 
 
 @dataclass
@@ -492,6 +496,10 @@ def _extract_title_candidates(slide: Slide) -> list[str]:
 
         # Skip scripture references (e.g., "John 3:16", "1 Peter 1:3-4")
         if _SCRIPTURE_RE.match(line):
+            continue
+
+        # Skip SFP catalog numbers (e.g., "SFP 373", "SFP  0230")
+        if _SFP_CATALOG_RE.match(line):
             continue
 
         candidates.append(line)

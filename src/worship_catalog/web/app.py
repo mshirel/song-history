@@ -174,7 +174,7 @@ def _sanitize_header_filename(raw: str) -> str:
     return _SAFE_FILENAME_RE.sub("_", basename)
 
 # Upload constants (#45)
-MAX_UPLOAD_BYTES: int = 50 * 1024 * 1024  # 50 MB
+MAX_UPLOAD_BYTES: int = 200 * 1024 * 1024  # 200 MB
 _PPTX_MIME = (
     "application/vnd.openxmlformats-officedocument.presentationml.presentation"
 )
@@ -821,7 +821,7 @@ async def upload(
                     priority=-1,
                 )
                 return JSONResponse(
-                    content={"detail": f"File exceeds maximum allowed size of {MAX_UPLOAD_BYTES} bytes"},  # noqa: E501
+                    content={"detail": f"File exceeds maximum allowed size of {MAX_UPLOAD_BYTES // (1024 * 1024)} MB"},  # noqa: E501
                     status_code=413,
                 )
         except ValueError:
@@ -863,14 +863,14 @@ async def upload(
     # Read and enforce size limit
     content = await file.read()
     if len(content) > MAX_UPLOAD_BYTES:
-        _max_mb = MAX_UPLOAD_BYTES // (1024 * 1024)
+        limit_mb = MAX_UPLOAD_BYTES // (1024 * 1024)
         send_pushover(
             title="Upload rejected",
-            message=f"{filename} — file exceeds {_max_mb} MB limit",
+            message=f"{filename} — file exceeds {limit_mb} MB limit",
             priority=-1,
         )
         return JSONResponse(
-            content={"detail": f"File exceeds maximum allowed size of {MAX_UPLOAD_BYTES} bytes"},
+            content={"detail": f"File exceeds maximum allowed size of {limit_mb} MB"},
             status_code=413,
         )
     # Save to inbox
