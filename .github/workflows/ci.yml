@@ -35,7 +35,7 @@ jobs:
 
       - name: Test
         run: |
-          python3 -m pytest 2>&1 | tee /tmp/test.log
+          python3 -m pytest --cov=src/worship_catalog --cov-report=term-missing 2>&1 | tee /tmp/test.log
           count=$(grep -oP '\d+ passed' /tmp/test.log | grep -oP '\d+')
           if [ -z "$count" ] || [ "$count" -lt 700 ]; then
             echo "ERROR: Expected at least 700 tests to pass, got ${count:-0}"
@@ -58,6 +58,12 @@ jobs:
             echo "ERROR: Expected at least 5 integration tests to pass, got ${count:-0}"
             exit 1
           fi
+
+      - name: Mutation testing (informational)
+        continue-on-error: true  # non-blocking until mutmut 3.x compatibility is resolved (#322)
+        run: |
+          python3 -m mutmut run --max-children 2 2>&1 | tee /tmp/mutmut.log || true
+          python3 -m mutmut results 2>&1 || echo "No mutant results available"
 
   e2e:
     needs: [test]  # only run after unit/integration tests pass

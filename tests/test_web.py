@@ -2982,12 +2982,15 @@ class TestAboutPageVersionFile:
         assert "0.0.0" not in resp.text
 
     def test_build_date_from_file(self, db_with_songs, tmp_path, monkeypatch):
-        """When /app/.build-date exists, the about page shows its content, not 'development'."""
+        """When /app/.build-date exists, the about page shows formatted date, not raw ISO."""
         build_date_file = tmp_path / ".build-date"
         build_date_file.write_text("2026-03-20T12:00:00Z\n")
         c = self._make_client(str(db_with_songs), tmp_path, monkeypatch, build_date_file=build_date_file)
         resp = c.get("/about")
-        assert "2026-03-20T12:00:00Z" in resp.text
+        # Should show human-readable format, not raw ISO (#331)
+        assert "2026" in resp.text
+        assert "development" not in resp.text
+        assert "March" in resp.text or "Mar" in resp.text
 
     def test_version_falls_back_to_importlib(self, db_with_songs, tmp_path, monkeypatch):
         """When .version file does not exist, fall back to importlib.metadata."""
@@ -3391,3 +3394,33 @@ class TestUploadMagicBytes:
         )
         assert resp.status_code == 400
         assert "not a valid PPTX" in resp.json()["detail"]
+
+
+# ---------------------------------------------------------------------------
+# Build date formatting (#331)
+# ---------------------------------------------------------------------------
+
+
+class TestBuildDateFormatting:
+    """Build date on About page should be human-readable (#331)."""
+
+    def test_format_build_date_iso(self):
+        from worship_catalog.web.app import _format_build_date
+        result = _format_build_date("2026-03-21T17:33:21Z")
+        # Should be human-readable, not raw ISO timestamp
+        assert "2026" in result
+        assert "March" in result
+        # Raw ISO markers should not appear
+        assert "T17:" not in result
+
+    def test_format_build_date_development(self):
+        from worship_catalog.web.app import _format_build_date
+        assert _format_build_date("development") == "development"
+
+    def test_format_build_date_empty(self):
+        from worship_catalog.web.app import _format_build_date
+        assert _format_build_date("") == ""
+
+    def test_format_build_date_invalid(self):
+        from worship_catalog.web.app import _format_build_date
+        assert _format_build_date("not-a-date") == "not-a-date"

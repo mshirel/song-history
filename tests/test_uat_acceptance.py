@@ -447,3 +447,52 @@ class TestUploadWorkflowE2E:
         assert "failed" in result_text.lower() or "pptx" in result_text.lower(), (
             f"Expected error for non-PPTX file, got: {result_text}"
         )
+
+    def test_upload_valid_pptx_shows_progress_and_completion(self, browser_page: Any) -> None:
+        """Upload a valid PPTX and verify the polling shows completion (#324)."""
+        # Create a minimal valid PPTX in memory
+        from pptx import Presentation
+        import io as _io
+        prs = Presentation()
+        # Add a metadata slide
+        slide_layout = prs.slide_layouts[5]  # blank
+        slide = prs.slides.add_slide(slide_layout)
+        tf = slide.shapes.add_textbox(
+            prs.slide_width // 4, prs.slide_height // 4,
+            prs.slide_width // 2, prs.slide_height // 2,
+        ).text_frame
+        tf.text = "Service Data"
+        # Save to buffer
+        buf = _io.BytesIO()
+        prs.save(buf)
+        pptx_bytes = buf.getvalue()
+
+        browser_page.goto(f"{BASE_URL}/upload")
+        browser_page.wait_for_load_state("networkidle")
+
+        browser_page.set_input_files('input[type="file"]', {
+            "name": "AM Worship 2099.01.01.pptx",
+            "mimeType": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            "buffer": pptx_bytes,
+        })
+        browser_page.click('button[type="submit"]')
+
+        # Wait for the polling to show completion (up to 30s)
+        browser_page.wait_for_function(
+            """() => {
+                const el = document.getElementById('upload-result');
+                if (!el) return false;
+                const text = el.textContent.toLowerCase();
+                return text.includes('complete') || text.includes('imported')
+                    || text.includes('no songs') || text.includes('failed');
+            }""",
+            timeout=30000,
+        )
+
+        result_text = browser_page.text_content("#upload-result") or ""
+        # Should show completion — either songs imported or "no songs found"
+        assert (
+            "complete" in result_text.lower()
+            or "imported" in result_text.lower()
+            or "no songs" in result_text.lower()
+        ), f"Expected completion message, got: {result_text}"
