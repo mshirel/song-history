@@ -11,6 +11,7 @@ import click
 
 from worship_catalog.db import Database
 from worship_catalog.extractor import extract_songs
+from worship_catalog.import_service import run_import
 from worship_catalog.log_config import setup as _setup_logging
 from worship_catalog.services.report_service import _STATS_TOP_SONGS as _STATS_TOP_SONGS
 from worship_catalog.services.report_service import compute_stats_data
@@ -195,7 +196,7 @@ def import_cmd(
     If folder path provided, imports all PPTX files.
     """
     try:
-        from worship_catalog.library import load_library_index, lookup_song_credits
+        from worship_catalog.library import load_library_index
 
         path = Path(pptx_or_folder)
         db_path = Path(db)
@@ -204,7 +205,7 @@ def import_cmd(
         database.init_schema()
 
         # Load library index from JSON if it exists (local override or bundled default)
-        lib_index = {}
+        lib_index: dict[str, dict[str, str | None]] = {}
         lib_index_path = _resolve_library_index(library_index)
         if lib_index_path.exists():
             lib_index = load_library_index(lib_index_path)
@@ -238,130 +239,26 @@ def import_cmd(
             click.echo(f"Processing {pptx_file.name}...", err=False)
 
             try:
-                result = extract_songs(pptx_file, use_ocr=ocr, ocr_budget=ocr_budget)
-
-                # Check for missing metadata
-                needs_review = False
-                if not result.service_date or not result.service_name:
-                    if not non_interactive:
-                        click.echo(
-                            f"  ⚠️  Missing service metadata (date: {result.service_date}, "
-                            f"name: {result.service_name})",
-                            err=True,
-                        )
-                        needs_review = True
-                    else:
-                        click.echo(
-                            "  Skipping due to missing metadata",
-                            err=True,
-                        )
-                        continue
-
-                # Insert service
-                from worship_catalog.pptx_reader import compute_file_hash
-
-                service_hash = compute_file_hash(pptx_file)
-
-                # Check if this service already exists (idempotency check)
-                cursor = database.cursor()
-                cursor.execute(
-                    """
-                    SELECT id FROM services
-                    WHERE service_date = ? AND service_name = ? AND source_hash = ?
-                    """,
-                    (result.service_date or "0000-00-00",
-                     result.service_name or "Unknown",
-                     service_hash),
+                import_result = run_import(
+                    database,
+                    pptx_file,
+                    library_index=lib_index or None,
+                    ocr_budget=ocr_budget,
+                    use_ocr=ocr,
                 )
-                existing_service = cursor.fetchone()
 
-                with database.transaction():
-                    # If it exists, delete old data for clean re-import (idempotent re-import)
-                    if existing_service:
-                        existing_id = existing_service[0]
-                        database.delete_service_data(existing_id)
-
-                    service_id = database.insert_or_update_service(
-                        service_date=result.service_date or "0000-00-00",
-                        service_name=result.service_name or "Unknown",
-                        source_file=str(pptx_file),
-                        source_hash=service_hash,
-                        song_leader=result.song_leader,
-                        preacher=result.preacher,
-                        sermon_title=result.sermon_title,
-                    )
-
-                    # Insert songs and service songs
-                    for song in result.songs:
-                        song_id = database.insert_or_get_song(
-                            song.canonical_title,
-                            song.display_title,
-                        )
-
-                        # Fill missing credits from library if available
-                        words_by = song.words_by
-                        music_by = song.music_by
-                        arranger = song.arranger
-                        if lib_index and not any([words_by, music_by, arranger]):
-                            lib_credits = lookup_song_credits(song.canonical_title, lib_index)
-                            if lib_credits:
-                                words_by = lib_credits.get("words_by")
-                                music_by = lib_credits.get("music_by")
-                                arranger = lib_credits.get("arranger")
-
-                        edition_id = None
-                        if song.publisher or words_by or music_by or arranger:
-                            edition_id = database.insert_or_get_song_edition(
-                                song_id=song_id,
-                                publisher=song.publisher,
-                                words_by=words_by,
-                                music_by=music_by,
-                                arranger=arranger,
-                            )
-
-                        database.insert_service_song(
-                            service_id=service_id,
-                            song_id=song_id,
-                            ordinal=song.ordinal,
-                            song_edition_id=edition_id,
-                            first_slide_index=song.first_slide_index,
-                            last_slide_index=song.last_slide_index,
-                            occurrences=1,
-                        )
-
-                        # Create copy events (default: projection and recording)
-                        # Use insert_or_get for songs appearing multiple times in same service
-                        database.insert_or_get_copy_event(
-                            service_id=service_id,
-                            song_id=song_id,
-                            song_edition_id=edition_id,
-                            reproduction_type="projection",
-                            count=1,
-                            reportable=True,
-                        )
-
-                        database.insert_or_get_copy_event(
-                            service_id=service_id,
-                            song_id=song_id,
-                            song_edition_id=edition_id,
-                            reproduction_type="recording",
-                            count=1,
-                            reportable=True,
-                        )
-
-                total_songs += len(result.songs)
+                total_songs += import_result.songs_imported
                 _log.info(
                     "File imported",
                     extra={
                         "file": pptx_file.name,
-                        "songs": len(result.songs),
-                        "service_date": result.service_date,
-                        "service_name": result.service_name,
+                        "songs": import_result.songs_imported,
+                        "service_date": import_result.service_date,
+                        "service_name": import_result.service_name,
                     },
                 )
                 click.echo(
-                    f"  ✓ Imported {len(result.songs)} songs"
-                    + (" (review metadata)" if needs_review else ""),
+                    f"  ✓ Imported {import_result.songs_imported} songs",
                     err=False,
                 )
 
