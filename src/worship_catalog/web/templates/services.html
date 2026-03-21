@@ -22,38 +22,38 @@
   {% endif %}
   <div class="form-grid">
     <div>
-      <label style="font-size:0.8rem;font-weight:600;color:#495057;display:block;margin-bottom:0.2rem;">Date From</label>
-      <input type="date" name="start_date" value="{{ start_date }}"
+      <label for="filter-start-date" style="font-size:0.8rem;font-weight:600;color:#495057;display:block;margin-bottom:0.2rem;">Date From</label>
+      <input type="date" id="filter-start-date" name="start_date" value="{{ start_date }}"
         hx-get="/services" hx-trigger="input changed delay:300ms" hx-target="#services-tbody"
         hx-include="[name='sort'],[name='sort_dir'],[name='start_date'],[name='end_date'],[name='q_service'],[name='q_leader'],[name='q_preacher'],[name='q_sermon']">
     </div>
     <div>
-      <label style="font-size:0.8rem;font-weight:600;color:#495057;display:block;margin-bottom:0.2rem;">Date To</label>
-      <input type="date" name="end_date" value="{{ end_date }}"
+      <label for="filter-end-date" style="font-size:0.8rem;font-weight:600;color:#495057;display:block;margin-bottom:0.2rem;">Date To</label>
+      <input type="date" id="filter-end-date" name="end_date" value="{{ end_date }}"
         hx-get="/services" hx-trigger="input changed delay:300ms" hx-target="#services-tbody"
         hx-include="[name='sort'],[name='sort_dir'],[name='start_date'],[name='end_date'],[name='q_service'],[name='q_leader'],[name='q_preacher'],[name='q_sermon']">
     </div>
     <div>
-      <label style="font-size:0.8rem;font-weight:600;color:#495057;display:block;margin-bottom:0.2rem;">Service</label>
-      <input type="text" name="q_service" value="{{ q_service }}" placeholder="filter…"
+      <label for="filter-service" style="font-size:0.8rem;font-weight:600;color:#495057;display:block;margin-bottom:0.2rem;">Service</label>
+      <input type="text" id="filter-service" name="q_service" value="{{ q_service }}" placeholder="filter…"
         hx-get="/services" hx-trigger="input changed delay:300ms" hx-target="#services-tbody"
         hx-include="[name='sort'],[name='sort_dir'],[name='start_date'],[name='end_date'],[name='q_service'],[name='q_leader'],[name='q_preacher'],[name='q_sermon']">
     </div>
     <div>
-      <label style="font-size:0.8rem;font-weight:600;color:#495057;display:block;margin-bottom:0.2rem;">Song Leader</label>
-      <input type="text" name="q_leader" value="{{ q_leader }}" placeholder="filter…"
+      <label for="filter-leader" style="font-size:0.8rem;font-weight:600;color:#495057;display:block;margin-bottom:0.2rem;">Song Leader</label>
+      <input type="text" id="filter-leader" name="q_leader" value="{{ q_leader }}" placeholder="filter…"
         hx-get="/services" hx-trigger="input changed delay:300ms" hx-target="#services-tbody"
         hx-include="[name='sort'],[name='sort_dir'],[name='start_date'],[name='end_date'],[name='q_service'],[name='q_leader'],[name='q_preacher'],[name='q_sermon']">
     </div>
     <div>
-      <label style="font-size:0.8rem;font-weight:600;color:#495057;display:block;margin-bottom:0.2rem;">Preacher</label>
-      <input type="text" name="q_preacher" value="{{ q_preacher }}" placeholder="filter…"
+      <label for="filter-preacher" style="font-size:0.8rem;font-weight:600;color:#495057;display:block;margin-bottom:0.2rem;">Preacher</label>
+      <input type="text" id="filter-preacher" name="q_preacher" value="{{ q_preacher }}" placeholder="filter…"
         hx-get="/services" hx-trigger="input changed delay:300ms" hx-target="#services-tbody"
         hx-include="[name='sort'],[name='sort_dir'],[name='start_date'],[name='end_date'],[name='q_service'],[name='q_leader'],[name='q_preacher'],[name='q_sermon']">
     </div>
     <div>
-      <label style="font-size:0.8rem;font-weight:600;color:#495057;display:block;margin-bottom:0.2rem;">Sermon</label>
-      <input type="text" name="q_sermon" value="{{ q_sermon }}" placeholder="filter…"
+      <label for="filter-sermon" style="font-size:0.8rem;font-weight:600;color:#495057;display:block;margin-bottom:0.2rem;">Sermon</label>
+      <input type="text" id="filter-sermon" name="q_sermon" value="{{ q_sermon }}" placeholder="filter…"
         hx-get="/services" hx-trigger="input changed delay:300ms" hx-target="#services-tbody"
         hx-include="[name='sort'],[name='sort_dir'],[name='start_date'],[name='end_date'],[name='q_service'],[name='q_leader'],[name='q_preacher'],[name='q_sermon']">
     </div>
@@ -66,7 +66,7 @@
 {% macro sort_th(label, col, align="left") %}
 {% set next_dir = "asc" if (sort == col and sort_dir == "desc") else "desc" %}
 {% set aria_sort_val = ("ascending" if sort_dir == "asc" else "descending") if sort == col else "none" %}
-<th style="text-align:{{ align }};white-space:nowrap;user-select:none;cursor:pointer;" aria-sort="{{ aria_sort_val }}">
+<th scope="col" style="text-align:{{ align }};white-space:nowrap;user-select:none;cursor:pointer;" aria-sort="{{ aria_sort_val }}">
   <a href="/services?sort={{ col }}&sort_dir={{ next_dir }}&{{ filter_qs }}"
      style="color:inherit;text-decoration:none;">
     {{ label }}{% if sort == col %}&nbsp;{{ '▲' if sort_dir == 'asc' else '▼' }}{% endif %}
@@ -84,15 +84,16 @@
 {% else %}
 <div class="card" style="padding:0;overflow:hidden;" aria-live="polite">
   <table>
+    <caption class="sr-only">Worship services — sortable and filterable</caption>
     <thead>
       <tr>
         {{ sort_th("Date", "service_date") }}
         {{ sort_th("Service", "service_name") }}
         {{ sort_th("Song Leader", "song_leader") }}
         {{ sort_th("Preacher", "preacher") }}
-        <th>Sermon</th>
+        <th scope="col">Sermon</th>
         {{ sort_th("Songs", "song_count", align="right") }}
-        <th></th>
+        <th scope="col"></th>
       </tr>
     </thead>
     <tbody id="services-tbody">
