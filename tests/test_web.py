@@ -731,29 +731,29 @@ class TestHealthEndpointDb:
 
         from starlette.testclient import TestClient
         c = TestClient(app_module.app, raise_server_exceptions=False)
-        with patch.object(app_module, "_get_db", broken_get_db):
-            response = c.get("/health")
+        monkeypatch.setattr(app_module, "_get_db", broken_get_db)
+        response = c.get("/health")
         assert response.status_code == 503
         data = response.json()
         assert "db" not in data, "Error response must not expose DB backend details"
 
     def test_health_returns_503_when_db_unavailable(self, monkeypatch, tmp_path):
         """When DB raises on execute, /health returns 503."""
-        from unittest.mock import patch, MagicMock
-
-        # Patch _get_db to raise so we can test the error path
         def broken_get_db():
             raise OSError("simulated DB failure")
 
         import worship_catalog.web.app as app_module
         from importlib import reload
         monkeypatch.setenv("DB_PATH", str(tmp_path / "worship.db"))
+        inbox = tmp_path / "inbox"
+        inbox.mkdir(exist_ok=True)
+        monkeypatch.setenv("INBOX_DIR", str(inbox))
         reload(app_module)
         from starlette.testclient import TestClient
         c = TestClient(app_module.app, raise_server_exceptions=False)
 
-        with patch.object(app_module, "_get_db", broken_get_db):
-            response = c.get("/health")
+        monkeypatch.setattr(app_module, "_get_db", broken_get_db)
+        response = c.get("/health")
         assert response.status_code == 503
 
 
@@ -2912,3 +2912,106 @@ class TestAboutPage:
         """Navigation bar should include a link to the About page."""
         resp = client.get("/songs")
         assert "/about" in resp.text
+
+
+class TestDbConnectionCleanup:
+    """DB connections must be closed via FastAPI Depends(get_db), not manual close (#236)."""
+
+    def test_db_connection_closed_after_successful_request(self, client, monkeypatch):
+        """DB connection must be closed even after successful route handling."""
+        close_calls: list[bool] = []
+        original_close = Database.close
+
+        def tracking_close(self: Database) -> None:
+            close_calls.append(True)
+            original_close(self)
+
+        monkeypatch.setattr(Database, "close", tracking_close)
+        resp = client.get("/songs")
+        assert resp.status_code == 200
+        assert len(close_calls) >= 1, "DB.close() was never called after /songs"
+
+    def test_db_connection_closed_after_exception(self, db_with_songs, tmp_path, monkeypatch):
+        """DB connection must be closed even when a route raises an exception."""
+        inbox = tmp_path / "inbox"
+        inbox.mkdir()
+        monkeypatch.setenv("DB_PATH", str(db_with_songs))
+        monkeypatch.setenv("INBOX_DIR", str(inbox))
+
+        close_calls: list[bool] = []
+        original_close = Database.close
+
+        def tracking_close(self: Database) -> None:
+            close_calls.append(True)
+            original_close(self)
+
+        monkeypatch.setattr(Database, "close", tracking_close)
+
+        def exploding_query(*args: object, **kwargs: object) -> object:
+            raise RuntimeError("simulated DB failure")
+
+        monkeypatch.setattr(Database, "query_songs_paginated", exploding_query)
+
+        # Build a minimal FastAPI app with the same get_db dependency to test
+        # that Depends(get_db) guarantees cleanup even on exceptions.
+        from fastapi import FastAPI, Depends
+        from fastapi.responses import HTMLResponse
+        from worship_catalog.web.app import get_db
+
+        test_app = FastAPI()
+
+        @test_app.get("/test-songs")
+        async def _test_route(db: Database = Depends(get_db)) -> HTMLResponse:
+            db.query_songs_paginated(None, sort="performance_count", sort_dir="desc",
+                                     page=1, per_page=50)
+            return HTMLResponse("ok")
+
+        raw = TestClient(test_app, raise_server_exceptions=False)
+        resp = raw.get("/test-songs")
+        assert resp.status_code == 500
+        assert len(close_calls) >= 1, "DB.close() was never called after route raised"
+
+    def test_routes_use_depends_not_manual_get_db(self) -> None:
+        """All route handlers must use Depends(get_db), not call _get_db() directly."""
+        # Read the source file directly from disk to avoid worktree/reload issues.
+        app_path = Path(__file__).resolve().parent.parent / "src" / "worship_catalog" / "web" / "app.py"
+        source = app_path.read_text()
+
+        # Count _get_db() calls in route functions (after the "# Routes" comment).
+        # Allowed callers:
+        #   - _get_db definition itself, get_db dependency, _lifespan
+        #   - _run_import_in_background (thread-based, can't use Depends)
+        #   - health endpoint (must return 503 when _get_db() itself fails)
+        # All other route functions should use Depends(get_db) instead.
+        route_section = source.split("# Routes")[1] if "# Routes" in source else source
+
+        # Exclude _run_import_in_background — it legitimately uses _get_db()
+        if "_run_import_in_background" in route_section:
+            parts = route_section.split("def _run_import_in_background")
+            if len(parts) > 1:
+                rest = parts[1]
+                next_def = rest.find("\ndef ")
+                if next_def != -1:
+                    route_section = parts[0] + rest[next_def:]
+                else:
+                    route_section = parts[0]
+
+        # Exclude health endpoint — uses manual lifecycle for 503 on connect failure
+        if "async def health" in route_section:
+            parts = route_section.split("async def health")
+            if len(parts) > 1:
+                rest = parts[1]
+                next_def = rest.find("\nasync def ")
+                if next_def == -1:
+                    next_def = rest.find("\ndef ")
+                if next_def != -1:
+                    route_section = parts[0] + rest[next_def:]
+                else:
+                    route_section = parts[0]
+
+        # After removing allowed callers, no route should call _get_db() directly
+        direct_calls = route_section.count("_get_db()")
+        assert direct_calls == 0, (
+            f"Found {direct_calls} direct _get_db() call(s) in route handlers. "
+            "Routes must use Depends(get_db) for automatic connection cleanup."
+        )

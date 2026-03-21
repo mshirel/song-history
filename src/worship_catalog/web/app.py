@@ -14,7 +14,7 @@ import secrets
 import threading
 import time
 from collections import defaultdict
-from collections.abc import AsyncGenerator, Generator
+from collections.abc import AsyncGenerator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from datetime import date
@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import (
+    Depends,
     FastAPI,
     Form,
     HTTPException,
@@ -335,8 +336,14 @@ def _get_db() -> Database:
     return db
 
 
-def get_db() -> Generator[Database, None, None]:
-    """FastAPI dependency that always closes the DB connection (issue #21)."""
+async def get_db() -> AsyncGenerator[Database, None]:
+    """FastAPI dependency that always closes the DB connection (#236).
+
+    Async generator so that FastAPI runs it in the event-loop thread — the
+    same thread used by ``async def`` route handlers.  A sync generator would
+    be dispatched to the default threadpool, causing SQLite's
+    ``check_same_thread`` assertion to fail.
+    """
     db = _get_db()
     try:
         yield db
@@ -351,7 +358,12 @@ def get_db() -> Generator[Database, None, None]:
 
 @app.get("/health")
 async def health(response: Response) -> dict[str, str]:
-    """Return 200 if DB is reachable; 503 otherwise (issue #31)."""
+    """Return 200 if DB is reachable; 503 otherwise (issue #31).
+
+    Uses manual _get_db()/close() instead of Depends(get_db) because
+    the health check must return 503 (not 500) when the DB is unreachable,
+    including when _get_db() itself raises.
+    """
     try:
         db = _get_db()
         db.cursor().execute("SELECT 1")
@@ -376,14 +388,13 @@ async def songs(
     sort_dir: str = Query(default="desc"),
     page: int = Query(default=1, ge=1),
     per_page: int = Query(default=50, ge=10, le=500),
+    db: Database = Depends(get_db),  # noqa: B008
 ) -> HTMLResponse:
     sort = sort if sort in Database._SONGS_SORT_COLS else "performance_count"
     sort_dir = "asc" if sort_dir == "asc" else "desc"
-    db = _get_db()
     rows, total = db.query_songs_paginated(
         q, sort=sort, sort_dir=sort_dir, page=page, per_page=per_page,
     )
-    db.close()
 
     total_pages = math.ceil(total / per_page) if total > 0 else 1
 
@@ -444,11 +455,10 @@ async def reports_stats(
     end_date: str = Form(...),
     leader: str = Form(default=""),
     all_songs: bool = Form(default=False),
+    db: Database = Depends(get_db),  # noqa: B008
 ) -> HTMLResponse:
     _validate_date_range(start_date, end_date)
-    db = _get_db()
     data = _compute_stats(db, start_date, end_date, leader, all_songs)
-    db.close()
 
     _log.info(
         "Stats report generated",
@@ -474,11 +484,10 @@ async def reports_stats_csv(
     end_date: str = Form(...),
     leader: str = Form(default=""),
     all_songs: bool = Form(default=False),
+    db: Database = Depends(get_db),  # noqa: B008
 ) -> StreamingResponse:
     _validate_date_range(start_date, end_date)
-    db = _get_db()
     data = _compute_stats(db, start_date, end_date, leader, all_songs)
-    db.close()
 
     output = io.StringIO()
     writer = csv.writer(output)
@@ -501,6 +510,7 @@ async def reports_stats_xlsx(
     end_date: str = Form(...),
     leader: str = Form(default=""),
     all_songs: bool = Form(default=False),
+    db: Database = Depends(get_db),  # noqa: B008
 ) -> StreamingResponse:
     _validate_date_range(start_date, end_date)
     try:
@@ -512,9 +522,7 @@ async def reports_stats_xlsx(
             detail="Excel export requires openpyxl. Install with: pip install openpyxl",
         ) from exc
 
-    db = _get_db()
     data = _compute_stats(db, start_date, end_date, leader, all_songs)
-    db.close()
 
     wb = openpyxl.Workbook()
     ws = wb.active
@@ -550,12 +558,11 @@ async def reports_stats_xlsx(
 async def reports_ccli_csv(
     start_date: str = Form(...),
     end_date: str = Form(...),
+    db: Database = Depends(get_db),  # noqa: B008
 ) -> StreamingResponse:
     """Generate CCLI compliance report as a CSV download (#201)."""
     _validate_date_range(start_date, end_date)
-    db = _get_db()
     events = db.query_copy_events(start_date, end_date)
-    db.close()
 
     output = io.StringIO()
     writer = csv.writer(output)
@@ -580,16 +587,17 @@ async def reports_ccli_csv(
 
 
 @app.get("/songs/{song_id}", response_class=HTMLResponse)
-async def song_detail(request: Request, song_id: int) -> HTMLResponse:
-    db = _get_db()
+async def song_detail(
+    request: Request,
+    song_id: int,
+    db: Database = Depends(get_db),  # noqa: B008
+) -> HTMLResponse:
     song = db.query_song_by_id(song_id)
     if not song:
-        db.close()
         _log.warning("Song not found", extra={"song_id": song_id})
         raise HTTPException(status_code=404, detail="Song not found")
     editions = db.query_song_editions(song_id)
     service_history = db.query_song_services(song_id)
-    db.close()
     return templates.TemplateResponse(
         request,
         "song_detail.html",
@@ -610,17 +618,16 @@ async def services_list(
     end_date: str = Query(default=""),
     page: int = Query(default=1, ge=1),
     per_page: int = Query(default=50, ge=10, le=500),
+    db: Database = Depends(get_db),  # noqa: B008
 ) -> HTMLResponse:
     sort = sort if sort in Database._SERVICES_SORT_COLS else "service_date"
     sort_dir = "asc" if sort_dir == "asc" else "desc"
-    db = _get_db()
     services, total = db.query_all_services_paginated(
         sort=sort, sort_dir=sort_dir,
         q_service=q_service, q_leader=q_leader, q_preacher=q_preacher,
         q_sermon=q_sermon, start_date=start_date, end_date=end_date,
         page=page, per_page=per_page,
     )
-    db.close()
     total_pages = math.ceil(total / per_page) if total > 0 else 1
     ctx = {
         "services": services, "sort": sort, "sort_dir": sort_dir,
@@ -634,15 +641,16 @@ async def services_list(
 
 
 @app.get("/services/{service_id}", response_class=HTMLResponse)
-async def service_detail(request: Request, service_id: int) -> HTMLResponse:
-    db = _get_db()
+async def service_detail(
+    request: Request,
+    service_id: int,
+    db: Database = Depends(get_db),  # noqa: B008
+) -> HTMLResponse:
     service = db.query_service_by_id(service_id)
     if not service:
-        db.close()
         _log.warning("Service not found", extra={"service_id": service_id})
         raise HTTPException(status_code=404, detail="Service not found")
     songs = db.query_service_songs(service_id)
-    db.close()
     return templates.TemplateResponse(
         request, "service_detail.html", {"service": service, "songs": songs}
     )
@@ -653,19 +661,22 @@ _MIN_SERVICES_FOR_MEANINGFUL_TRENDS = 5
 
 
 @app.get("/leaders", response_class=HTMLResponse)
-async def leaders_index(request: Request) -> HTMLResponse:
-    db = _get_db()
+async def leaders_index(
+    request: Request,
+    db: Database = Depends(get_db),  # noqa: B008
+) -> HTMLResponse:
     leaders = db.query_all_leaders()
-    db.close()
     return templates.TemplateResponse(request, "leaders.html", {"leaders": leaders})
 
 
 @app.get("/leaders/{leader_name}/top-songs", response_class=HTMLResponse)
-async def leader_top_songs(request: Request, leader_name: str) -> HTMLResponse:
-    db = _get_db()
+async def leader_top_songs(
+    request: Request,
+    leader_name: str,
+    db: Database = Depends(get_db),  # noqa: B008
+) -> HTMLResponse:
     top_songs = db.query_leader_top_songs(leader_name, min_count=_LEADER_MIN_SONG_COUNT)
     service_count = db.query_leader_service_count(leader_name)
-    db.close()
     warning_few_services = service_count < _MIN_SERVICES_FOR_MEANINGFUL_TRENDS
     return templates.TemplateResponse(
         request,
@@ -681,10 +692,11 @@ async def leader_top_songs(request: Request, leader_name: str) -> HTMLResponse:
 
 
 @app.get("/leaders/{leader_name}/top-songs/csv")
-async def leader_top_songs_csv(leader_name: str) -> StreamingResponse:
-    db = _get_db()
+async def leader_top_songs_csv(
+    leader_name: str,
+    db: Database = Depends(get_db),  # noqa: B008
+) -> StreamingResponse:
     top_songs = db.query_leader_top_songs(leader_name, min_count=_LEADER_MIN_SONG_COUNT)
-    db.close()
 
     output = io.StringIO()
     writer = csv.writer(output)
@@ -778,7 +790,11 @@ async def upload_page(request: Request) -> HTMLResponse:
 
 
 @app.post("/upload")
-async def upload(request: Request, file: UploadFile) -> JSONResponse:
+async def upload(
+    request: Request,
+    file: UploadFile,
+    db: Database = Depends(get_db),  # noqa: B008
+) -> JSONResponse:
     """Accept a PPTX file, create an import job, and kick off background import."""
     # Rate limiting (#173) — check before reading the body to save bandwidth
     client_ip = request.client.host if request.client else "unknown"
@@ -841,9 +857,7 @@ async def upload(request: Request, file: UploadFile) -> JSONResponse:
     dest = inbox / f"{job_id}_{filename}"
     dest.write_bytes(content)
     # Create pending job record
-    db = _get_db()
     db.create_import_job(job_id, filename=filename)
-    db.close()
     # Submit import to bounded thread pool (#52).
     # If the pool is saturated or shut down, submit() raises — return 503.
     try:
@@ -858,20 +872,16 @@ async def upload(request: Request, file: UploadFile) -> JSONResponse:
 
 
 @app.get("/jobs")
-async def list_jobs() -> JSONResponse:
+async def list_jobs(db: Database = Depends(get_db)) -> JSONResponse:  # noqa: B008
     """Return all import job records, newest first."""
-    db = _get_db()
     jobs = db.list_import_jobs()
-    db.close()
     return JSONResponse(content=jobs)
 
 
 @app.get("/jobs/{job_id}")
-async def get_job(job_id: str) -> JSONResponse:
+async def get_job(job_id: str, db: Database = Depends(get_db)) -> JSONResponse:  # noqa: B008
     """Return a single import job record or 404."""
-    db = _get_db()
     job = db.get_import_job(job_id)
-    db.close()
     if job is None:
         raise HTTPException(status_code=404, detail="Job not found")
     return JSONResponse(content=job)
