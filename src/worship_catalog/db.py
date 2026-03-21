@@ -11,10 +11,31 @@ from typing import Any
 
 _log = logging.getLogger("worship_catalog.db")
 
-# Bump this integer whenever the schema changes in a backwards-incompatible way.
-# connect() will raise SchemaVersionError if the on-disk version is higher than
-# this value (i.e. the DB was created by a newer version of the code).
+# Bump this integer whenever the schema changes.  Each new version must have a
+# corresponding entry in _MIGRATIONS.  connect() raises SchemaVersionError if the
+# on-disk version is *higher* than this value (DB created by a newer release).
 _SCHEMA_VERSION: int = 1
+
+# Ordered dict of version → list of SQL statements.  Each migration brings the
+# DB from version (N-1) to version N.  Migration 1 is the baseline — it
+# creates the import_jobs table that was added in #45.  For a fresh database
+# the table already exists (CREATE TABLE IF NOT EXISTS), so the statement is a
+# harmless no-op; for a pre-#45 database it fills the gap.
+_MIGRATIONS: dict[int, list[str]] = {
+    1: [
+        """
+        CREATE TABLE IF NOT EXISTS import_jobs (
+            job_id TEXT PRIMARY KEY,
+            filename TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            started_at TEXT NOT NULL,
+            completed_at TEXT,
+            songs_imported INTEGER,
+            error_message TEXT
+        )
+        """,
+    ],
+}
 
 # Whitelist of column names that update_import_job is allowed to SET.
 # Any key not in this set will raise ValueError — prevents SQL injection
@@ -113,7 +134,13 @@ class Database:
             self._conn.commit()
 
     def init_schema(self) -> None:
-        """Create database schema."""
+        """Create database schema and apply any pending migrations.
+
+        For a fresh (empty) database every table is created via
+        ``CREATE TABLE IF NOT EXISTS`` and all migrations are recorded.
+        For an existing database only the missing migrations are executed,
+        bringing the schema up to ``_SCHEMA_VERSION``.
+        """
         if not self.conn:
             self.connect()
 
@@ -224,8 +251,42 @@ class Database:
             """
         )
 
+        # --- Migration tracking & execution ---
+        self._apply_migrations()
+
         self._conn.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
         self._maybe_commit()
+
+    def _apply_migrations(self) -> None:
+        """Create schema_migrations table and run any pending migrations."""
+        cursor = self._conn.cursor()
+
+        # Ensure the migrations-tracking table exists.
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS schema_migrations (
+                version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL
+            )
+            """
+        )
+
+        # Determine which migrations have already been applied.
+        cursor.execute("SELECT version FROM schema_migrations")
+        applied: set[int] = {row[0] for row in cursor.fetchall()}
+
+        now = datetime.now(tz=timezone.utc).isoformat()
+
+        for version in sorted(_MIGRATIONS):
+            if version in applied:
+                continue
+            for stmt in _MIGRATIONS[version]:
+                cursor.execute(stmt)
+            cursor.execute(
+                "INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)",
+                (version, now),
+            )
+            _log.info("Applied schema migration %d", version)
 
     # --- Songs ---
 
