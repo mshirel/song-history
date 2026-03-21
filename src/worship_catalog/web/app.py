@@ -31,6 +31,7 @@ from fastapi import (
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette_csrf import CSRFMiddleware  # type: ignore[attr-defined]
 
 from worship_catalog.db import Database
@@ -95,6 +96,29 @@ app.add_middleware(
     exempt_urls=[re.compile(r"^/health$")],
 )
 app.add_middleware(RequestLoggingMiddleware)
+
+# Content-Security-Policy — defence-in-depth against XSS (#197).
+# script-src allows 'self' plus the unpkg CDN for htmx.
+_CSP_POLICY: str = (
+    "default-src 'self'; "
+    "script-src 'self' https://unpkg.com; "
+    "style-src 'self' 'unsafe-inline'; "
+    "img-src 'self' data:; "
+    "frame-ancestors 'none'"
+)
+
+
+class _CSPMiddleware(BaseHTTPMiddleware):
+    """Attach Content-Security-Policy header to every response."""
+
+    async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
+        response = await call_next(request)
+        response.headers["Content-Security-Policy"] = _CSP_POLICY
+        return response
+
+
+app.add_middleware(_CSPMiddleware)
+
 
 _TEMPLATES_DIR = Path(__file__).parent / "templates"
 templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))

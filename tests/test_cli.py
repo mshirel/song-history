@@ -1433,6 +1433,84 @@ class TestCcliCsvCommaInTitle:
         assert any("Majesty" in row for row in rows[1:]), f"Majesty not found in {rows}"
 
 
+# ---------------------------------------------------------------------------
+# Issue #192 — CCLI CSV must not inject non-CSV comment lines
+# ---------------------------------------------------------------------------
+
+
+class TestCcliCsvValidity:
+    """CCLI CSV output must be valid CSV with no comment lines."""
+
+    def _setup_db_with_events(self, db_path: Path) -> None:
+        """Insert sample services and copy events for CCLI report."""
+        db = Database(db_path)
+        db.connect()
+        db.init_schema()
+        song_id = db.insert_or_get_song("amazing_grace", "Amazing Grace")
+        svc1 = db.insert_or_update_service(
+            "2025-01-05", "Sunday AM", str(db_path), "hash1"
+        )
+        svc2 = db.insert_or_update_service(
+            "2025-01-12", "Sunday AM", str(db_path), "hash2"
+        )
+        for svc_id in (svc1, svc2):
+            db.insert_or_get_copy_event(
+                svc_id, song_id, "projection", reportable=True
+            )
+        db.close()
+
+    def test_ccli_csv_has_no_comment_lines(self, tmp_path: Path) -> None:
+        """Every line in the CSV output must be parseable by csv.reader."""
+        db_path = tmp_path / "test.db"
+        out_path = tmp_path / "ccli.csv"
+        self._setup_db_with_events(db_path)
+
+        runner = CliRunner()
+        result = runner.invoke(main, [
+            "report", "ccli",
+            "--db", str(db_path),
+            "--out", str(out_path),
+        ])
+        assert result.exit_code == 0
+
+        content = out_path.read_text()
+        for i, line in enumerate(content.splitlines(), 1):
+            stripped = line.strip()
+            if not stripped:
+                continue  # blank lines are acceptable between groups
+            assert not stripped.startswith("#"), (
+                f"Line {i} is a comment, not valid CSV: {stripped!r}"
+            )
+
+    def test_ccli_csv_parseable_by_csv_reader(self, tmp_path: Path) -> None:
+        """The entire CSV file must be parseable by Python's csv.reader."""
+        import csv
+
+        db_path = tmp_path / "test.db"
+        out_path = tmp_path / "ccli.csv"
+        self._setup_db_with_events(db_path)
+
+        runner = CliRunner()
+        runner.invoke(main, [
+            "report", "ccli",
+            "--db", str(db_path),
+            "--out", str(out_path),
+        ])
+
+        with open(out_path) as f:
+            reader = csv.reader(f)
+            rows = list(reader)
+
+        # All rows should have the same number of columns as the header
+        header = rows[0]
+        for i, row in enumerate(rows[1:], 2):
+            if not row:
+                continue  # blank rows are acceptable
+            assert len(row) == len(header), (
+                f"Row {i} has {len(row)} columns, expected {len(header)}: {row}"
+            )
+
+
 class TestReportHelpDiscoverability:
     """Verify report subcommands are discoverable via --help (#178)."""
 
