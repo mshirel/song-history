@@ -7,6 +7,50 @@ Each review produces GitHub issues for every significant finding.
 
 ---
 
+## Review 8 — 2026-03-21
+
+**Branch:** `fix/qa-sweep`
+**Reviewer:** Claude Code (full-code-review skill)
+**Issues created:** #315–#328
+
+### Findings
+
+| Issue | Persona | Title | Severity |
+|-------|---------|-------|----------|
+| #315 | Architect | repair-credits uses manual connect/close instead of context manager | LOW |
+| #316 | Developer | sort_dir parameter not validated to safe values in DB query methods | HIGH |
+| #317 | Developer | deprecated insert_copy_event still callable — no runtime guard | LOW |
+| #318 | DevOps | Dockerfile uses python:3.14-slim — Python 3.14 is pre-release | MED |
+| #319 | Security | LIKE pattern injection in query_services and query_leader methods | MED |
+| #320 | Security | upload endpoint accepts file based solely on Content-Type header | MED |
+| #321 | DevSecOps | CI security job installs extras not in lockfile | MED |
+| #322 | QA | no mutation testing in CI — mutmut configured but never run | MED |
+| #323 | Product Manager | no way to delete or correct misidentified songs from web UI | MED |
+| #324 | UAT Analyst | no Playwright test for upload → poll → completion flow | HIGH |
+| #325 | Accessibility | data tables missing caption, scope, and proper thead/th semantics | MED |
+| #326 | Accessibility | services page filter inputs lack programmatic label association | MED |
+| #327 | Database | query_songs_paginated count query does not match data query | MED |
+| #328 | Database | delete_service_data does not remove orphaned songs or editions | LOW |
+
+### Grades
+
+| Persona | Grade | Notes |
+|---------|-------|-------|
+| Senior Architect | A | Clean separation of concerns; shared import pipeline; well-defined DB boundary. Minor lifecycle issue in one CLI command. |
+| Senior Developer | B+ | 990 tests, 94% coverage, strong type checking. sort_dir validation gap is the main gap. |
+| Senior DevOps | B+ | Excellent CI pipeline with CVE scan, smoke test, SBOM. Python version mismatch between Docker and CI is notable. |
+| Senior Security Architect | B | CSP, CSRF, parameterized queries, non-root Docker user all good. LIKE injection and content-type-only upload validation are gaps. |
+| Senior DevSecOps | B+ | SHA-pinned actions, gitleaks, pip-audit, lockfile verification. Security job dependency installation inconsistency. |
+| Senior QA Engineer | B | Strong test suite with good coverage. Mutation testing configured but unused is a missed opportunity. |
+| Product Manager | B | Functional product with clear user workflows. Lack of data correction UI is a significant gap for non-technical users. |
+| UAT Analyst | B | E2E tests exist and run in CI. Upload flow — the most critical user journey — has no browser-level test. |
+| Accessibility Specialist | B- | Skip nav, sr-only class, aria-sort, aria-live all present. Table semantics and label association need work. |
+| Database / Data Engineer | B+ | WAL mode, indexes, migration framework, parameterized queries. Count/data query inconsistency and orphan cleanup gaps. |
+
+**Overall: B+**
+
+---
+
 ## Review 7 — 2026-03-21
 
 **Branch:** `fix/extractor-size-limit`
