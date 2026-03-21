@@ -2898,6 +2898,12 @@ class TestAboutPage:
         resp = client.get("/about")
         assert "Highland" in resp.text
 
+    def test_about_page_shows_correct_city(self, client):
+        """About page must show Columbia, TN — not Dalton, GA (#260)."""
+        resp = client.get("/about")
+        assert "Columbia" in resp.text, "About page must show Columbia, TN"
+        assert "Dalton" not in resp.text, "About page must NOT show Dalton, GA"
+
     def test_about_page_shows_license(self, client):
         """About page must mention GPL-3.0 license."""
         resp = client.get("/about")
@@ -2912,6 +2918,31 @@ class TestAboutPage:
         """Navigation bar should include a link to the About page."""
         resp = client.get("/songs")
         assert "/about" in resp.text
+
+
+class TestUploadSizeLimit:
+    """MAX_UPLOAD_BYTES must accommodate real worship PPTX files (#263)."""
+
+    def test_max_upload_allows_large_worship_files(self):
+        """MAX_UPLOAD_BYTES must be at least 150 MB for worship files with embedded media."""
+        from worship_catalog.web.app import MAX_UPLOAD_BYTES
+        assert MAX_UPLOAD_BYTES >= 150 * 1024 * 1024, (
+            f"MAX_UPLOAD_BYTES is {MAX_UPLOAD_BYTES / 1024 / 1024:.0f} MB — "
+            "must be at least 150 MB to handle worship files with embedded media"
+        )
+
+    def test_upload_error_message_shows_limit_in_mb(self, client, monkeypatch):
+        """413 error message should show the limit in human-readable MB, not raw bytes."""
+        monkeypatch.setattr("worship_catalog.web.app.MAX_UPLOAD_BYTES", 10)
+        resp = client.post(
+            "/upload",
+            headers={"content-length": str(999 * 1024 * 1024)},
+            files={"file": ("big.pptx", io.BytesIO(b"PK"), "application/vnd.openxmlformats-officedocument.presentationml.presentation")},
+        )
+        assert resp.status_code == 413
+        assert "MB" in resp.json().get("detail", ""), (
+            "Error message should show the limit in MB, not raw bytes"
+        )
 
 
 class TestDbConnectionCleanup:

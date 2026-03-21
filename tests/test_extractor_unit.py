@@ -67,6 +67,42 @@ class TestExtractTitleCandidates:
         assert len([c for c in candidates if "copyright" in c.lower()]) == 0
 
 
+class TestSfpCatalogNumberFilter:
+    """SFP catalog numbers must not be treated as song titles (#264)."""
+
+    def test_sfp_number_is_not_a_valid_title(self):
+        """SFP followed by a number should be filtered as a catalog reference."""
+        slide = make_slide(lines=["SFP 373"])
+        assert _extract_title_candidates(slide) == []
+
+    def test_sfp_double_space_filtered(self):
+        """SFP with double space should also be filtered."""
+        slide = make_slide(lines=["SFP  878"])
+        assert _extract_title_candidates(slide) == []
+
+    def test_sfp_four_digit_filtered(self):
+        """SFP with zero-padded 4-digit number should be filtered."""
+        slide = make_slide(lines=["SFP 0230"])
+        assert _extract_title_candidates(slide) == []
+
+    def test_sfp_filter_does_not_reject_real_titles(self):
+        """Real song titles must not be filtered."""
+        slide = make_slide(lines=["A Hill Called Mount Calvary"])
+        assert "A Hill Called Mount Calvary" in _extract_title_candidates(slide)
+
+    def test_sfp_not_extracted_as_title_candidate(self):
+        """SFP catalog numbers must not appear in title candidates."""
+        slide = make_slide(lines=[
+            "SFP  373",
+            "c - A Hill Called Mount Calvary",
+            "\u00a9 2001 The Paperless Hymnal\u2122",
+        ])
+        candidates = _extract_title_candidates(slide)
+        assert not any("SFP" in t for t in candidates), (
+            f"SFP catalog number should be filtered: {candidates}"
+        )
+
+
 class TestIsSongTitleSlide:
     def test_paperlesshymnal_marker_returns_true(self):
         slide = make_slide(lines=["Amazing Grace", "PaperlessHymnal.com"])
