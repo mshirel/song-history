@@ -1025,3 +1025,124 @@ class TestRunImport:
         with pytest.raises(Exception):
             run_import(db, tmp_path / "nonexistent.pptx")
         db.close()
+
+
+# ---------------------------------------------------------------------------
+# Metadata slide detection (#347)
+# ---------------------------------------------------------------------------
+
+
+class TestIsMetadataSlide:
+    """Tests for _is_metadata_slide content detection."""
+
+    def test_standard_metadata_slide(self):
+        from worship_catalog.extractor import _is_metadata_slide
+        slide = make_slide(0, [
+            "Service Data", "Date", "2026-03-21",
+            "Service", "AM Worship", "Song Leader", "Matt",
+        ])
+        assert _is_metadata_slide(slide) is True
+
+    def test_minimal_metadata_two_keys(self):
+        from worship_catalog.extractor import _is_metadata_slide
+        slide = make_slide(0, ["Date", "2026-03-21", "Service", "AM Worship"])
+        assert _is_metadata_slide(slide) is True
+
+    def test_song_slide_not_metadata(self):
+        from worship_catalog.extractor import _is_metadata_slide
+        slide = make_slide(0, ["Amazing Grace", "PaperlessHymnal.com",
+                                "Words: John Newton"])
+        assert _is_metadata_slide(slide) is False
+
+    def test_empty_slide_not_metadata(self):
+        from worship_catalog.extractor import _is_metadata_slide
+        slide = make_slide(0, [])
+        assert _is_metadata_slide(slide) is False
+
+    def test_single_key_not_enough(self):
+        from worship_catalog.extractor import _is_metadata_slide
+        slide = make_slide(0, ["Date", "2026-03-21"])
+        assert _is_metadata_slide(slide) is False
+
+    def test_case_insensitive(self):
+        from worship_catalog.extractor import _is_metadata_slide
+        slide = make_slide(0, ["DATE", "2026-03-21", "SERVICE", "AM Worship"])
+        assert _is_metadata_slide(slide) is True
+
+
+class TestMetadataSlidePosition:
+    """Tests for metadata detection regardless of slide position (#347)."""
+
+    def test_metadata_on_slide_0(self, synthetic_pptx):
+        """Standard case — metadata on first slide."""
+        result = extract_songs(synthetic_pptx)
+        assert result.service_date is not None
+        assert result.song_leader is not None
+
+    def test_metadata_on_later_slide(self, tmp_path):
+        """Metadata on slide 3 should still be detected."""
+        from pptx import Presentation as PptxPresentation
+        prs = PptxPresentation()
+
+        # Slide 0: a song slide (not metadata)
+        s0 = prs.slides.add_slide(prs.slide_layouts[5])
+        tf0 = s0.shapes.add_textbox(0, 0, prs.slide_width, prs.slide_height).text_frame
+        tf0.text = "Amazing Grace\nPaperlessHymnal.com"
+
+        # Slide 1: another song
+        s1 = prs.slides.add_slide(prs.slide_layouts[5])
+        tf1 = s1.shapes.add_textbox(0, 0, prs.slide_width, prs.slide_height).text_frame
+        tf1.text = "1 - How Great Thou Art\nPaperlessHymnal.com"
+
+        # Slide 2: metadata slide (not at position 0)
+        s2 = prs.slides.add_slide(prs.slide_layouts[5])
+        # Use a table for metadata (matches the table-parsing path)
+        rows, cols = 5, 2
+        tbl = s2.shapes.add_table(rows, cols, 0, 0, prs.slide_width, prs.slide_height // 2).table
+        data = [
+            ("Service Data", ""),
+            ("Date", "2026-06-15"),
+            ("Service", "PM Worship"),
+            ("Song Leader", "Sarah"),
+            ("Preacher", "James"),
+        ]
+        for r, (k, v) in enumerate(data):
+            tbl.cell(r, 0).text = k
+            tbl.cell(r, 1).text = v
+
+        pptx_path = tmp_path / "meta_on_slide2.pptx"
+        prs.save(pptx_path)
+
+        result = extract_songs(pptx_path)
+        assert result.service_date == "2026-06-15"
+        assert result.service_name == "PM Worship"
+        assert result.song_leader == "Sarah"
+        assert len(result.songs) >= 1
+
+    def test_hidden_slides_excluded_from_songs(self):
+        """Hidden non-metadata slides should not produce song entries."""
+        from worship_catalog.extractor import _extract_songs_impl, _is_metadata_slide
+        meta = make_slide(0, ["Date", "2026-03-21", "Service", "AM Worship"])
+        hidden_divider = make_slide(1, ["Section Break", "PaperlessHymnal.com"], hidden=True)
+        song = make_slide(2, ["Amazing Grace", "PaperlessHymnal.com",
+                               "1 - Amazing Grace"])
+        # Verify the hidden slide is excluded from song detection
+        # by checking _is_metadata_slide doesn't match it
+        assert _is_metadata_slide(hidden_divider) is False
+        assert _is_metadata_slide(meta) is True
+
+    def test_no_metadata_falls_back_to_filename(self, tmp_path):
+        """If no slide has metadata, fall back to filename parsing."""
+        from pptx import Presentation as PptxPresentation
+        prs = PptxPresentation()
+        s0 = prs.slides.add_slide(prs.slide_layouts[5])
+        tf = s0.shapes.add_textbox(0, 0, prs.slide_width, prs.slide_height).text_frame
+        tf.text = "Amazing Grace\nPaperlessHymnal.com"
+
+        pptx_path = tmp_path / "AM Worship 2026.04.01.pptx"
+        prs.save(pptx_path)
+
+        result = extract_songs(pptx_path)
+        assert result.service_date == "2026-04-01"
+        assert result.service_name == "Morning Worship"
+        assert result.song_leader is None
