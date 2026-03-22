@@ -55,6 +55,23 @@ _NON_SONG_MARKERS: tuple[str, ...] = (
     "announcements",
 )
 
+# Keys that identify a slide as a structured service metadata table (#347).
+# A slide with at least 2 of these keys (case-insensitive) is treated as the
+# metadata source regardless of its position in the deck.
+_METADATA_KEYS: frozenset[str] = frozenset({
+    "date", "service", "song leader", "preacher", "sermon title",
+    "service data", "metadata", "service info",
+})
+_METADATA_KEY_THRESHOLD: int = 2  # minimum matches to qualify
+
+
+def _is_metadata_slide(slide: Slide) -> bool:
+    """Return True if *slide* contains structured service metadata (#347)."""
+    lower_lines = [line.lower().strip() for line in slide.text.text_lines]
+    matches = sum(1 for line in lower_lines if line in _METADATA_KEYS)
+    return matches >= _METADATA_KEY_THRESHOLD
+
+
 # Footer/copyright markers filtered from title candidates.
 _FOOTER_MARKERS: tuple[str, ...] = (
     "copyright",
@@ -291,9 +308,27 @@ def _extract_songs_impl(
 
     slides = parse_all_slides(prs)
 
-    # Step 2: Extract metadata
-    if slides:
-        metadata = extract_service_metadata(slides[0], file_path.name)
+    # Step 2: Find the metadata slide by content, not position (#347).
+    # Scan all slides for structured service metadata (date, service, song leader).
+    # Fall back to filename parsing if no metadata slide is found.
+    metadata_slide_idx: int | None = None
+    for idx, slide in enumerate(slides):
+        if _is_metadata_slide(slide):
+            metadata_slide_idx = idx
+            break
+
+    if metadata_slide_idx is not None:
+        metadata = extract_service_metadata(slides[metadata_slide_idx], file_path.name)
+        _log.debug(
+            "Metadata found on slide %d of %s", metadata_slide_idx, file_path.name
+        )
+    elif slides:
+        # No metadata slide found — try filename fallback
+        from worship_catalog.pptx_reader import parse_filename_for_metadata
+        metadata = parse_filename_for_metadata(file_path.name)
+        _log.debug(
+            "No metadata slide found in %s — using filename fallback", file_path.name
+        )
     else:
         metadata = None
 
@@ -301,8 +336,13 @@ def _extract_songs_impl(
         "Loaded %d slides from %s", len(slides), file_path.name
     )
 
-    # Step 3: Identify and group song slides (skip first slide which is metadata)
-    song_groups = _group_song_slides(slides[1:] if slides else [])
+    # Step 3: Identify and group song slides.
+    # Exclude the metadata slide (whichever position) and hidden slides (#347).
+    song_slides = [
+        s for i, s in enumerate(slides)
+        if i != metadata_slide_idx and not s.hidden
+    ]
+    song_groups = _group_song_slides(song_slides)
 
     _log.debug(
         "Identified %d song group(s) in %s", len(song_groups), file_path.name
