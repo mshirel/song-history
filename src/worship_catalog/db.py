@@ -787,6 +787,33 @@ class Database:
         )
         return [dict(row) for row in cursor.fetchall()]
 
+    def query_distinct_service_names(self) -> list[str]:
+        """Distinct service_name values sorted alphabetically (for filter dropdowns)."""
+        cursor = self._conn.cursor()
+        cursor.execute(
+            "SELECT DISTINCT service_name FROM services"
+            " WHERE service_name IS NOT NULL ORDER BY service_name",
+        )
+        return [row[0] for row in cursor.fetchall()]
+
+    def query_distinct_song_leaders(self) -> list[str]:
+        """Distinct non-null song_leader values sorted alphabetically."""
+        cursor = self._conn.cursor()
+        cursor.execute(
+            "SELECT DISTINCT song_leader FROM services"
+            " WHERE song_leader IS NOT NULL AND song_leader != '' ORDER BY song_leader",
+        )
+        return [row[0] for row in cursor.fetchall()]
+
+    def query_distinct_preachers(self) -> list[str]:
+        """Distinct non-null preacher values sorted alphabetically."""
+        cursor = self._conn.cursor()
+        cursor.execute(
+            "SELECT DISTINCT preacher FROM services"
+            " WHERE preacher IS NOT NULL AND preacher != '' ORDER BY preacher",
+        )
+        return [row[0] for row in cursor.fetchall()]
+
     # --- Deletions ---
 
     def delete_service_data(self, service_id: int) -> None:

@@ -3,62 +3,72 @@
 {% block content %}
 <h1>Services</h1>
 
-{# Hidden inputs carry sort+filter state into HTMX filter requests #}
-<input type="hidden" name="sort"       value="{{ sort }}">
-<input type="hidden" name="sort_dir"   value="{{ sort_dir }}">
-<input type="hidden" name="start_date" value="{{ start_date }}">
-<input type="hidden" name="end_date"   value="{{ end_date }}">
-<input type="hidden" name="q_service"  value="{{ q_service }}">
-<input type="hidden" name="q_leader"   value="{{ q_leader }}">
-<input type="hidden" name="q_preacher" value="{{ q_preacher }}">
-<input type="hidden" name="q_sermon"   value="{{ q_sermon }}">
+{# Filter bar — wrapped in a form so HTMX serializes all fields once (no stale hidden duplicates) #}
+<form id="filter-form" autocomplete="off">
+  <input type="hidden" name="sort"     value="{{ sort }}">
+  <input type="hidden" name="sort_dir" value="{{ sort_dir }}">
 
-{# Filter bar #}
-<div class="card" style="margin-bottom:1rem;">
-  {% if start_date or end_date or q_service or q_leader or q_preacher or q_sermon %}
-  <div style="text-align:right;margin-bottom:0.5rem;">
-    <a href="/services" style="font-size:0.85rem;color:#6c757d;">Clear all filters</a>
+  <div class="card" style="margin-bottom:1rem;">
+    {% if start_date or end_date or q_service or q_leader or q_preacher or q_sermon %}
+    <div style="text-align:right;margin-bottom:0.5rem;">
+      <a href="/services" style="font-size:0.85rem;color:#6c757d;">Clear all filters</a>
+    </div>
+    {% endif %}
+    <div class="form-grid">
+      <div>
+        <label for="filter-start-date" style="font-size:0.8rem;font-weight:600;color:#495057;display:block;margin-bottom:0.2rem;">Date From</label>
+        <input type="date" id="filter-start-date" name="start_date" value="{{ start_date }}"
+          hx-get="/services" hx-trigger="change" hx-target="#services-tbody"
+          hx-include="#filter-form">
+      </div>
+      <div>
+        <label for="filter-end-date" style="font-size:0.8rem;font-weight:600;color:#495057;display:block;margin-bottom:0.2rem;">Date To</label>
+        <input type="date" id="filter-end-date" name="end_date" value="{{ end_date }}"
+          hx-get="/services" hx-trigger="change" hx-target="#services-tbody"
+          hx-include="#filter-form">
+      </div>
+      <div>
+        <label for="filter-service" style="font-size:0.8rem;font-weight:600;color:#495057;display:block;margin-bottom:0.2rem;">Service</label>
+        <select id="filter-service" name="q_service"
+          hx-get="/services" hx-trigger="change" hx-target="#services-tbody"
+          hx-include="#filter-form">
+          <option value="">All services</option>
+          {% for name in service_names %}
+          <option value="{{ name }}"{% if q_service == name %} selected{% endif %}>{{ name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <label for="filter-leader" style="font-size:0.8rem;font-weight:600;color:#495057;display:block;margin-bottom:0.2rem;">Song Leader</label>
+        <select id="filter-leader" name="q_leader"
+          hx-get="/services" hx-trigger="change" hx-target="#services-tbody"
+          hx-include="#filter-form">
+          <option value="">All leaders</option>
+          {% for leader in leaders %}
+          <option value="{{ leader }}"{% if q_leader == leader %} selected{% endif %}>{{ leader }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <label for="filter-preacher" style="font-size:0.8rem;font-weight:600;color:#495057;display:block;margin-bottom:0.2rem;">Preacher</label>
+        <select id="filter-preacher" name="q_preacher"
+          hx-get="/services" hx-trigger="change" hx-target="#services-tbody"
+          hx-include="#filter-form">
+          <option value="">All preachers</option>
+          {% for preacher in preachers %}
+          <option value="{{ preacher }}"{% if q_preacher == preacher %} selected{% endif %}>{{ preacher }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <label for="filter-sermon" style="font-size:0.8rem;font-weight:600;color:#495057;display:block;margin-bottom:0.2rem;">Sermon</label>
+        <input type="text" id="filter-sermon" name="q_sermon" value="{{ q_sermon }}" placeholder="filter…"
+          hx-get="/services" hx-trigger="input changed delay:300ms" hx-target="#services-tbody"
+          hx-include="#filter-form">
+      </div>
+    </div>
   </div>
-  {% endif %}
-  <div class="form-grid">
-    <div>
-      <label for="filter-start-date" style="font-size:0.8rem;font-weight:600;color:#495057;display:block;margin-bottom:0.2rem;">Date From</label>
-      <input type="date" id="filter-start-date" name="start_date" value="{{ start_date }}"
-        hx-get="/services" hx-trigger="input changed delay:300ms" hx-target="#services-tbody"
-        hx-include="[name='sort'],[name='sort_dir'],[name='start_date'],[name='end_date'],[name='q_service'],[name='q_leader'],[name='q_preacher'],[name='q_sermon']">
-    </div>
-    <div>
-      <label for="filter-end-date" style="font-size:0.8rem;font-weight:600;color:#495057;display:block;margin-bottom:0.2rem;">Date To</label>
-      <input type="date" id="filter-end-date" name="end_date" value="{{ end_date }}"
-        hx-get="/services" hx-trigger="input changed delay:300ms" hx-target="#services-tbody"
-        hx-include="[name='sort'],[name='sort_dir'],[name='start_date'],[name='end_date'],[name='q_service'],[name='q_leader'],[name='q_preacher'],[name='q_sermon']">
-    </div>
-    <div>
-      <label for="filter-service" style="font-size:0.8rem;font-weight:600;color:#495057;display:block;margin-bottom:0.2rem;">Service</label>
-      <input type="text" id="filter-service" name="q_service" value="{{ q_service }}" placeholder="filter…"
-        hx-get="/services" hx-trigger="input changed delay:300ms" hx-target="#services-tbody"
-        hx-include="[name='sort'],[name='sort_dir'],[name='start_date'],[name='end_date'],[name='q_service'],[name='q_leader'],[name='q_preacher'],[name='q_sermon']">
-    </div>
-    <div>
-      <label for="filter-leader" style="font-size:0.8rem;font-weight:600;color:#495057;display:block;margin-bottom:0.2rem;">Song Leader</label>
-      <input type="text" id="filter-leader" name="q_leader" value="{{ q_leader }}" placeholder="filter…"
-        hx-get="/services" hx-trigger="input changed delay:300ms" hx-target="#services-tbody"
-        hx-include="[name='sort'],[name='sort_dir'],[name='start_date'],[name='end_date'],[name='q_service'],[name='q_leader'],[name='q_preacher'],[name='q_sermon']">
-    </div>
-    <div>
-      <label for="filter-preacher" style="font-size:0.8rem;font-weight:600;color:#495057;display:block;margin-bottom:0.2rem;">Preacher</label>
-      <input type="text" id="filter-preacher" name="q_preacher" value="{{ q_preacher }}" placeholder="filter…"
-        hx-get="/services" hx-trigger="input changed delay:300ms" hx-target="#services-tbody"
-        hx-include="[name='sort'],[name='sort_dir'],[name='start_date'],[name='end_date'],[name='q_service'],[name='q_leader'],[name='q_preacher'],[name='q_sermon']">
-    </div>
-    <div>
-      <label for="filter-sermon" style="font-size:0.8rem;font-weight:600;color:#495057;display:block;margin-bottom:0.2rem;">Sermon</label>
-      <input type="text" id="filter-sermon" name="q_sermon" value="{{ q_sermon }}" placeholder="filter…"
-        hx-get="/services" hx-trigger="input changed delay:300ms" hx-target="#services-tbody"
-        hx-include="[name='sort'],[name='sort_dir'],[name='start_date'],[name='end_date'],[name='q_service'],[name='q_leader'],[name='q_preacher'],[name='q_sermon']">
-    </div>
-  </div>
-</div>
+</form>
 
 {# Build a query string from current filter params for sort links #}
 {% set filter_qs %}start_date={{ start_date }}&end_date={{ end_date }}&q_service={{ q_service | urlencode }}&q_leader={{ q_leader | urlencode }}&q_preacher={{ q_preacher | urlencode }}&q_sermon={{ q_sermon | urlencode }}{% endset %}

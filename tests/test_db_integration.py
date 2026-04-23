@@ -2415,3 +2415,118 @@ class TestPurgeValidation:
         temp_db.create_import_job("j1", "f.pptx", started_at="2020-01-01T00:00:00Z")
         temp_db.purge_old_import_jobs(days=-999, keep=1)  # no error
         assert len(temp_db.list_import_jobs()) == 1
+
+
+@pytest.mark.integration
+class TestDistinctValueQueries:
+    """Tests for query_distinct_service_names/song_leaders/preachers (#362)."""
+
+    @pytest.fixture
+    def temp_db(self):
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "test.db"
+            db = Database(db_path)
+            db.connect()
+            db.init_schema()
+            yield db
+            db.close()
+
+    def test_query_distinct_service_names_returns_list(self, temp_db):
+        temp_db.insert_or_update_service(
+            service_date="2026-01-01", service_name="AM Worship",
+            source_file="a.pptx", source_hash="h1",
+        )
+        temp_db.insert_or_update_service(
+            service_date="2026-01-08", service_name="PM Worship",
+            source_file="b.pptx", source_hash="h2",
+        )
+        names = temp_db.query_distinct_service_names()
+        assert "AM Worship" in names
+        assert "PM Worship" in names
+
+    def test_query_distinct_service_names_no_duplicates(self, temp_db):
+        for i in range(3):
+            temp_db.insert_or_update_service(
+                service_date=f"2026-01-{i + 1:02d}", service_name="AM Worship",
+                source_file=f"f{i}.pptx", source_hash=f"h{i}",
+            )
+        names = temp_db.query_distinct_service_names()
+        assert names.count("AM Worship") == 1
+
+    def test_query_distinct_service_names_sorted(self, temp_db):
+        temp_db.insert_or_update_service(
+            service_date="2026-01-01", service_name="PM Worship",
+            source_file="a.pptx", source_hash="h1",
+        )
+        temp_db.insert_or_update_service(
+            service_date="2026-01-08", service_name="AM Worship",
+            source_file="b.pptx", source_hash="h2",
+        )
+        names = temp_db.query_distinct_service_names()
+        assert names == sorted(names)
+
+    def test_query_distinct_song_leaders(self, temp_db):
+        temp_db.insert_or_update_service(
+            service_date="2026-01-01", service_name="AM Worship",
+            source_file="a.pptx", source_hash="h1", song_leader="Alice",
+        )
+        temp_db.insert_or_update_service(
+            service_date="2026-01-08", service_name="AM Worship",
+            source_file="b.pptx", source_hash="h2", song_leader="Bob",
+        )
+        leaders = temp_db.query_distinct_song_leaders()
+        assert "Alice" in leaders
+        assert "Bob" in leaders
+
+    def test_query_distinct_song_leaders_excludes_null(self, temp_db):
+        temp_db.insert_or_update_service(
+            service_date="2026-01-01", service_name="AM Worship",
+            source_file="a.pptx", source_hash="h1",  # no song_leader
+        )
+        leaders = temp_db.query_distinct_song_leaders()
+        assert None not in leaders
+        assert "" not in leaders
+
+    def test_query_distinct_song_leaders_no_duplicates(self, temp_db):
+        for i in range(3):
+            temp_db.insert_or_update_service(
+                service_date=f"2026-01-{i + 1:02d}", service_name="AM Worship",
+                source_file=f"f{i}.pptx", source_hash=f"h{i}", song_leader="Alice",
+            )
+        leaders = temp_db.query_distinct_song_leaders()
+        assert leaders.count("Alice") == 1
+
+    def test_query_distinct_preachers(self, temp_db):
+        temp_db.insert_or_update_service(
+            service_date="2026-01-01", service_name="AM Worship",
+            source_file="a.pptx", source_hash="h1", preacher="Rev. Smith",
+        )
+        preachers = temp_db.query_distinct_preachers()
+        assert "Rev. Smith" in preachers
+
+    def test_query_distinct_preachers_excludes_null(self, temp_db):
+        temp_db.insert_or_update_service(
+            service_date="2026-01-01", service_name="AM Worship",
+            source_file="a.pptx", source_hash="h1",  # no preacher
+        )
+        preachers = temp_db.query_distinct_preachers()
+        assert None not in preachers
+        assert "" not in preachers
+
+    def test_query_distinct_preachers_no_duplicates(self, temp_db):
+        for i in range(3):
+            temp_db.insert_or_update_service(
+                service_date=f"2026-01-{i + 1:02d}", service_name="AM Worship",
+                source_file=f"f{i}.pptx", source_hash=f"h{i}", preacher="Dr. Jones",
+            )
+        preachers = temp_db.query_distinct_preachers()
+        assert preachers.count("Dr. Jones") == 1
+
+    def test_query_distinct_service_names_empty_db(self, temp_db):
+        assert temp_db.query_distinct_service_names() == []
+
+    def test_query_distinct_song_leaders_empty_db(self, temp_db):
+        assert temp_db.query_distinct_song_leaders() == []
+
+    def test_query_distinct_preachers_empty_db(self, temp_db):
+        assert temp_db.query_distinct_preachers() == []
