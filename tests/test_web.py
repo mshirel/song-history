@@ -407,6 +407,71 @@ class TestServicesFiltering:
         assert response.status_code == 200
 
 
+class TestServicesFilterBugRegression:
+    """Regression tests for stale hx-include duplicate-param bug (#361)."""
+
+    def test_filter_by_leader_no_duplicate_hidden_inputs(self, client):
+        """Stale hidden filter inputs must be removed — they conflict with HTMX hx-include."""
+        response = client.get("/services")
+        html = response.text
+        assert html.count('type="hidden" name="q_leader"') == 0
+        assert html.count('type="hidden" name="q_preacher"') == 0
+        assert html.count('type="hidden" name="q_service"') == 0
+        assert html.count('type="hidden" name="q_sermon"') == 0
+
+    def test_filter_by_service_name_returns_match(self, client):
+        response = client.get("/services?q_service=AM+Worship")
+        assert response.status_code == 200
+        assert "AM Worship" in response.text
+
+    def test_filter_by_sermon_returns_match(self, client):
+        response = client.get("/services?q_sermon=ZZZNOMATCH")
+        assert response.status_code == 200
+        assert "No services" in response.text
+
+
+class TestServicesDropdowns:
+    """Tests that service/leader/preacher filters render as dropdowns (#362)."""
+
+    def test_services_page_renders_leader_select(self, client):
+        response = client.get("/services")
+        assert response.status_code == 200
+        assert '<select' in response.text
+        assert 'name="q_leader"' in response.text
+
+    def test_services_page_renders_preacher_select(self, client):
+        response = client.get("/services")
+        assert '<select' in response.text
+        assert 'name="q_preacher"' in response.text
+
+    def test_services_page_renders_service_select(self, client):
+        response = client.get("/services")
+        assert '<select' in response.text
+        assert 'name="q_service"' in response.text
+
+    def test_services_page_populates_leader_options(self, client):
+        """Leader dropdown includes leader from the test fixture."""
+        response = client.get("/services")
+        assert "Matt" in response.text
+
+    def test_services_leader_select_shows_selected_value(self, client):
+        """When q_leader is set, that option shows as selected."""
+        response = client.get("/services?q_leader=Matt")
+        assert "selected" in response.text
+        assert "Matt" in response.text
+
+    def test_services_service_select_shows_selected_value(self, client):
+        response = client.get("/services?q_service=AM+Worship")
+        assert "selected" in response.text
+        assert "AM Worship" in response.text
+
+    def test_sermon_filter_remains_text_input(self, client):
+        """Sermon filter stays as a text input (not a select)."""
+        response = client.get("/services")
+        assert 'type="text"' in response.text
+        assert 'name="q_sermon"' in response.text
+
+
 class TestLeaderRoutes:
     """Tests for /leaders and /leaders/{name}/top-songs routes."""
 

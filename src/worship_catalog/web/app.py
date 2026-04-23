@@ -689,6 +689,9 @@ async def services_list(
     }
     if request.headers.get("HX-Request"):
         return templates.TemplateResponse(request, "services_rows.html", ctx)
+    ctx["service_names"] = db.query_distinct_service_names()
+    ctx["leaders"] = db.query_distinct_song_leaders()
+    ctx["preachers"] = db.query_distinct_preachers()
     return templates.TemplateResponse(request, "services.html", ctx)
 
 
