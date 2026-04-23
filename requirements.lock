@@ -8,26 +8,26 @@ annotated-doc==0.0.4
     # via fastapi
 annotated-types==0.7.0
     # via pydantic
-anthropic==0.86.0
+anthropic==0.96.0
     # via worship-catalog (pyproject.toml)
-anyio==4.12.1
+anyio==4.13.0
     # via
     #   anthropic
     #   httpx
     #   starlette
-certifi==2026.2.25
+certifi==2026.4.22
     # via
     #   httpcore
     #   httpx
-click==8.3.1
+click==8.3.3
     # via
     #   uvicorn
     #   worship-catalog (pyproject.toml)
 distro==1.9.0
     # via anthropic
-docstring-parser==0.17.0
+docstring-parser==0.18.0
     # via anthropic
-fastapi==0.135.1
+fastapi==0.136.0
     # via worship-catalog (pyproject.toml)
 h11==0.16.0
     # via
@@ -37,7 +37,7 @@ httpcore==1.0.9
     # via httpx
 httpx==0.28.1
     # via anthropic
-idna==3.11
+idna==3.13
     # via
     #   anyio
     #   httpx
@@ -45,22 +45,22 @@ itsdangerous==2.2.0
     # via starlette-csrf
 jinja2==3.1.6
     # via worship-catalog (pyproject.toml)
-jiter==0.13.0
+jiter==0.14.0
     # via anthropic
-lxml==6.0.2
+lxml==6.1.0
     # via python-pptx
 markupsafe==3.0.3
     # via jinja2
-pillow==12.1.1
+pillow==12.2.0
     # via python-pptx
-pydantic==2.12.5
+pydantic==2.13.3
     # via
     #   anthropic
     #   fastapi
     #   worship-catalog (pyproject.toml)
-pydantic-core==2.41.5
+pydantic-core==2.46.3
     # via pydantic
-python-multipart==0.0.22
+python-multipart==0.0.26
     # via worship-catalog (pyproject.toml)
 python-pptx==1.0.2
     # via worship-catalog (pyproject.toml)
