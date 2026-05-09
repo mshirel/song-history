@@ -167,6 +167,7 @@ jobs:
 
       - name: Install dependencies
         run: |
+          pip install --upgrade "pip>=26.1"          # fix CVE-2026-6357 in pip itself
           pip install -r requirements.lock          # locked runtime deps (#321)
           pip install -e ".[dev]"                    # dev tools (bandit, pip-audit)
 
@@ -182,7 +183,8 @@ jobs:
           }
 
       - name: Dependency audit (pip-audit)
-        run: python3 -m pip_audit --skip-editable
+        # CVE-2026-3219 affects pip itself; no fix released yet — ignore until pip patch ships
+        run: python3 -m pip_audit --skip-editable --ignore-vuln CVE-2026-3219
 
       # --- Static security analysis ----------------------------------------
       - name: Static security scan (bandit)
@@ -246,7 +248,7 @@ jobs:
 
       - name: Log in to GitHub Container Registry
         if: steps.changes.outputs.app == 'true' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-        uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2  # v4.0.0
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121  # v4.1.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -269,7 +271,7 @@ jobs:
       # A vulnerable image is never published — CVEs block the push step (#66).
       - name: Build image (local, for CVE scan)
         if: steps.changes.outputs.app == 'true' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-        uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294  # v7.0.0
+        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f  # v7.1.0
         with:
           context: .
           push: false
@@ -284,7 +286,7 @@ jobs:
 
       - name: Scan image for CVEs
         if: steps.changes.outputs.app == 'true' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1  # v0.35.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
         with:
           image-ref: local-scan:latest
           format: sarif
@@ -295,7 +297,7 @@ jobs:
 
       - name: Upload Trivy results to GitHub Security tab
         if: (steps.changes.outputs.app == 'true' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && always()
-        uses: github/codeql-action/upload-sarif@b1bff81932f5cdfc8695c7752dcee935dcd061c8  # v4.33.0
+        uses: github/codeql-action/upload-sarif@e46ed2cbd01164d986452f91f178727624ae40d7  # v4.35.3
         with:
           sarif_file: trivy-results.sarif
 
@@ -326,7 +328,7 @@ jobs:
       # GHA cache from the local build above makes this fast (no layer re-download).
       - name: Build and push (multi-platform)
         if: steps.changes.outputs.app == 'true' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-        uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294  # v7.0.0
+        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f  # v7.1.0
         with:
           context: .
           push: true
