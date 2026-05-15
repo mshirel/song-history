@@ -84,14 +84,18 @@ services:
       start_period: 10s
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.songs.rule=Host(`songs.highland-coc.com`)"
+      # pi-songs.tanx95.us alias added 2026-05-15 so the homelab Uptime Kuma
+      # monitor (which checks the internal hostname) returns 200 instead of 404.
+      # Cert is still issued for highland-coc.com only; Kuma accepts the
+      # default cert for pi-songs.tanx95.us via "ignore TLS errors" mode.
+      - "traefik.http.routers.songs.rule=Host(`songs.highland-coc.com`) || Host(`pi-songs.tanx95.us`)"
       - "traefik.http.routers.songs.entrypoints=websecure"
       - "traefik.http.routers.songs.tls.certresolver=letsencrypt"
       - "traefik.http.routers.songs.tls.domains[0].main=highland-coc.com"
       - "traefik.http.routers.songs.tls.domains[0].sans=*.highland-coc.com"
       - "traefik.http.services.songs.loadbalancer.server.port=8000"
-      # HTTP → HTTPS redirect
-      - "traefik.http.routers.songs-http.rule=Host(`songs.highland-coc.com`)"
+      # HTTP → HTTPS redirect (also covers the pi-songs alias)
+      - "traefik.http.routers.songs-http.rule=Host(`songs.highland-coc.com`) || Host(`pi-songs.tanx95.us`)"
       - "traefik.http.routers.songs-http.entrypoints=web"
       - "traefik.http.routers.songs-http.middlewares=redirect-to-https"
       - "traefik.http.middlewares.redirect-to-https.redirectscheme.scheme=https"
