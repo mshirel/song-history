@@ -8,7 +8,7 @@ annotated-doc==0.0.4
     # via fastapi
 annotated-types==0.7.0
     # via pydantic
-anthropic==0.100.0
+anthropic==0.102.0
     # via worship-catalog (pyproject.toml)
 anyio==4.13.0
     # via
@@ -37,7 +37,7 @@ httpcore==1.0.9
     # via httpx
 httpx==0.28.1
     # via anthropic
-idna==3.13
+idna==3.15
     # via
     #   anyio
     #   httpx
@@ -60,7 +60,7 @@ pydantic==2.13.4
     #   worship-catalog (pyproject.toml)
 pydantic-core==2.46.4
     # via pydantic
-python-multipart==0.0.27
+python-multipart==0.0.28
     # via worship-catalog (pyproject.toml)
 python-pptx==1.0.2
     # via worship-catalog (pyproject.toml)
@@ -88,7 +88,7 @@ typing-inspection==0.4.2
     # via
     #   fastapi
     #   pydantic
-uvicorn==0.46.0
+uvicorn==0.47.0
     # via worship-catalog (pyproject.toml)
 xlsxwriter==3.2.9
     # via python-pptx
