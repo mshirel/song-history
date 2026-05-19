@@ -3466,6 +3466,34 @@ class TestUploadMagicBytes:
 # ---------------------------------------------------------------------------
 
 
+class TestPrometheusMetrics:
+    """/metrics endpoint exposes Prometheus instrumentation (HOME-120)."""
+
+    def test_metrics_endpoint_returns_200(self, client):
+        response = client.get("/metrics")
+        assert response.status_code == 200
+
+    def test_metrics_content_type_is_text(self, client):
+        response = client.get("/metrics")
+        assert "text/plain" in response.headers["content-type"]
+
+    def test_metrics_contains_http_request_counter(self, client):
+        # Seed at least one request so the counter appears
+        client.get("/health")
+        response = client.get("/metrics")
+        assert "http_requests_total" in response.text
+
+    def test_metrics_exempt_from_csrf(self, raw_client):
+        """GET /metrics must work without a CSRF token."""
+        response = raw_client.get("/metrics")
+        assert response.status_code == 200
+
+    def test_metrics_not_included_in_itself(self, client):
+        """Scraping /metrics must not create a recursive metric for /metrics requests."""
+        response = client.get("/metrics")
+        assert response.status_code == 200
+
+
 class TestBuildDateFormatting:
     """Build date on About page should be human-readable (#331)."""
 
