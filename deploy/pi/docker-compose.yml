@@ -66,6 +66,8 @@ services:
     image: ghcr.io/mshirel/song-history:latest
     restart: unless-stopped
     stop_grace_period: 35s
+    ports:
+      - "8000:8000"  # Prometheus /metrics scraping (internal only — not routed via Traefik)
     environment:
       DB_PATH: /data/worship.db
       INBOX_DIR: /inbox
