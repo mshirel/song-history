@@ -34,6 +34,7 @@ from fastapi import (
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from prometheus_fastapi_instrumentator import Instrumentator
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette_csrf import CSRFMiddleware  # type: ignore[attr-defined]
@@ -112,7 +113,7 @@ app.add_middleware(
     CSRFMiddleware,
     secret=_CSRF_SECRET,
     cookie_name="csrftoken",
-    exempt_urls=[re.compile(r"^/health$")],
+    exempt_urls=[re.compile(r"^/health$"), re.compile(r"^/metrics$")],
 )
 app.add_middleware(RequestLoggingMiddleware)
 
@@ -143,6 +144,10 @@ class _SecurityHeadersMiddleware(BaseHTTPMiddleware):
 
 app.add_middleware(_SecurityHeadersMiddleware)
 
+Instrumentator(
+    excluded_handlers=["/metrics"],
+    should_group_status_codes=False,
+).instrument(app).expose(app, include_in_schema=False)
 
 _TEMPLATES_DIR = Path(__file__).parent / "templates"
 _STATIC_DIR = Path(__file__).parent / "static"

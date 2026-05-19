@@ -30,6 +30,7 @@ web = [
     "uvicorn>=0.27,<1",
     "python-multipart>=0.0.9,<1",
     "starlette-csrf>=3.0,<4",
+    "prometheus-fastapi-instrumentator>=7.0,<8",
 ]
 excel = [
     "openpyxl>=3.1,<4",
