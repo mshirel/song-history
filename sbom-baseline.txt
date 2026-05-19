@@ -49,6 +49,8 @@ pathspec
 pillow
 pip
 pip-api
+prometheus-client
+prometheus-fastapi-instrumentator
 pip_audit
 pip-requirements-parser
 platformdirs
