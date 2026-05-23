@@ -1,5 +1,7 @@
 # Claude Code — Project Instructions
 
+> Workspace-wide rules in `/home/matt/projects/CLAUDE.md` still apply: branching to `agent/claude/<desc>` (never push to `main`), internal service URLs, HOME-105 logging for AppArmor/Docker-in-LXC, secrets stay in `~/.env`, and `~/.ssh/config` is authoritative for SSH access. The project-specific rules below add on top of those.
+
 ## TDD is Non-Negotiable
 
 **All code changes must be test-driven. No exceptions.**
@@ -35,6 +37,7 @@ CI config changes and documentation-only changes are exempt, but any change touc
 ## Development Workflow
 
 ```
+0. Create branch: git checkout -b agent/claude/<short-desc>  (NEVER work directly on main)
 1. Read the issue — understand the test cases defined there
 2. Write tests → run → confirm they FAIL
 3. Write implementation → run → confirm they PASS
@@ -42,7 +45,7 @@ CI config changes and documentation-only changes are exempt, but any change touc
 5. Run linter: python3 -m ruff check src/
 6. Run type check: python3 -m mypy src/
 7. Run QA agents (see below)
-8. Commit and push
+8. Commit and push to the agent branch (do not merge to main — open a PR for review)
 9. Confirm CI passes before closing the issue
 ```
 
