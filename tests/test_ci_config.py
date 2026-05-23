@@ -50,8 +50,8 @@ class TestIntegrationTestStep:
         )
 
 
-# Known-good SHA for aquasecurity/trivy-action v0.35.0
-_TRIVY_V035_SHA = "57a97c7e7821a5776cebc9bb87c984fa69cba8f1"
+# Known-good SHA for aquasecurity/trivy-action v0.36.0
+_TRIVY_CURRENT_SHA = "ed142fd0673e97e23eac54620cfb913e5ce36c25"
 
 # SHAs for older versions that should NOT appear in CI
 _STALE_TRIVY_SHAS = {
@@ -62,6 +62,7 @@ _STALE_TRIVY_SHAS = {
     "f9424c10c36e288d5fa79bd3dfd1aeb2d6eae808",  # v0.33.0
     "b6643a29fecd7f34b3597bc6acb0a98b03d33ff8",  # v0.33.1
     "c1824fd6edce30d7ab345a9989de00bbd46ef284",  # v0.34.0
+    "57a97c7e7821a5776cebc9bb87c984fa69cba8f1",  # v0.35.0
 }
 
 
@@ -78,9 +79,9 @@ class TestTrivyActionVersion:
                     f"trivy-action is pinned to a stale SHA ({sha}). "
                     "Bump to the latest release."
                 )
-                assert sha == _TRIVY_V035_SHA, (
+                assert sha == _TRIVY_CURRENT_SHA, (
                     f"trivy-action SHA {sha} is unrecognised. "
-                    f"Expected {_TRIVY_V035_SHA} (v0.35.0) or newer."
+                    f"Expected {_TRIVY_CURRENT_SHA} (v0.36.0) or newer."
                 )
                 return
         pytest.fail("aquasecurity/trivy-action not found in CI config")

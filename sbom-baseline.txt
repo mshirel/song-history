@@ -51,7 +51,6 @@ pillow
 pip
 pip-api
 prometheus_client
-prometheus-fastapi-instrumentator
 pip_audit
 pip-requirements-parser
 platformdirs

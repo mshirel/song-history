@@ -8,18 +8,18 @@ annotated-doc==0.0.4
     # via fastapi
 annotated-types==0.7.0
     # via pydantic
-anthropic==0.103.0
+anthropic==0.104.1
     # via worship-catalog (pyproject.toml)
 anyio==4.13.0
     # via
     #   anthropic
     #   httpx
     #   starlette
-certifi==2026.4.22
+certifi==2026.5.20
     # via
     #   httpcore
     #   httpx
-click==8.4.0
+click==8.4.1
     # via
     #   uvicorn
     #   worship-catalog (pyproject.toml)
@@ -27,7 +27,7 @@ distro==1.9.0
     # via anthropic
 docstring-parser==0.18.0
     # via anthropic
-fastapi==0.136.1
+fastapi==0.136.3
     # via worship-catalog (pyproject.toml)
 h11==0.16.0
     # via
@@ -37,7 +37,7 @@ httpcore==1.0.9
     # via httpx
 httpx==0.28.1
     # via anthropic
-idna==3.15
+idna==3.16
     # via
     #   anyio
     #   httpx
@@ -54,8 +54,6 @@ markupsafe==3.0.3
 pillow==12.2.0
     # via python-pptx
 prometheus-client==0.25.0
-    # via prometheus-fastapi-instrumentator
-prometheus-fastapi-instrumentator==7.1.0
     # via worship-catalog (pyproject.toml)
 pydantic==2.13.4
     # via
@@ -72,10 +70,9 @@ pyyaml==6.0.3
     # via worship-catalog (pyproject.toml)
 sniffio==1.3.1
     # via anthropic
-starlette==0.52.1
+starlette==1.1.0
     # via
     #   fastapi
-    #   prometheus-fastapi-instrumentator
     #   starlette-csrf
 starlette-csrf==3.0.0
     # via worship-catalog (pyproject.toml)

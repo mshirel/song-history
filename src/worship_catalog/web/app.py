@@ -34,7 +34,7 @@ from fastapi import (
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from prometheus_fastapi_instrumentator import Instrumentator
+from prometheus_client import CONTENT_TYPE_LATEST, REGISTRY, Counter, generate_latest
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette_csrf import CSRFMiddleware  # type: ignore[attr-defined]
@@ -144,15 +144,43 @@ class _SecurityHeadersMiddleware(BaseHTTPMiddleware):
 
 app.add_middleware(_SecurityHeadersMiddleware)
 
-Instrumentator(
-    excluded_handlers=["/metrics"],
-    should_group_status_codes=False,
-).instrument(app).expose(app, include_in_schema=False)
+try:
+    _HTTP_REQUESTS_TOTAL: Counter = Counter(
+        "http_requests_total",
+        "Total HTTP requests counted by method, path, and status code",
+        ["method", "path", "status_code"],
+    )
+except ValueError:
+    # Module was reloaded (e.g., during tests via importlib.reload); reuse the
+    # existing collector rather than double-registering in the global registry.
+    _HTTP_REQUESTS_TOTAL = REGISTRY._names_to_collectors[  # type: ignore[assignment]
+        "http_requests_total"
+    ]
+
+
+class _PrometheusMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
+        response = await call_next(request)
+        if request.url.path != "/metrics":
+            _HTTP_REQUESTS_TOTAL.labels(
+                method=request.method,
+                path=request.url.path,
+                status_code=str(response.status_code),
+            ).inc()
+        return response
+
+
+app.add_middleware(_PrometheusMiddleware)
 
 _TEMPLATES_DIR = Path(__file__).parent / "templates"
 _STATIC_DIR = Path(__file__).parent / "static"
 templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
 app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
+
+
+@app.get("/metrics", include_in_schema=False)
+async def metrics() -> Response:
+    return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
 @app.exception_handler(StarletteHTTPException)
