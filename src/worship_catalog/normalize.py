@@ -141,6 +141,85 @@ _SCRIPTURE_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Paperless Hymnal "Songs For Praise" catalog numbers (e.g. "SFP 373") — reference
+# IDs, never song titles (#264).
+_SFP_CATALOG_RE = re.compile(r"^SFP\s+\d{3,4}$", re.IGNORECASE)
+
+# Opening / closing quotation marks (straight + curly). A line wrapped in these
+# is a quoted sentence (e.g. scripture), not a title.
+_OPEN_QUOTES = ('"', "“", "‘")  # " “ ‘
+_CLOSE_QUOTES = ('"', "”", "’")  # " ” ’
+_TERMINAL_PUNCT = (".", "?", "!")
+
+# A line counts as "sentence-like" prose (not a title) when it ends in terminal
+# punctuation AND is long enough to be a real sentence. Short titles that happen
+# to end in "?" or "!" ("Does Jesus Care?", "Praise Him! Praise Him!") are spared.
+_SENTENCE_MIN_WORDS = 7
+_SENTENCE_MIN_COMMAS = 2
+
+
+def _starts_with_lowercase(stripped: str) -> bool:
+    """True if the first alphabetic character is lowercase (a lyric fragment)."""
+    for ch in stripped:
+        if ch.isalpha():
+            return ch.islower()
+    return False
+
+
+def _looks_like_non_title(stripped: str) -> bool:
+    """Heuristics that reject sermon points, scripture quotes, verse/stanza
+    markers, and lyric fragments mistakenly captured as song titles.
+
+    Validated against the full production catalog: no real title starts with a
+    lowercase letter, ends in a comma, contains a colon, or ends in terminal
+    punctuation while being sentence-length.
+    """
+    if not stripped:
+        return False
+
+    # Only punctuation and digits (e.g. ":7", ".") — a stray fragment.
+    if re.fullmatch(r"[\s\d.:;,()–—-]+", stripped):
+        return True
+
+    # SFP catalog numbers.
+    if _SFP_CATALOG_RE.match(stripped):
+        return True
+
+    # Leading verse / stanza markers: "(6) ...", "St. 2 ...", leading ". "/": ".
+    if re.match(r"^\(\d+\)", stripped):
+        return True
+    if re.match(r"^St\.\s*\d", stripped, re.IGNORECASE):
+        return True
+    if re.match(r"^[.:]\s", stripped):
+        return True
+    if "(vv." in stripped.lower() or "(v." in stripped.lower():
+        return True
+
+    # Lyric fragments: lowercase start or trailing comma (continuation).
+    if _starts_with_lowercase(stripped):
+        return True
+    if stripped.endswith(","):
+        return True
+
+    # Quote-wrapped sentences (scripture quotes).
+    if stripped.startswith(_OPEN_QUOTES) and stripped.endswith(_CLOSE_QUOTES):
+        return True
+
+    # Sermon-point label: "Label: text" — no real title contains a colon+space.
+    if ": " in stripped:
+        return True
+
+    # Sentence-like prose: ends in terminal punctuation (ignoring a trailing
+    # closing quote) and is long enough to be a sentence rather than a title.
+    core = stripped.rstrip("".join(_CLOSE_QUOTES) + " ")
+    if core and core[-1] in _TERMINAL_PUNCT:
+        long_enough = len(stripped.split()) >= _SENTENCE_MIN_WORDS
+        comma_heavy = stripped.count(",") >= _SENTENCE_MIN_COMMAS
+        if long_enough or comma_heavy:
+            return True
+
+    return False
+
 
 def _is_invalid_line(line: str) -> bool:
     """Check if a line is a footer/copyright/invalid marker."""
@@ -182,6 +261,24 @@ def _is_invalid_line(line: str) -> bool:
         return True
 
     return False
+
+
+def is_non_song_title(title: str) -> bool:
+    """Return True if *title* is not a real song title.
+
+    Combines the scripture/SFP/sentence/lyric-fragment heuristics. Used as a
+    post-extraction filter to drop sermon points, scripture quotes, verse/stanza
+    markers, and lyric fragments that were mistakenly grouped as songs.
+
+    This is applied to the FINAL chosen title rather than to candidate
+    selection, so it does not perturb slide grouping.
+    """
+    stripped = title.strip()
+    if not stripped:
+        return True
+    if _SCRIPTURE_RE.match(stripped):
+        return True
+    return _looks_like_non_title(stripped)
 
 
 def canonicalize_title(title: str) -> str:

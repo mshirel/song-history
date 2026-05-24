@@ -12,6 +12,7 @@ from worship_catalog.normalize import (
     _TITLE_MAX_LENGTH,
     canonicalize_title,
     detect_publisher,
+    is_non_song_title,
     parse_credits,
     select_best_title,
     strip_title_prefix,
@@ -351,12 +352,22 @@ def _extract_songs_impl(
     # Step 4: Convert groups to song occurrences
     # Create a single CreditResolver for the entire run so that the
     # shared ocr_budget is explicitly passed once, not recreated per-song (#291).
+    # Drop occurrences whose final title is not a real song — sermon points,
+    # scripture quotes, verse/stanza markers, and lyric fragments that the
+    # grouping step mistakenly split out. Filtering on the FINAL title (rather
+    # than during candidate selection) avoids perturbing slide grouping.
     resolver = CreditResolver(library_index=library_index, ocr_budget=ocr_budget, use_ocr=use_ocr)
-    songs = []
-    for ordinal, (canonical, group) in enumerate(song_groups, 1):
+    songs: list[SongOccurrence] = []
+    for canonical, group in song_groups:
         song = _create_song_occurrence(
-            ordinal, canonical, group, resolver=resolver,
+            len(songs) + 1, canonical, group, resolver=resolver,
         )
+        if is_non_song_title(song.display_title):
+            _log.debug(
+                "Dropped non-song title %r from %s", song.display_title, file_path.name
+            )
+            continue
+        song.ordinal = len(songs) + 1
         songs.append(song)
 
     _log.debug(

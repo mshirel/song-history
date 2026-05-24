@@ -183,3 +183,81 @@ class TestExtractionAccuracy:
             assert actual_song.canonical_title == expected_song["canonical_title"]
             assert actual_song.display_title == expected_song["display_title"]
             assert actual_song.publisher == expected_song.get("publisher")
+
+
+# Real worship decks (dev machines only — never committed; these are real service
+# files). Each previously produced spurious "songs" from sermon/scripture/lyric
+# slides. Regression guard for the non-song output filter.
+_HIGHLAND_DIR = Path.home() / "Dropbox" / "Highland"
+
+_NON_SONG_REGRESSION = {
+    "PM Worship 2026.4.5.pptx": {
+        "must_contain": [
+            "Alleluia, Alleluia! Hearts to Heaven",
+            "We Saw Thee Not",
+            "The Lord's My Shepherd",
+            "Jesus, the Loving Shepherd",
+            "He Lives",
+            "Our God, He Is Alive",
+        ],
+        "must_not_contain": [
+            "us Christ, the King of Glory,",
+            "they comfort me.",
+            "St. 2 The Lord as Host (vv. 5–6)",
+            "The Simplest Truth: The Lord is My Deliverer",
+            ":7",
+        ],
+    },
+    "AM Worship 2026.4.12.pptx": {
+        "must_contain": [
+            "Angels Are Singing",
+            "Nailed To The Cross",
+            "All Things Are Ready",
+            "Paradise Valley",
+        ],
+        "must_not_contain": [
+            "(6) Humble yourselves, therefore, under the mighty hand of God "
+            "so that at the proper time he may exalt you",
+        ],
+    },
+    "PM Worship 2026.5.10 Jeremy.pptx": {
+        "must_contain": [
+            "Christ for the World We Sing",
+            "Jesus Paid It All",
+            "Nothing But the Blood",
+            "Stand Up, Stand Up for Jesus",
+        ],
+        "must_not_contain": [
+            "sick and sorrowworn,",
+        ],
+    },
+}
+
+
+@pytest.mark.integration
+class TestNonSongFilterRegression:
+    """Real decks must no longer yield sermon/scripture/lyric-fragment songs.
+
+    Skips in CI (files are dev-only and intentionally uncommitted).
+    """
+
+    @pytest.mark.parametrize("filename", list(_NON_SONG_REGRESSION))
+    def test_no_non_song_titles(self, filename):
+        from worship_catalog.normalize import is_non_song_title
+
+        path = _HIGHLAND_DIR / filename
+        if not path.exists():
+            pytest.skip(f"Real worship deck not found: {path}")
+
+        result = extract_songs(path)
+        titles = [s.display_title for s in result.songs]
+
+        # No extracted title may look like a non-song.
+        offenders = [t for t in titles if is_non_song_title(t)]
+        assert offenders == [], f"{filename}: non-song titles leaked: {offenders}"
+
+        spec = _NON_SONG_REGRESSION[filename]
+        for junk in spec["must_not_contain"]:
+            assert junk not in titles, f"{filename}: should not contain {junk!r}"
+        for real in spec["must_contain"]:
+            assert real in titles, f"{filename}: missing real song {real!r}"
