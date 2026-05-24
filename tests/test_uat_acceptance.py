@@ -110,6 +110,10 @@ class TestReportFormsE2E:
         browser_page.goto(f"{BASE_URL}/reports")
         browser_page.wait_for_load_state("networkidle")
 
+        # CCLI is now the secondary tab — open it before interacting (#390).
+        browser_page.click("#tab-ccli")
+        browser_page.wait_for_selector("#ccli-from", state="visible")
+
         browser_page.fill("#ccli-from", "2026-01-01")
         browser_page.fill("#ccli-to", "2026-12-31")
 
@@ -394,6 +398,10 @@ class TestCcliDownloadE2E:
         """Fill CCLI form, submit, verify CSV download occurs."""
         browser_page.goto(f"{BASE_URL}/reports")
         browser_page.wait_for_load_state("networkidle")
+
+        # CCLI is now the secondary tab — open it before interacting (#390).
+        browser_page.click("#tab-ccli")
+        browser_page.wait_for_selector("#ccli-from", state="visible")
 
         browser_page.fill("#ccli-from", "2020-01-01")
         browser_page.fill("#ccli-to", "2030-12-31")

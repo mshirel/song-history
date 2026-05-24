@@ -3,63 +3,74 @@
 {% block content %}
 <h1>Generate Reports</h1>
 
-<!-- CCLI Compliance Report -->
-<div class="card" style="margin-bottom:1.5rem;">
-  <h2>CCLI Compliance Report <small style="font-weight:400;color:#6c757d;font-size:0.85rem">(CSV download)</small></h2>
-  <p style="font-size:0.85rem;color:#495057;margin-bottom:0.75rem;">
-    Generate the CSV report of song reproductions required for CCLI licence compliance.
-  </p>
-  <form method="post" action="/reports/ccli" id="ccli-form">
-    <div class="form-grid" style="margin-bottom:0.75rem;">
-      <div>
-        <label for="ccli-from">From</label>
-        <input type="date" id="ccli-from" name="start_date" required>
-      </div>
-      <div>
-        <label for="ccli-to">To</label>
-        <input type="date" id="ccli-to" name="end_date" required>
-      </div>
-    </div>
-    <button type="submit">Download CSV</button>
-  </form>
+<div class="tabs" role="tablist" aria-label="Report types">
+  <button type="button" class="tab active" role="tab" id="tab-stats"
+          aria-controls="panel-stats" aria-selected="true">Song Statistics</button>
+  <button type="button" class="tab" role="tab" id="tab-ccli"
+          aria-controls="panel-ccli" aria-selected="false" tabindex="-1">CCLI Compliance</button>
 </div>
 
-<!-- Stats Report -->
-<div class="card">
-  <h2>Song Statistics <small style="font-weight:400;color:#6c757d;font-size:0.85rem">(view in browser)</small></h2>
-  <form
-    method="post"
-    action="/reports/stats"
-    hx-post="/reports/stats"
-    hx-target="#stats-result"
-    hx-indicator="#stats-spinner"
-  >
-    <div class="form-grid" style="margin-bottom:0.75rem;">
-      <div>
-        <label for="stats-from">From</label>
-        <input type="date" id="stats-from" name="start_date" required>
+<!-- Song Statistics (default tab) -->
+<section role="tabpanel" id="panel-stats" aria-labelledby="tab-stats" tabindex="0">
+  <div class="card">
+    <h2>Song Statistics <small style="font-weight:400;color:#6c757d;font-size:0.85rem">(view in browser)</small></h2>
+    <form
+      method="post"
+      action="/reports/stats"
+      hx-post="/reports/stats"
+      hx-target="#stats-result"
+      hx-indicator="#stats-spinner"
+    >
+      <div class="form-grid" style="margin-bottom:0.75rem;">
+        <div>
+          <label for="stats-from">From</label>
+          <input type="date" id="stats-from" name="start_date" required>
+        </div>
+        <div>
+          <label for="stats-to">To</label>
+          <input type="date" id="stats-to" name="end_date" required>
+        </div>
       </div>
-      <div>
-        <label for="stats-to">To</label>
-        <input type="date" id="stats-to" name="end_date" required>
+      <div style="margin-bottom:0.75rem;">
+        <label for="stats-leader" style="display:block;font-size:0.8rem;font-weight:600;color:#495057;margin-bottom:0.25rem;">
+          Filter by Song Leader
+        </label>
+        <input type="text" id="stats-leader" name="leader" placeholder="e.g. Matt" style="width:100%;max-width:320px;" aria-describedby="leader-help">
+        <span id="leader-help" style="font-size:0.75rem;color:#6c757d;">Optional — partial match</span>
       </div>
-    </div>
-    <div style="margin-bottom:0.75rem;">
-      <label for="stats-leader" style="display:block;font-size:0.8rem;font-weight:600;color:#495057;margin-bottom:0.25rem;">
-        Filter by Song Leader
-      </label>
-      <input type="text" id="stats-leader" name="leader" placeholder="e.g. Matt" style="width:100%;max-width:320px;" aria-describedby="leader-help">
-      <span id="leader-help" style="font-size:0.75rem;color:#6c757d;">Optional — partial match</span>
-    </div>
-    <div style="display:flex;align-items:center;gap:1rem;flex-wrap:wrap;">
-      <button type="submit">Generate</button>
-      <label for="all-songs" style="font-size:0.85rem;display:flex;align-items:center;gap:0.4rem;">
-        <input type="checkbox" id="all-songs" name="all_songs" value="true"> Show all songs (not just top 20)
-      </label>
-      <span id="stats-spinner" class="htmx-indicator" style="color:#6c757d;font-size:0.85rem;">loading…</span>
-    </div>
-  </form>
-  <div id="stats-result" style="margin-top:1.25rem;" aria-live="polite"></div>
-</div>
+      <div style="display:flex;align-items:center;gap:1rem;flex-wrap:wrap;">
+        <button type="submit">Generate</button>
+        <label for="all-songs" style="font-size:0.85rem;display:flex;align-items:center;gap:0.4rem;">
+          <input type="checkbox" id="all-songs" name="all_songs" value="true"> Show all songs (not just top 20)
+        </label>
+        <span id="stats-spinner" class="htmx-indicator" style="color:#6c757d;font-size:0.85rem;">loading…</span>
+      </div>
+    </form>
+    <div id="stats-result" style="margin-top:1.25rem;" aria-live="polite"></div>
+  </div>
+</section>
+
+<!-- CCLI Compliance (secondary tab) -->
+<section role="tabpanel" id="panel-ccli" aria-labelledby="tab-ccli" tabindex="0" hidden>
+  <div class="card">
+    <h2>CCLI Compliance Report <small style="font-weight:400;color:#6c757d;font-size:0.85rem">(CSV download)</small></h2>
+    <p style="font-size:0.85rem;color:#495057;margin-bottom:0.75rem;">
+      Generate the CSV report of song reproductions required for CCLI licence compliance.
+    </p>
+    <form method="post" action="/reports/ccli" id="ccli-form">
+      <div class="form-grid" style="margin-bottom:0.75rem;">
+        <div>
+          <label for="ccli-from">From</label>
+          <input type="date" id="ccli-from" name="start_date" required>
+        </div>
+        <div>
+          <label for="ccli-to">To</label>
+          <input type="date" id="ccli-to" name="end_date" required>
+        </div>
+      </div>
+      <button type="submit">Download CSV</button>
+    </form>
+  </div>
+</section>
 <script src="/static/reports.js"></script>
 {% endblock %}

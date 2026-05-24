@@ -872,3 +872,53 @@ class TestSecurityHeaders:
     def test_csp_still_present(self, client):
         resp = client.get("/health")
         assert "Content-Security-Policy" in resp.headers
+
+
+# ---------------------------------------------------------------------------
+# #388 Phase 1: simple password gate on the upload page
+# ---------------------------------------------------------------------------
+
+
+class TestUploadAuth:
+    """The upload page/endpoint requires a password when UPLOAD_PASSWORD is set;
+    when unset the upload stays open (current behavior). Browsing is always public."""
+
+    @pytest.fixture
+    def auth_client(self, db_with_songs, tmp_path, monkeypatch):
+        inbox = tmp_path / "inbox"
+        inbox.mkdir()
+        monkeypatch.setenv("DB_PATH", str(db_with_songs))
+        monkeypatch.setenv("INBOX_DIR", str(inbox))
+        monkeypatch.setenv("UPLOAD_PASSWORD", "s3cret")
+        from importlib import reload
+        import worship_catalog.web.app as app_module
+        reload(app_module)
+        return CsrfAwareClient(TestClient(app_module.app))
+
+    def test_get_upload_requires_auth_when_password_set(self, auth_client):
+        r = auth_client.get("/upload")
+        assert r.status_code == 401
+        assert "basic" in r.headers.get("www-authenticate", "").lower()
+
+    def test_get_upload_succeeds_with_valid_credentials(self, auth_client):
+        r = auth_client.get("/upload", auth=("highland", "s3cret"))
+        assert r.status_code == 200
+
+    def test_get_upload_rejects_wrong_password(self, auth_client):
+        r = auth_client.get("/upload", auth=("highland", "wrong"))
+        assert r.status_code == 401
+
+    def test_post_upload_requires_auth(self, auth_client):
+        r = auth_client.post(
+            "/upload",
+            files={"file": ("x.pptx", io.BytesIO(b"x"), _PPTX_MIME)},
+        )
+        assert r.status_code == 401
+
+    def test_browsing_routes_stay_public(self, auth_client):
+        for path in ("/songs", "/services", "/reports", "/leaders"):
+            assert auth_client.get(path).status_code == 200, path
+
+    def test_upload_open_when_password_unset(self, client):
+        # The default fixture sets no UPLOAD_PASSWORD → upload stays open.
+        assert client.get("/upload").status_code == 200
