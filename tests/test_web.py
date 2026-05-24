@@ -128,6 +128,44 @@ class TestReportsPage:
         assert "/reports/stats" in response.text
 
 
+class TestReportsTabs:
+    """Reports page is tabbed: Song Statistics primary/default, CCLI secondary (#390)."""
+
+    def test_reports_page_renders_both_reports(self, client):
+        body = client.get("/reports").text
+        assert "Song Statistics" in body
+        assert "CCLI" in body
+
+    def test_song_stats_appears_before_ccli(self, client):
+        body = client.get("/reports").text
+        assert body.index("Song Statistics") < body.index("CCLI Compliance")
+
+    def test_tabs_have_aria_roles(self, client):
+        body = client.get("/reports").text
+        assert 'role="tablist"' in body
+        assert body.count('role="tab"') >= 2
+        assert body.count('role="tabpanel"') >= 2
+
+    def test_stats_tab_is_default_active(self, client):
+        body = client.get("/reports").text
+        # The stats tab is selected and the CCLI panel is hidden on load.
+        stats_tab_idx = body.index('id="tab-stats"')
+        # The active tab carries aria-selected="true".
+        assert 'aria-selected="true"' in body
+        # The CCLI panel must be hidden by default.
+        ccli_panel = body[body.index('id="panel-ccli"'):]
+        assert "hidden" in ccli_panel[:200]
+        assert stats_tab_idx >= 0
+
+    def test_ccli_form_still_posts_to_ccli_endpoint(self, client):
+        assert 'action="/reports/ccli"' in client.get("/reports").text
+
+    def test_stats_form_still_targets_stats_result(self, client):
+        body = client.get("/reports").text
+        assert 'hx-post="/reports/stats"' in body
+        assert 'id="stats-result"' in body
+
+
 class TestStatsReport:
     def test_stats_returns_html(self, client):
         response = client.post(

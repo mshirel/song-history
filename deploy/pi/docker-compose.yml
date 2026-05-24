@@ -75,6 +75,11 @@ services:
       CSRF_SECRET: "${CSRF_SECRET}"
       PUSHOVER_USER_KEY: "${PUSHOVER_USER_KEY:-}"
       PUSHOVER_APP_TOKEN: "${PUSHOVER_APP_TOKEN:-}"
+      # Set UPLOAD_PASSWORD in .env to require Basic Auth on the upload page
+      # (#388). Leave unset to keep uploads open. Optional UPLOAD_USERNAME
+      # defaults to "highland".
+      UPLOAD_PASSWORD: "${UPLOAD_PASSWORD:-}"
+      UPLOAD_USERNAME: "${UPLOAD_USERNAME:-highland}"
     volumes:
       - /opt/song-history/data:/data
       - /opt/song-history/inbox:/inbox

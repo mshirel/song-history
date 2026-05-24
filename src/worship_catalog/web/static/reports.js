@@ -101,9 +101,58 @@
     interceptDownloadForm("stats-xlsx-form");
   }
 
+  /**
+   * Wire up the Reports tablist: clicking or arrow-keying a tab activates it
+   * and shows its panel, following the ARIA tabs pattern. Keeps the page CSP
+   * compliant (no inline JS).
+   */
+  function setupTabs() {
+    var tablist = document.querySelector('[role="tablist"]');
+    if (!tablist) return;
+    var tabs = Array.prototype.slice.call(
+      tablist.querySelectorAll('[role="tab"]')
+    );
+    if (!tabs.length) return;
+
+    function activate(tab, setFocus) {
+      tabs.forEach(function (t) {
+        var selected = t === tab;
+        t.setAttribute("aria-selected", selected ? "true" : "false");
+        t.setAttribute("tabindex", selected ? "0" : "-1");
+        t.classList.toggle("active", selected);
+        var panel = document.getElementById(t.getAttribute("aria-controls"));
+        if (panel) panel.hidden = !selected;
+      });
+      if (setFocus) tab.focus();
+    }
+
+    tabs.forEach(function (tab, i) {
+      tab.addEventListener("click", function () {
+        activate(tab, false);
+      });
+      tab.addEventListener("keydown", function (e) {
+        var idx = null;
+        if (e.key === "ArrowRight" || e.key === "ArrowDown") {
+          idx = (i + 1) % tabs.length;
+        } else if (e.key === "ArrowLeft" || e.key === "ArrowUp") {
+          idx = (i - 1 + tabs.length) % tabs.length;
+        } else if (e.key === "Home") {
+          idx = 0;
+        } else if (e.key === "End") {
+          idx = tabs.length - 1;
+        }
+        if (idx !== null) {
+          e.preventDefault();
+          activate(tabs[idx], true);
+        }
+      });
+    });
+  }
+
   /* Initialise on DOMContentLoaded (or immediately if already loaded). */
   function init() {
     configureHtmxCsrf();
+    setupTabs();
     interceptDownloadForm("ccli-form");
 
     /* Re-bind download forms after each HTMX swap so dynamically loaded

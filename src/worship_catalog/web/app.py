@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import csv
 import importlib.metadata
 import io
@@ -190,7 +191,9 @@ async def http_exception_handler(request: Request, exc: StarletteHTTPException) 
             request, "404.html", {"detail": str(exc.detail)}, status_code=404
         )
     return templates.TemplateResponse(
-        request, "500.html", {"detail": str(exc.detail)}, status_code=exc.status_code
+        request, "500.html", {"detail": str(exc.detail)},
+        status_code=exc.status_code,
+        headers=getattr(exc, "headers", None),
     )
 
 
@@ -882,8 +885,49 @@ def _run_import_in_background(job_id: str, pptx_path: Path) -> None:
             )
 
 
+# Default username for the upload Basic Auth gate; the password is the secret.
+_UPLOAD_USERNAME_DEFAULT = "highland"
+
+
+def require_upload_auth(request: Request) -> None:
+    """Gate the upload routes behind HTTP Basic Auth (#388).
+
+    Active only when ``UPLOAD_PASSWORD`` is set in the environment; when unset
+    the upload stays open (current behavior). The catalog browsing pages are
+    never gated — only write access (the upload form/endpoint).
+    """
+    password = os.environ.get("UPLOAD_PASSWORD")
+    if not password:
+        return
+
+    expected_user = os.environ.get("UPLOAD_USERNAME", _UPLOAD_USERNAME_DEFAULT)
+    unauthorized = HTTPException(
+        status_code=401,
+        detail="Authentication required to upload.",
+        headers={"WWW-Authenticate": 'Basic realm="Highland Worship Catalog upload"'},
+    )
+
+    header = request.headers.get("Authorization", "")
+    scheme, _, encoded = header.partition(" ")
+    if scheme.lower() != "basic" or not encoded:
+        raise unauthorized
+    try:
+        decoded = base64.b64decode(encoded).decode("utf-8")
+    except (ValueError, UnicodeDecodeError):
+        raise unauthorized from None
+    user, _, supplied = decoded.partition(":")
+
+    user_ok = secrets.compare_digest(user, expected_user)
+    pass_ok = secrets.compare_digest(supplied, password)
+    if not (user_ok and pass_ok):
+        raise unauthorized
+
+
 @app.get("/upload", response_class=HTMLResponse)
-async def upload_page(request: Request) -> HTMLResponse:
+async def upload_page(
+    request: Request,
+    _: None = Depends(require_upload_auth),  # noqa: B008
+) -> HTMLResponse:
     """Render the browser upload form for PPTX files."""
     return templates.TemplateResponse(request, "upload.html")
 
@@ -893,6 +937,7 @@ async def upload(
     request: Request,
     file: UploadFile,
     db: Database = Depends(get_db),  # noqa: B008
+    _: None = Depends(require_upload_auth),  # noqa: B008
 ) -> JSONResponse:
     """Accept a PPTX file, create an import job, and kick off background import."""
     # Rate limiting (#173) — check before reading the body to save bandwidth.
