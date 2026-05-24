@@ -90,7 +90,7 @@ typing-inspection==0.4.2
     # via
     #   fastapi
     #   pydantic
-uvicorn==0.47.0
+uvicorn==0.48.0
     # via worship-catalog (pyproject.toml)
 xlsxwriter==3.2.9
     # via python-pptx
