@@ -120,6 +120,127 @@ class TestExtractMetadataFromTableSlide:
         assert result.service_name is None
 
 
+class TestSeparateLineMetadataSlide:
+    """Metadata slides where keys/values are on separate lines and a stray
+    line breaks strict even/odd pairing must still resolve (#385)."""
+
+    def test_key_value_on_separate_lines_parses_date(self):
+        lines = [
+            "Service Data",
+            "Date", "2026-04-05",
+            "Service", "Evening Worship",
+            "Song Leader", "Noah Whatever",
+        ]
+        meta = extract_metadata_from_table_slide(lines)
+        assert meta.date == "2026-04-05"
+        assert meta.service_name == "Evening Worship"
+        assert meta.song_leader == "Noah Whatever"
+
+    def test_misaligned_metadata_slide_still_resolves_keys(self):
+        # Extra/blank lines push key/value off even-odd alignment;
+        # parser must still associate each key with its following value.
+        lines = [
+            "Service Data",
+            "",
+            "Date", "2026-04-05",
+            "Service", "Evening Worship",
+        ]
+        meta = extract_metadata_from_table_slide(lines)
+        assert meta.date == "2026-04-05"
+        assert meta.service_name == "Evening Worship"
+
+    def test_stray_quote_line_does_not_break_pairing(self):
+        # Exact shape of PM Worship 2026.4.5.pptx slide 0: a stray curly-quote
+        # line after the header shifted every key onto the wrong parity.
+        lines = [
+            "Service Data",
+            "“",  # stray curly open-quote
+            "Date", "2026-04-05",
+            "Service", "Evening Worship",
+            "Song Leader", "Jeremy Farmer",
+            "Preacher", "David Morris",
+            "Sermon Title", "The Lord Is My Shepherd",
+        ]
+        meta = extract_metadata_from_table_slide(lines)
+        assert meta.date == "2026-04-05"
+        assert meta.service_name == "Evening Worship"
+        assert meta.song_leader == "Jeremy Farmer"
+        assert meta.preacher == "David Morris"
+        assert meta.sermon_title == "The Lord Is My Shepherd"
+
+    def test_missing_value_leaves_field_none(self):
+        # A key immediately followed by another key has no value.
+        lines = ["Date", "Service", "Evening Worship"]
+        meta = extract_metadata_from_table_slide(lines)
+        assert meta.date is None
+        assert meta.service_name == "Evening Worship"
+
+    def test_extract_service_metadata_uses_slide_over_filename(self):
+        from worship_catalog.pptx_reader import Slide, extract_service_metadata
+
+        slide = Slide(
+            index=0,
+            hidden=False,
+            text=SlideText(text_lines=[
+                "Service Data",
+                "“",
+                "Date", "2026-04-05",
+                "Service", "Evening Worship",
+            ]),
+            images=[],
+        )
+        # Filename has single-digit month/day and should NOT be needed.
+        meta = extract_service_metadata(slide, "PM Worship 2026.4.5.pptx")
+        assert meta.date == "2026-04-05"
+        assert meta.service_name == "Evening Worship"
+
+
+class TestNormalizeServiceDate:
+    """Service dates must canonicalize to ISO YYYY-MM-DD (#387)."""
+
+    @pytest.mark.parametrize("raw,expected", [
+        ("2026-05-10", "2026-05-10"),
+        ("2026.05.10", "2026-05-10"),
+        ("2026-05.10", "2026-05-10"),
+        ("2026.05-10", "2026-05-10"),
+        ("2026/05/10", "2026-05-10"),
+        ("2026.5.10", "2026-05-10"),   # single-digit month/day
+        ("2026-5-1", "2026-05-01"),
+        ("  2026.5.1  ", "2026-05-01"),
+    ])
+    def test_normalizes_to_iso(self, raw, expected):
+        from worship_catalog.pptx_reader import normalize_service_date
+
+        assert normalize_service_date(raw) == expected
+
+    def test_unparseable_returned_stripped(self):
+        from worship_catalog.pptx_reader import normalize_service_date
+
+        assert normalize_service_date("Easter Sunday") == "Easter Sunday"
+
+    def test_none_and_empty(self):
+        from worship_catalog.pptx_reader import normalize_service_date
+
+        assert normalize_service_date(None) is None
+        assert normalize_service_date("  ") is None
+
+    def test_extract_service_metadata_normalizes_date(self):
+        from worship_catalog.pptx_reader import Slide, extract_service_metadata
+
+        slide = Slide(index=0, hidden=False, text=SlideText(text_lines=[
+            "Service Data", "Date", "2026.05.10", "Service", "Evening Worship",
+        ]), images=[])
+        meta = extract_service_metadata(slide, "PM Worship 2026.5.10.pptx")
+        assert meta.date == "2026-05-10"
+
+    def test_filename_fallback_single_digit_normalizes(self):
+        from worship_catalog.pptx_reader import parse_filename_for_metadata
+
+        meta = parse_filename_for_metadata("PM Worship 2026.4.5.pptx")
+        assert meta.date == "2026-04-05"
+        assert meta.service_name == "Evening Worship"
+
+
 class TestExtractImagesLogsOnError:
     """Issue #101 — blob extraction errors must be logged at WARNING."""
 
