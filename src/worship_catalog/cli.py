@@ -1105,6 +1105,82 @@ def delete_song(song_ids: tuple[int, ...], db: str, dry_run: bool, yes: bool) ->
         sys.exit(1)
 
 
+@cleanup.command(name="normalize-dates")
+@click.option(
+    "--db",
+    type=click.Path(),
+    default="data/worship.db",
+    help="Path to SQLite database",
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help="Show what would change without modifying the database",
+)
+@click.option(
+    "--yes",
+    is_flag=True,
+    help="Skip confirmation prompt",
+)
+def normalize_dates(db: str, dry_run: bool, yes: bool) -> None:
+    """Rewrite non-ISO service dates to canonical YYYY-MM-DD (#387).
+
+    Dates like '2026.05.10' or '2026-05.10' are normalized to '2026-05-10'.
+    Rows that would collide with an existing (date, service_name) are reported
+    and left untouched.
+    """
+    try:
+        db_path = Path(db)
+
+        with Database(db_path) as database:
+            report = database.normalize_service_dates(dry_run=True)
+
+            if not report:
+                click.echo("No non-ISO service dates found.")
+                sys.exit(0)
+
+            changes = [r for r in report if not r["collision"]]
+            collisions = [r for r in report if r["collision"]]
+
+            click.echo(f"Found {len(report)} service(s) with non-ISO dates:")
+            for r in changes:
+                click.echo(
+                    f"  ID={r['service_id']}  {r['old_date']} → {r['new_date']}"
+                    f"  ({r['service_name']})"
+                )
+            for r in collisions:
+                click.echo(
+                    f"  ID={r['service_id']}  {r['old_date']} → {r['new_date']}"
+                    f"  ({r['service_name']})  [SKIPPED — collides with existing service]"
+                )
+
+            if dry_run:
+                click.echo(f"\nDry run — would rewrite {len(changes)} date(s).")
+                sys.exit(0)
+
+            if not changes:
+                click.echo("\nNothing to rewrite (all remaining are collisions).")
+                sys.exit(0)
+
+            if not yes:
+                click.confirm("Proceed?", abort=True)
+
+            database.normalize_service_dates(dry_run=False)
+
+        click.echo(f"Rewrote {len(changes)} service date(s).")
+        sys.exit(0)
+
+    except click.Abort:
+        click.echo("\nAborted.")
+        sys.exit(1)
+    except SystemExit:
+        raise
+    except Exception as e:
+        _log.exception("cleanup normalize-dates error", extra={"error": str(e)})
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+
 @cleanup.command(name="dedup-services")
 @click.option(
     "--db",

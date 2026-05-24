@@ -21,7 +21,8 @@
     aria-label="Search songs"
     hx-get="/songs"
     hx-trigger="input changed delay:300ms, search"
-    hx-target="#song-tbody"
+    hx-target="#songs-results"
+    hx-swap="innerHTML"
     hx-include="[name='q'],[name='sort'],[name='sort_dir']"
     hx-indicator="#spinner"
     autofocus
@@ -29,53 +30,9 @@
   <span id="spinner" class="htmx-indicator" style="align-self:center;color:#6c757d;font-size:0.85rem;">searching…</span>
 </div>
 
-{% macro sort_th(label, col, align="left") %}
-{% set next_dir = "asc" if (sort == col and sort_dir == "desc") else "desc" %}
-{% set aria_sort_val = ("ascending" if sort_dir == "asc" else "descending") if sort == col else "none" %}
-<th scope="col" style="text-align:{{ align }};white-space:nowrap;user-select:none;cursor:pointer;" aria-sort="{{ aria_sort_val }}">
-  <a href="/songs?sort={{ col }}&sort_dir={{ next_dir }}{% if q %}&q={{ q | urlencode }}{% endif %}"
-     style="color:inherit;text-decoration:none;">
-    {{ label }}{% if sort == col %}&nbsp;{{ '▲' if sort_dir == 'asc' else '▼' }}{% endif %}
-  </a>
-</th>
-{% endmacro %}
-
-{% if total == 0 and not q %}
-<div class="card" style="text-align:center;padding:2rem;">
-  <h2>No songs yet</h2>
-  <p>Import your first worship service to get started.</p>
-  <p>Upload a PPTX file on the <a href="/upload">Upload</a> page, or run:</p>
-  <p><code>worship-catalog import "AM Worship 2026.01.01.pptx"</code></p>
+{# Search/sort swaps this whole region (table + footer) so pagination never
+   drifts from the rows shown (#386). #}
+<div id="songs-results">
+{% include "_songs_results.html" %}
 </div>
-{% else %}
-<div class="card" style="padding:0;overflow:hidden;" aria-live="polite">
-  <table>
-    <caption class="sr-only">Song library — sortable by title, credits, or performance count</caption>
-    <thead>
-      <tr>
-        {{ sort_th("Title", "display_title") }}
-        {{ sort_th("Words By", "words_by") }}
-        {{ sort_th("Music By", "music_by") }}
-        {{ sort_th("Arranger", "arranger") }}
-        {{ sort_th("Performances", "performance_count", align="right") }}
-      </tr>
-    </thead>
-    <tbody id="song-tbody">
-      {% include "songs_rows.html" %}
-    </tbody>
-  </table>
-</div>
-{% endif %}
-
-{% if total_pages > 1 %}
-<div class="pagination">
-  {% if page > 1 %}
-    <a href="/songs?page={{ page - 1 }}&per_page={{ per_page }}&sort={{ sort }}&sort_dir={{ sort_dir }}{% if q %}&q={{ q | urlencode }}{% endif %}" aria-label="Previous page">← Prev</a>
-  {% endif %}
-  <span>Page {{ page }} of {{ total_pages }}</span>
-  {% if page < total_pages %}
-    <a href="/songs?page={{ page + 1 }}&per_page={{ per_page }}&sort={{ sort }}&sort_dir={{ sort_dir }}{% if q %}&q={{ q | urlencode }}{% endif %}" aria-label="Next page">Next →</a>
-  {% endif %}
-</div>
-{% endif %}
 {% endblock %}

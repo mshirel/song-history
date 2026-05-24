@@ -69,12 +69,17 @@ class TestSongsPage:
         assert "How Great Thou Art" not in response.text
 
     def test_songs_htmx_request_returns_partial(self, client):
-        """HTMX requests return table rows only (no full page nav)."""
+        """HTMX requests return the results region only (no full-page chrome)."""
         response = client.get("/songs?q=Amazing", headers={"HX-Request": "true"})
         assert response.status_code == 200
         assert "Amazing Grace" in response.text
-        # Partial should NOT include the full <nav> chrome
-        assert "<nav" not in response.text
+        # Partial must not include the base layout chrome.
+        lowered = response.text.lower()
+        assert "<!doctype" not in lowered
+        assert "<html" not in lowered
+        # ...but it now carries the table + pagination footer so the footer
+        # stays in sync with the rows (#386).
+        assert "<tbody" in response.text
 
     def test_songs_empty_search_returns_all(self, client):
         response = client.get("/songs?q=")
@@ -740,6 +745,52 @@ class TestPagination:
         assert response.status_code == 200
         row_count = response.text.count("<tr>")
         assert row_count <= 11  # 10 data rows + 1 header row
+
+    # --- #386: pagination footer must stay in sync with HTMX search results ---
+
+    def test_htmx_search_response_includes_pagination(self, paginated_client):
+        """An HTMX /songs request must carry pagination state, not just rows."""
+        resp = paginated_client.get(
+            "/songs",
+            params={"q": "", "page": "1", "per_page": "10"},
+            headers={"HX-Request": "true"},
+        )
+        assert resp.status_code == 200
+        body = resp.text
+        assert "Page 1 of" in body
+        # The response must include both the rows and the pagination footer.
+        assert "<tbody" in body
+        assert 'class="pagination"' in body
+
+    def test_htmx_search_clear_resets_to_page_one(self, paginated_client):
+        """Clearing search (page defaults to 1) must report page 1, no Prev link."""
+        resp = paginated_client.get(
+            "/songs",
+            params={"q": ""},
+            headers={"HX-Request": "true"},
+        )
+        assert resp.status_code == 200
+        assert "Page 1 of" in resp.text
+        assert "Previous page" not in resp.text
+
+    def test_htmx_narrow_search_pagination_not_stale(self, paginated_client):
+        """A search narrowing to one page must not advertise a higher page count."""
+        resp = paginated_client.get(
+            "/songs",
+            params={"q": "Song Number 042", "page": "1", "per_page": "10"},
+            headers={"HX-Request": "true"},
+        )
+        assert resp.status_code == 200
+        # Single match → one page; never a stale multi-page indicator.
+        assert "Page 2 of" not in resp.text
+        assert "Next" not in resp.text
+
+    def test_full_page_has_results_swap_container(self, paginated_client):
+        """The full page must render a stable #songs-results region for HTMX swaps."""
+        resp = paginated_client.get("/songs?page=1&per_page=10")
+        assert resp.status_code == 200
+        assert 'id="songs-results"' in resp.text
+        assert 'hx-target="#songs-results"' in resp.text
 
 
 class TestErrorPages:

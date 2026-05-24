@@ -476,17 +476,15 @@ async def songs(
 
     total_pages = math.ceil(total / per_page) if total > 0 else 1
 
-    if request.headers.get("HX-Request"):
-        return templates.TemplateResponse(
-            request, "songs_rows.html", {"songs": rows}
-        )
-    return templates.TemplateResponse(
-        request, "songs.html", {
-            "songs": rows, "q": q or "", "sort": sort, "sort_dir": sort_dir,
-            "page": page, "per_page": per_page, "total_pages": total_pages, "total": total,
-            "library_size": library_size,
-        }
-    )
+    context = {
+        "songs": rows, "q": q or "", "sort": sort, "sort_dir": sort_dir,
+        "page": page, "per_page": per_page, "total_pages": total_pages, "total": total,
+        "library_size": library_size,
+    }
+    # HTMX search/sort swaps the whole #songs-results region (table + footer)
+    # so the pagination footer never drifts from the rows shown (#386).
+    template = "_songs_results.html" if request.headers.get("HX-Request") else "songs.html"
+    return templates.TemplateResponse(request, template, context)
 
 
 @app.get("/reports", response_class=HTMLResponse)

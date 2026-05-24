@@ -1244,6 +1244,55 @@ class Database:
         self._maybe_commit()
         return losers
 
+    def normalize_service_dates(self, *, dry_run: bool = False) -> list[dict[str, Any]]:
+        """Rewrite non-ISO service dates to canonical ``YYYY-MM-DD`` (#387).
+
+        Returns a report: one dict per row whose stored date differs from its
+        normalized form, with ``service_id``, ``old_date``, ``new_date`` and a
+        ``collision`` flag.  A collision means another service already occupies
+        ``(new_date, service_name)`` — that row is reported but NOT rewritten,
+        to avoid violating ``UNIQUE(service_date, service_name)``.  When
+        *dry_run* is True nothing is written.
+        """
+        from worship_catalog.pptx_reader import normalize_service_date
+
+        cursor = self._conn.cursor()
+        cursor.execute("SELECT id, service_date, service_name FROM services")
+        rows = [dict(r) for r in cursor.fetchall()]
+
+        report: list[dict[str, Any]] = []
+        for row in rows:
+            old_date = row["service_date"]
+            new_date = normalize_service_date(old_date)
+            if new_date == old_date:
+                continue
+            cursor.execute(
+                """SELECT id FROM services
+                   WHERE service_date = ? AND service_name = ? AND id != ?""",
+                (new_date, row["service_name"], row["id"]),
+            )
+            collision = cursor.fetchone() is not None
+            report.append({
+                "service_id": row["id"],
+                "old_date": old_date,
+                "new_date": new_date,
+                "service_name": row["service_name"],
+                "collision": collision,
+            })
+
+        if dry_run:
+            return report
+
+        for item in report:
+            if item["collision"]:
+                continue
+            cursor.execute(
+                "UPDATE services SET service_date = ? WHERE id = ?",
+                (item["new_date"], item["service_id"]),
+            )
+        self._maybe_commit()
+        return report
+
     def delete_song(self, song_id: int) -> None:
         """Delete a song, its editions, and any related copy_events."""
         cursor = self._conn.cursor()

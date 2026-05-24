@@ -2770,3 +2770,49 @@ def _create_pre_v3_db_with_duplicates(
     conn.execute("PRAGMA user_version = 2")
     conn.commit()
     conn.close()
+
+
+@pytest.mark.integration
+class TestNormalizeServiceDates:
+    """Database.normalize_service_dates() rewrites non-ISO dates to ISO (#387)."""
+
+    @pytest.fixture
+    def temp_db(self):
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "test.db"
+            db = Database(db_path)
+            db.connect()
+            db.init_schema()
+            yield db
+            db.close()
+
+    def test_normalize_rewrites_non_iso_dates(self, temp_db):
+        a = temp_db.insert_or_update_service("2026.05.10", "Evening Worship", "f1.pptx", "h1")
+        b = temp_db.insert_or_update_service("2026-05.10", "Morning Worship", "f2.pptx", "h2")
+        temp_db.normalize_service_dates()
+        assert temp_db.query_service_by_id(a)["service_date"] == "2026-05-10"
+        assert temp_db.query_service_by_id(b)["service_date"] == "2026-05-10"
+
+    def test_normalize_leaves_iso_dates_untouched(self, temp_db):
+        a = temp_db.insert_or_update_service("2026-05-17", "Morning Worship", "f1.pptx", "h1")
+        report = temp_db.normalize_service_dates(dry_run=True)
+        assert report == []
+        assert temp_db.query_service_by_id(a)["service_date"] == "2026-05-17"
+
+    def test_dry_run_does_not_modify(self, temp_db):
+        a = temp_db.insert_or_update_service("2026.05.10", "Evening Worship", "f1.pptx", "h1")
+        report = temp_db.normalize_service_dates(dry_run=True)
+        assert any(r["service_id"] == a and r["new_date"] == "2026-05-10" for r in report)
+        # unchanged on dry run
+        assert temp_db.query_service_by_id(a)["service_date"] == "2026.05.10"
+
+    def test_normalize_skips_when_target_would_collide(self, temp_db):
+        # An ISO row already occupies (2026-05-10, Evening Worship); a dotted
+        # row for the same service must be flagged as a collision, not applied.
+        temp_db.insert_or_update_service("2026-05-10", "Evening Worship", "f1.pptx", "h1")
+        b = temp_db.insert_or_update_service("2026.05.10", "Evening Worship", "f2.pptx", "h2")
+        report = temp_db.normalize_service_dates(dry_run=True)
+        assert any(r["service_id"] == b and r.get("collision") for r in report)
+        # Applying must not raise and must not change the colliding row.
+        temp_db.normalize_service_dates()
+        assert temp_db.query_service_by_id(b)["service_date"] == "2026.05.10"

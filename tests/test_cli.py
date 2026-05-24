@@ -2212,3 +2212,58 @@ class TestDeleteSongCommand:
             "cleanup", "delete-song", "--db", str(db_with_songs), "--yes"
         ])
         assert result.exit_code != 0
+
+
+class TestNormalizeDatesCommand:
+    """Tests for `cleanup normalize-dates` (#387)."""
+
+    @pytest.fixture
+    def runner(self):
+        return CliRunner()
+
+    @pytest.fixture
+    def mixed_dates_db(self, tmp_path):
+        db_path = tmp_path / "dates.db"
+        db = Database(db_path)
+        db.connect()
+        db.init_schema()
+        db.insert_or_update_service("2026.05.10", "Evening Worship", "f1.pptx", "h1")
+        db.insert_or_update_service("2026-05-17", "Morning Worship", "f2.pptx", "h2")
+        db.close()
+        return db_path
+
+    def test_listed_in_cleanup_help(self, runner):
+        result = runner.invoke(main, ["cleanup", "--help"])
+        assert result.exit_code == 0
+        assert "normalize-dates" in result.output
+
+    def test_normalize_dates_rewrites(self, runner, mixed_dates_db):
+        result = runner.invoke(main, [
+            "cleanup", "normalize-dates", "--db", str(mixed_dates_db), "--yes"
+        ])
+        assert result.exit_code == 0
+        db = Database(mixed_dates_db)
+        db.connect()
+        dates = {r[0] for r in db.cursor().execute("SELECT service_date FROM services").fetchall()}
+        db.close()
+        assert "2026-05-10" in dates
+        assert "2026.05.10" not in dates
+
+    def test_normalize_dates_dry_run(self, runner, mixed_dates_db):
+        result = runner.invoke(main, [
+            "cleanup", "normalize-dates", "--db", str(mixed_dates_db), "--dry-run"
+        ])
+        assert result.exit_code == 0
+        assert "2026-05-10" in result.output
+        db = Database(mixed_dates_db)
+        db.connect()
+        dates = {r[0] for r in db.cursor().execute("SELECT service_date FROM services").fetchall()}
+        db.close()
+        assert "2026.05.10" in dates  # unchanged
+
+    def test_normalize_dates_none_needed(self, runner, db_with_songs):
+        result = runner.invoke(main, [
+            "cleanup", "normalize-dates", "--db", str(db_with_songs), "--yes"
+        ])
+        assert result.exit_code == 0
+        assert "no" in result.output.lower()
