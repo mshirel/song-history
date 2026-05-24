@@ -97,8 +97,12 @@ _MIGRATIONS: dict[int, list[str]] = {
                song_leader, preacher, sermon_title, imported_at
         FROM services
         """,
+        # Disable FK checks while swapping the table so SQLite allows
+        # DROP TABLE on a parent table referenced by child FKs.
+        "PRAGMA foreign_keys=OFF",
         "DROP TABLE services",
         "ALTER TABLE services_new RENAME TO services",
+        "PRAGMA foreign_keys=ON",
         "CREATE INDEX IF NOT EXISTS idx_services_date ON services(service_date)",
     ],
 }
