@@ -472,6 +472,7 @@ async def songs(
     rows, total = db.query_songs_paginated(
         q, sort=sort, sort_dir=sort_dir, page=page, per_page=per_page,
     )
+    library_size = db.count_songs()
 
     total_pages = math.ceil(total / per_page) if total > 0 else 1
 
@@ -483,6 +484,7 @@ async def songs(
         request, "songs.html", {
             "songs": rows, "q": q or "", "sort": sort, "sort_dir": sort_dir,
             "page": page, "per_page": per_page, "total_pages": total_pages, "total": total,
+            "library_size": library_size,
         }
     )
 

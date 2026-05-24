@@ -1028,5 +1028,62 @@ def find_duplicates(db: str) -> None:
         sys.exit(1)
 
 
+@cleanup.command(name="dedup-services")
+@click.option(
+    "--db",
+    type=click.Path(),
+    default="data/worship.db",
+    help="Path to SQLite database",
+)
+@click.option("--dry-run", is_flag=True, help="Show what would be removed without deleting.")
+@click.option("--yes", is_flag=True, help="Skip confirmation prompt.")
+def dedup_services_cmd(db: str, dry_run: bool, yes: bool) -> None:
+    """Remove duplicate services, keeping the most recently imported per date+name.
+
+    Since schema migration v3, the database enforces UNIQUE(service_date,
+    service_name), so new duplicates cannot be created.  This command exists to
+    clean up any duplicate rows that accumulated before the migration.
+    """
+    try:
+        db_path = Path(db)
+
+        with Database(db_path) as database:
+            losers = database.dedup_services(dry_run=True)
+
+        if not losers:
+            click.echo("No duplicate services found.")
+            sys.exit(0)
+
+        click.echo(f"Found {len(losers)} duplicate service row(s) to remove:\n")
+        for svc in losers:
+            click.echo(
+                f"  ID={svc['id']}  {svc['service_date']}  {svc['service_name']}"
+                f"  hash={svc['source_hash']}"
+            )
+
+        if dry_run:
+            click.echo("\nDry run — no changes made.")
+            sys.exit(0)
+
+        if not yes:
+            click.confirm("\nRemove these rows?", abort=True)
+
+        with Database(db_path) as database:
+            database.dedup_services(dry_run=False)
+
+        click.echo(f"\nRemoved {len(losers)} duplicate row(s).")
+        sys.exit(0)
+
+    except click.exceptions.Abort:
+        click.echo("Aborted.")
+        sys.exit(1)
+    except SystemExit:
+        raise
+    except Exception as e:
+        _log.exception("cleanup dedup-services error", extra={"error": str(e)})
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+
 if __name__ == "__main__":
     main()

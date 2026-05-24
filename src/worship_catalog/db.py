@@ -14,7 +14,7 @@ _log = logging.getLogger("worship_catalog.db")
 # Bump this integer whenever the schema changes.  Each new version must have a
 # corresponding entry in _MIGRATIONS.  connect() raises SchemaVersionError if the
 # on-disk version is *higher* than this value (DB created by a newer release).
-_SCHEMA_VERSION: int = 2
+_SCHEMA_VERSION: int = 3
 
 # Ordered dict of version → list of SQL statements.  Each migration brings the
 # DB from version (N-1) to version N.  Migration 1 is the baseline — it
@@ -42,6 +42,63 @@ _MIGRATIONS: dict[int, list[str]] = {
         # making song_id-only lookups fall back to full table scans.
         "CREATE INDEX IF NOT EXISTS idx_service_songs_song_id ON service_songs(song_id)",
         "CREATE INDEX IF NOT EXISTS idx_copy_events_song_id ON copy_events(song_id)",
+        "CREATE INDEX IF NOT EXISTS idx_services_date ON services(service_date)",
+    ],
+    3: [
+        # Strengthen the services unique constraint from (date, name, hash) to
+        # (date, name) so that re-importing a modified file for the same service
+        # date+name updates the existing row rather than inserting a duplicate.
+        # SQLite doesn't support DROP CONSTRAINT, so we dedup then recreate the table.
+        #
+        # Step 1 — drop child rows for the loser duplicates (keep highest id per group).
+        """
+        DELETE FROM copy_events
+        WHERE service_id IN (
+            SELECT id FROM services
+            WHERE id NOT IN (
+                SELECT MAX(id) FROM services GROUP BY service_date, service_name
+            )
+        )
+        """,
+        """
+        DELETE FROM service_songs
+        WHERE service_id IN (
+            SELECT id FROM services
+            WHERE id NOT IN (
+                SELECT MAX(id) FROM services GROUP BY service_date, service_name
+            )
+        )
+        """,
+        # Step 2 — remove the loser service rows.
+        """
+        DELETE FROM services
+        WHERE id NOT IN (
+            SELECT MAX(id) FROM services GROUP BY service_date, service_name
+        )
+        """,
+        # Step 3 — recreate the table with the stronger unique constraint.
+        """
+        CREATE TABLE services_new (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            service_date TEXT NOT NULL,
+            service_name TEXT NOT NULL,
+            source_file TEXT NOT NULL,
+            source_hash TEXT NOT NULL,
+            song_leader TEXT,
+            preacher TEXT,
+            sermon_title TEXT,
+            imported_at TEXT NOT NULL,
+            UNIQUE(service_date, service_name)
+        )
+        """,
+        """
+        INSERT INTO services_new
+        SELECT id, service_date, service_name, source_file, source_hash,
+               song_leader, preacher, sermon_title, imported_at
+        FROM services
+        """,
+        "DROP TABLE services",
+        "ALTER TABLE services_new RENAME TO services",
         "CREATE INDEX IF NOT EXISTS idx_services_date ON services(service_date)",
     ],
 }
@@ -418,28 +475,32 @@ class Database:
         """Insert or update service. Returns service_id."""
         cursor = self._conn.cursor()
 
-        # Check if exists
+        # Look up by (date, name) only — the unique constraint is now on these two
+        # columns, so a matching row must be updated regardless of source_hash.
         cursor.execute(
             """
             SELECT id FROM services
-            WHERE service_date = ? AND service_name = ? AND source_hash = ?
+            WHERE service_date = ? AND service_name = ?
             """,
-            (service_date, service_name, source_hash),
+            (service_date, service_name),
         )
         row = cursor.fetchone()
 
         imported_at = datetime.now(timezone.utc).isoformat()
 
         if row:
-            # Update existing
+            # Update existing — also refresh source_file and source_hash so the
+            # record reflects the most recently imported file.
             service_id = row[0]
             cursor.execute(
                 """
                 UPDATE services
-                SET song_leader = ?, preacher = ?, sermon_title = ?, imported_at = ?
+                SET source_file = ?, source_hash = ?,
+                    song_leader = ?, preacher = ?, sermon_title = ?, imported_at = ?
                 WHERE id = ?
                 """,
-                (song_leader, preacher, sermon_title, imported_at, service_id),
+                (source_file, source_hash, song_leader, preacher, sermon_title,
+                 imported_at, service_id),
             )
         else:
             # Insert new
@@ -964,6 +1025,12 @@ class Database:
         {"service_date", "service_name", "song_leader", "preacher", "song_count"}
     )
 
+    def count_songs(self) -> int:
+        """Return the total number of unique songs in the database."""
+        cursor = self._conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM songs")
+        return int(cursor.fetchone()[0])
+
     def query_songs_paginated(
         self,
         search: str | None = None,
@@ -1127,6 +1194,41 @@ class Database:
             """
         )
         return [dict(row) for row in cursor.fetchall()]
+
+    def dedup_services(self, *, dry_run: bool = False) -> list[dict[str, Any]]:
+        """Remove duplicate service rows, keeping the highest-id row per (date, name) group.
+
+        Returns a list of dicts describing each removed row.  When *dry_run* is
+        True the rows are identified but not deleted.
+        """
+        cursor = self._conn.cursor()
+        cursor.execute(
+            """
+            SELECT *
+            FROM services
+            WHERE id NOT IN (
+                SELECT MAX(id) FROM services GROUP BY service_date, service_name
+            )
+            ORDER BY service_date, service_name, id
+            """
+        )
+        losers = [dict(row) for row in cursor.fetchall()]
+        if not losers or dry_run:
+            return losers
+
+        loser_ids = [row["id"] for row in losers]
+        placeholders = ",".join("?" * len(loser_ids))
+        cursor.execute(
+            f"DELETE FROM copy_events WHERE service_id IN ({placeholders})", loser_ids
+        )
+        cursor.execute(
+            f"DELETE FROM service_songs WHERE service_id IN ({placeholders})", loser_ids
+        )
+        cursor.execute(
+            f"DELETE FROM services WHERE id IN ({placeholders})", loser_ids
+        )
+        self._maybe_commit()
+        return losers
 
     def delete_song(self, song_id: int) -> None:
         """Delete a song, its editions, and any related copy_events."""

@@ -2,6 +2,9 @@
 {% block title %}Songs — Highland Worship Catalog{% endblock %}
 {% block content %}
 <h1>Song Library</h1>
+<p style="color:#6c757d;margin-top:-0.75rem;margin-bottom:1rem;">
+  {{ library_size }} unique song{{ "s" if library_size != 1 else "" }} in the library
+</p>
 
 {# Hidden inputs carry sort state into HTMX search requests #}
 <input type="hidden" name="sort" value="{{ sort }}">

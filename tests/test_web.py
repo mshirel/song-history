@@ -87,6 +87,20 @@ class TestSongsPage:
         assert response.status_code == 200
         assert "No songs found" in response.text
 
+    def test_songs_page_shows_total_library_count(self, client):
+        """Songs page header shows total number of unique songs in the library."""
+        response = client.get("/songs")
+        assert response.status_code == 200
+        # db_with_songs has 2 songs; header should say "2 songs" or "2 unique songs"
+        assert "2 song" in response.text.lower() or "2 unique song" in response.text.lower()
+
+    def test_songs_page_library_count_unaffected_by_search(self, client):
+        """Library size shown in header is total, not the filtered count."""
+        response = client.get("/songs?q=Amazing")
+        assert response.status_code == 200
+        # Filtered to 1 result but header should still say "2 songs" (total library)
+        assert "2 song" in response.text.lower() or "2 unique song" in response.text.lower()
+
 
 class TestReportsPage:
     def test_reports_page_returns_html(self, client):
