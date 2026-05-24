@@ -1028,6 +1028,83 @@ def find_duplicates(db: str) -> None:
         sys.exit(1)
 
 
+@cleanup.command(name="delete-song")
+@click.option(
+    "--id",
+    "song_ids",
+    type=int,
+    multiple=True,
+    required=True,
+    help="Song ID to delete (repeatable).",
+)
+@click.option(
+    "--db",
+    type=click.Path(),
+    default="data/worship.db",
+    help="Path to SQLite database",
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help="Show what would be deleted without modifying the database",
+)
+@click.option(
+    "--yes",
+    is_flag=True,
+    help="Skip confirmation prompt",
+)
+def delete_song(song_ids: tuple[int, ...], db: str, dry_run: bool, yes: bool) -> None:
+    """Delete specific songs by ID, with their editions and copy_events.
+
+    Use this to remove non-song entries (sermon points, scripture quotes,
+    lyric fragments) that were mistakenly recorded. Unlike orphaned-songs,
+    this targets exact IDs even when they still have performance links.
+    """
+    try:
+        db_path = Path(db)
+
+        with Database(db_path) as database:
+            found = []
+            for song_id in song_ids:
+                song = database.query_song_by_id(song_id)
+                if song is None:
+                    click.echo(f"Song ID {song_id} not found.", err=True)
+                    sys.exit(1)
+                perf = len(database.query_song_services(song_id))
+                found.append((song_id, song["display_title"], perf))
+
+            click.echo(f"Found {len(found)} song(s) to delete:")
+            for song_id, title, perf in found:
+                click.echo(f"  ID={song_id}  {title}  ({perf} performance(s))")
+
+            if dry_run:
+                click.echo(f"\nDry run — would delete {len(found)} song(s).")
+                sys.exit(0)
+
+            if not yes:
+                click.confirm("Proceed?", abort=True)
+
+            for song_id, title, _ in found:
+                database.delete_song(song_id)
+                _log.info(
+                    "Deleted song",
+                    extra={"song_id": song_id, "title": title},
+                )
+
+        click.echo(f"Deleted {len(found)} song(s).")
+        sys.exit(0)
+
+    except click.Abort:
+        click.echo("\nAborted.")
+        sys.exit(1)
+    except SystemExit:
+        raise
+    except Exception as e:
+        _log.exception("cleanup delete-song error", extra={"error": str(e)})
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+
 @cleanup.command(name="dedup-services")
 @click.option(
     "--db",

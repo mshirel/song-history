@@ -282,6 +282,74 @@ class TestScriptureGuard:
 
 
 @pytest.mark.unit
+class TestNonSongTitleFilter:
+    """is_non_song_title() drops sermon points, scripture quotes, verse/stanza
+    markers, and lyric fragments that the grouping step mistakenly split out.
+
+    Applied to the FINAL chosen title (post-extraction) so it does not perturb
+    slide grouping. These are the real false positives observed in production.
+    """
+
+    # Titles that must be rejected (NOT real songs).
+    NON_TITLES = [
+        ":7",  # bare verse fragment
+        "And when he has found it, he lays it on his shoulders, rejoicing.",  # scripture prose
+        "(6) Humble yourselves, therefore, under the mighty hand of God "
+        "so that at the proper time he may exalt you",  # leading (N) + prose
+        "St. 2 The Lord as Host (vv. 5–6)",  # stanza + verse markers
+        'The Simplest Promise: “You are with me”',  # sermon point w/ quote
+        "The Simplest Truth: The Lord is My Deliverer",  # sermon point (colon)
+        'Many of them said, “He has a demon, and is insane; '
+        'why listen to him?”',  # scripture quote ending ?"
+        "“Ah, shepherds of Israel who have been feeding yourselves! "
+        "Should not shepherds feed the sheep?”",  # quote-wrapped
+        ". SALVATION IS COMPLETELY THE WORK OF GOD, THE MOST HIGH.",  # leading . + caps
+        "MICAH 6:6 – 8",  # scripture reference
+        "us Christ, the King of Glory,",  # lyric: lowercase start + trailing comma
+        "sick and sorrowworn,",  # lyric: lowercase start + trailing comma
+        "they comfort me.",  # lyric: lowercase start
+        "SFP 373",  # Paperless Hymnal catalog number
+        "SFP 878",
+        "",  # empty
+        "   ",  # whitespace only
+    ]
+
+    # Real titles from production that must NOT be rejected.
+    REAL_TITLES = [
+        "Amazing Grace",
+        "Are You Washed in the Blood?",
+        "Does Jesus Care?",
+        "Praise Him! Praise Him!",
+        "Lovest Thou Me More Than These?",
+        "He arose! He arose!",
+        "Where Could I Go?",
+        "Alleluia, Alleluia! Hearts to Heaven",
+        "‘Tis So Sweet to Trust in Jesus",
+        "The Lord's My Shepherd",
+        "Praise to the Lord, the Almighty, the King of Creation",
+        "Come, We That Love the Lord",
+        "Stand Up, Stand Up for Jesus",
+        "I Love You, Lord",
+        "God’s Family",
+        "How Deep the Father’s Love",
+        "10,000 Reasons",
+        "We Saw Thee Not",
+    ]
+
+    @pytest.mark.parametrize("title", NON_TITLES)
+    def test_non_titles_are_dropped(self, title):
+        from worship_catalog.normalize import is_non_song_title
+
+        assert is_non_song_title(title) is True
+
+    @pytest.mark.parametrize("title", REAL_TITLES)
+    def test_real_titles_are_kept(self, title):
+        from worship_catalog.normalize import is_non_song_title
+
+        assert is_non_song_title(title) is False
+
+
+@pytest.mark.unit
 class TestSermonOutlineNotStripped:
     """Sermon outline numbered points should not be stripped (#314)."""
 

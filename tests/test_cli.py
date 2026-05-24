@@ -2139,3 +2139,76 @@ class TestDedupServicesCommand:
         db.connect()
         assert db.query_duplicate_services() == []
         db.close()
+
+
+class TestDeleteSongCommand:
+    """Tests for `cleanup delete-song --id` (targeted song removal)."""
+
+    @pytest.fixture
+    def runner(self):
+        return CliRunner()
+
+    def test_delete_song_listed_in_cleanup_help(self, runner):
+        result = runner.invoke(main, ["cleanup", "--help"])
+        assert result.exit_code == 0
+        assert "delete-song" in result.output
+
+    def test_delete_song_by_id(self, runner, db_with_songs):
+        """delete-song --id <N> removes the song, its editions, and copy_events."""
+        result = runner.invoke(main, [
+            "cleanup", "delete-song", "--id", "1", "--db", str(db_with_songs), "--yes"
+        ])
+        assert result.exit_code == 0
+        db = Database(db_with_songs)
+        db.connect()
+        assert db.query_song_by_id(1) is None
+        assert db.query_song_by_id(2) is not None  # untouched
+        db.close()
+
+    def test_delete_song_shows_title(self, runner, db_with_songs):
+        """delete-song shows the title (and performance count) before deleting."""
+        result = runner.invoke(main, [
+            "cleanup", "delete-song", "--id", "1", "--db", str(db_with_songs), "--yes"
+        ])
+        assert result.exit_code == 0
+        assert "Amazing Grace" in result.output
+
+    def test_delete_song_multiple_ids(self, runner, db_with_songs):
+        """delete-song accepts multiple --id options."""
+        result = runner.invoke(main, [
+            "cleanup", "delete-song", "--id", "1", "--id", "2",
+            "--db", str(db_with_songs), "--yes"
+        ])
+        assert result.exit_code == 0
+        db = Database(db_with_songs)
+        db.connect()
+        assert db.query_song_by_id(1) is None
+        assert db.query_song_by_id(2) is None
+        db.close()
+
+    def test_delete_song_dry_run_does_not_delete(self, runner, db_with_songs):
+        """--dry-run reports the target but leaves the song in place."""
+        result = runner.invoke(main, [
+            "cleanup", "delete-song", "--id", "1",
+            "--db", str(db_with_songs), "--dry-run"
+        ])
+        assert result.exit_code == 0
+        assert "Amazing Grace" in result.output
+        db = Database(db_with_songs)
+        db.connect()
+        assert db.query_song_by_id(1) is not None
+        db.close()
+
+    def test_delete_song_not_found(self, runner, db_with_songs):
+        """delete-song with an unknown id exits non-zero."""
+        result = runner.invoke(main, [
+            "cleanup", "delete-song", "--id", "999", "--db", str(db_with_songs), "--yes"
+        ])
+        assert result.exit_code == 1
+
+    def test_delete_song_requires_id(self, runner, db_with_songs):
+        """delete-song with no --id errors out."""
+        result = runner.invoke(main, [
+            "cleanup", "delete-song", "--db", str(db_with_songs), "--yes"
+        ])
+        assert result.exit_code != 0
