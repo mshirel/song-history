@@ -39,9 +39,9 @@ echo "║   QA Gate — pre-stop validation      ║" >&2
 echo "╚══════════════════════════════════════╝" >&2
 echo "" >&2
 
-run_check "pytest"          python3 -m pytest -q --tb=short --no-header
-run_check "ruff check src/" python3 -m ruff check src/
-run_check "mypy src/"       python3 -m mypy src/
+run_check "pytest"          uv run python -m pytest -q --tb=short --no-header
+run_check "ruff check src/" uv run python -m ruff check src/
+run_check "mypy src/"       uv run python -m mypy src/
 
 echo "" >&2
 echo "── Results: ${PASS} passed, ${FAIL} failed" >&2

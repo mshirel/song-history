@@ -78,12 +78,11 @@ def run_import(
         cursor.execute(
             """
             SELECT id FROM services
-            WHERE service_date = ? AND service_name = ? AND source_hash = ?
+            WHERE service_date = ? AND service_name = ?
             """,
             (
                 result.service_date or "0000-00-00",
                 result.service_name or "Unknown",
-                service_hash,
             ),
         )
         existing = cursor.fetchone()

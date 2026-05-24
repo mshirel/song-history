@@ -2194,13 +2194,12 @@ class TestCleanupQueries:
         assert len(results) == 0
 
     def test_query_duplicate_services(self, temp_db):
-        """query_duplicate_services returns groups with same date+name, different hash."""
+        """query_duplicate_services returns empty after migration v3 (constraint prevents dupes)."""
         temp_db.insert_or_update_service("2026-02-15", "AM Worship", "f.pptx", "h1")
+        # Same date+name with a different hash is now an update, not a new row
         temp_db.insert_or_update_service("2026-02-15", "AM Worship", "g.pptx", "h2")
         results = temp_db.query_duplicate_services()
-        assert len(results) >= 2
-        dates = [r["service_date"] for r in results]
-        assert "2026-02-15" in dates
+        assert results == []
 
     def test_query_duplicate_services_none(self, temp_db):
         """query_duplicate_services returns empty list when no duplicates."""
@@ -2315,10 +2314,10 @@ class TestDatabaseIndexes:
                 break
         assert has_date_index, "Missing index on services.service_date"
 
-    def test_schema_version_is_2(self, temp_db):
+    def test_schema_version_is_3(self, temp_db):
         cursor = temp_db.cursor()
         cursor.execute("PRAGMA user_version")
-        assert cursor.fetchone()[0] == 2
+        assert cursor.fetchone()[0] == 3
 
 
 @pytest.mark.integration
@@ -2530,3 +2529,244 @@ class TestDistinctValueQueries:
 
     def test_query_distinct_preachers_empty_db(self, temp_db):
         assert temp_db.query_distinct_preachers() == []
+
+    def test_count_songs_empty(self, temp_db):
+        """count_songs returns 0 for an empty database."""
+        assert temp_db.count_songs() == 0
+
+    def test_count_songs_returns_total(self, temp_db):
+        """count_songs returns the total number of unique songs."""
+        temp_db.insert_or_get_song("amazing grace", "Amazing Grace")
+        temp_db.insert_or_get_song("how great thou art", "How Great Thou Art")
+        assert temp_db.count_songs() == 2
+
+    def test_count_songs_unaffected_by_services(self, temp_db):
+        """count_songs counts songs in the songs table, not service occurrences."""
+        song_id = temp_db.insert_or_get_song("be thou my vision", "Be Thou My Vision")
+        svc_id = temp_db.insert_or_update_service(
+            "2024-01-07", "Sunday AM", "f.pptx", "h1"
+        )
+        temp_db.insert_service_song(svc_id, song_id, ordinal=1)
+        svc_id2 = temp_db.insert_or_update_service(
+            "2024-01-14", "Sunday AM", "f2.pptx", "h2"
+        )
+        temp_db.insert_service_song(svc_id2, song_id, ordinal=1)
+        assert temp_db.count_songs() == 1
+
+
+@pytest.mark.integration
+class TestServiceDeduplication:
+    """Tests for service idempotency and migration v3 deduplication."""
+
+    @pytest.fixture
+    def temp_db(self):
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "test.db"
+            db = Database(db_path)
+            db.connect()
+            db.init_schema()
+            yield db
+            db.close()
+
+    def test_reimport_different_hash_updates_not_inserts(self, temp_db):
+        """Same date+name with different source hash → updates existing row, no new row."""
+        id1 = temp_db.insert_or_update_service(
+            service_date="2024-01-07",
+            service_name="Sunday AM",
+            source_file="file1.pptx",
+            source_hash="hash1",
+        )
+        id2 = temp_db.insert_or_update_service(
+            service_date="2024-01-07",
+            service_name="Sunday AM",
+            source_file="file2.pptx",
+            source_hash="hash2",
+        )
+        assert id1 == id2
+        cursor = temp_db.conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM services")
+        assert cursor.fetchone()[0] == 1
+
+    def test_reimport_updates_source_hash_and_file(self, temp_db):
+        """Re-importing with a different file updates source_hash and source_file."""
+        id1 = temp_db.insert_or_update_service(
+            service_date="2024-01-07",
+            service_name="Sunday AM",
+            source_file="file1.pptx",
+            source_hash="hash1",
+        )
+        temp_db.insert_or_update_service(
+            service_date="2024-01-07",
+            service_name="Sunday AM",
+            source_file="file2.pptx",
+            source_hash="hash2",
+        )
+        cursor = temp_db.conn.cursor()
+        cursor.execute(
+            "SELECT source_hash, source_file FROM services WHERE id = ?", (id1,)
+        )
+        row = cursor.fetchone()
+        assert row["source_hash"] == "hash2"
+        assert row["source_file"] == "file2.pptx"
+
+    def test_different_dates_allow_separate_rows(self, temp_db):
+        """Same service name on different dates creates separate rows."""
+        id1 = temp_db.insert_or_update_service(
+            service_date="2024-01-07",
+            service_name="Sunday AM",
+            source_file="file1.pptx",
+            source_hash="hash1",
+        )
+        id2 = temp_db.insert_or_update_service(
+            service_date="2024-01-14",
+            service_name="Sunday AM",
+            source_file="file2.pptx",
+            source_hash="hash2",
+        )
+        assert id1 != id2
+        cursor = temp_db.conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM services")
+        assert cursor.fetchone()[0] == 2
+
+    def test_migration_v3_removes_duplicate_service_rows(self, tmp_path):
+        """Migration v3 deduplicates (date+name) groups, keeping the highest-id row."""
+        db_path = tmp_path / "pre_v3.db"
+        _create_pre_v3_db_with_duplicates(db_path)
+
+        db = Database(db_path)
+        db.connect()
+        db.init_schema()
+        cursor = db.conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM services")
+        assert cursor.fetchone()[0] == 2  # only one row per (date, name) group
+        db.close()
+
+    def test_migration_v3_keeps_highest_id_row(self, tmp_path):
+        """Migration v3 keeps the row with the highest id in each duplicate group."""
+        db_path = tmp_path / "pre_v3.db"
+        _create_pre_v3_db_with_duplicates(db_path)
+
+        db = Database(db_path)
+        db.connect()
+        db.init_schema()
+        cursor = db.conn.cursor()
+        cursor.execute(
+            "SELECT source_hash FROM services WHERE service_date = '2024-01-07'"
+        )
+        row = cursor.fetchone()
+        assert row["source_hash"] == "hash2"  # higher-id row wins
+        db.close()
+
+    def test_migration_v3_removes_child_rows_of_losers(self, tmp_path):
+        """Migration v3 deletes service_songs and copy_events for removed duplicate rows."""
+        db_path = tmp_path / "pre_v3.db"
+        _create_pre_v3_db_with_duplicates(db_path, include_child_rows=True)
+
+        db = Database(db_path)
+        db.connect()
+        db.init_schema()
+        cursor = db.conn.cursor()
+        # service_id=1 (the loser) should have no service_songs or copy_events
+        cursor.execute("SELECT COUNT(*) FROM service_songs WHERE service_id = 1")
+        assert cursor.fetchone()[0] == 0
+        cursor.execute("SELECT COUNT(*) FROM copy_events WHERE service_id = 1")
+        assert cursor.fetchone()[0] == 0
+        db.close()
+
+
+def _create_pre_v3_db_with_duplicates(
+    db_path: Path, *, include_child_rows: bool = False
+) -> None:
+    """Build a v2-schema SQLite DB with duplicate service rows for migration tests."""
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.executescript("""
+        CREATE TABLE services (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            service_date TEXT NOT NULL,
+            service_name TEXT NOT NULL,
+            source_file TEXT NOT NULL,
+            source_hash TEXT NOT NULL,
+            song_leader TEXT,
+            preacher TEXT,
+            sermon_title TEXT,
+            imported_at TEXT NOT NULL,
+            UNIQUE(service_date, service_name, source_hash)
+        );
+        CREATE TABLE songs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            canonical_title TEXT UNIQUE NOT NULL,
+            display_title TEXT NOT NULL
+        );
+        CREATE TABLE song_editions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            song_id INTEGER NOT NULL,
+            publisher TEXT,
+            words_by TEXT,
+            music_by TEXT,
+            arranger TEXT,
+            copyright_notice TEXT,
+            FOREIGN KEY(song_id) REFERENCES songs(id),
+            UNIQUE(song_id, publisher, words_by, music_by, arranger)
+        );
+        CREATE TABLE service_songs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            service_id INTEGER NOT NULL,
+            song_id INTEGER NOT NULL,
+            song_edition_id INTEGER,
+            ordinal INTEGER NOT NULL,
+            first_slide_index INTEGER,
+            last_slide_index INTEGER,
+            occurrences INTEGER NOT NULL DEFAULT 1,
+            FOREIGN KEY(service_id) REFERENCES services(id),
+            FOREIGN KEY(song_id) REFERENCES songs(id),
+            UNIQUE(service_id, ordinal)
+        );
+        CREATE TABLE copy_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            service_id INTEGER NOT NULL,
+            song_id INTEGER NOT NULL,
+            song_edition_id INTEGER,
+            reproduction_type TEXT NOT NULL,
+            count INTEGER NOT NULL DEFAULT 1,
+            reportable INTEGER NOT NULL DEFAULT 1,
+            FOREIGN KEY(service_id) REFERENCES services(id),
+            FOREIGN KEY(song_id) REFERENCES songs(id),
+            UNIQUE(service_id, song_id, song_edition_id, reproduction_type)
+        );
+        CREATE TABLE import_jobs (
+            job_id TEXT PRIMARY KEY,
+            filename TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            started_at TEXT NOT NULL,
+            completed_at TEXT,
+            songs_imported INTEGER,
+            error_message TEXT
+        );
+        CREATE TABLE schema_migrations (
+            version INTEGER PRIMARY KEY,
+            applied_at TEXT NOT NULL
+        );
+        INSERT INTO schema_migrations VALUES (1, '2024-01-01T00:00:00+00:00');
+        INSERT INTO schema_migrations VALUES (2, '2024-01-01T00:00:00+00:00');
+        INSERT INTO services (service_date, service_name, source_file, source_hash, imported_at)
+            VALUES ('2024-01-07', 'Sunday AM', 'file1.pptx', 'hash1',
+                    '2024-01-07T08:00:00+00:00');
+        INSERT INTO services (service_date, service_name, source_file, source_hash, imported_at)
+            VALUES ('2024-01-07', 'Sunday AM', 'file2.pptx', 'hash2',
+                    '2024-01-07T09:00:00+00:00');
+        INSERT INTO services (service_date, service_name, source_file, source_hash, imported_at)
+            VALUES ('2024-01-14', 'Sunday PM', 'file3.pptx', 'hash3',
+                    '2024-01-14T08:00:00+00:00');
+    """)
+    if include_child_rows:
+        conn.executescript("""
+            INSERT INTO songs (canonical_title, display_title) VALUES ('amazing grace', 'Amazing Grace');
+            INSERT INTO service_songs (service_id, song_id, ordinal)
+                VALUES (1, 1, 1);
+            INSERT INTO copy_events (service_id, song_id, reproduction_type)
+                VALUES (1, 1, 'projection');
+        """)
+    conn.execute("PRAGMA user_version = 2")
+    conn.commit()
+    conn.close()

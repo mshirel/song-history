@@ -1921,24 +1921,12 @@ class TestCleanupCommand:
         assert "no orphaned" in result.output.lower() or "0" in result.output
 
     def test_find_duplicates(self, runner, db_with_songs):
-        """cleanup find-duplicates lists services with same date+name but different hash."""
-        # Insert a duplicate service with different hash
-        db = Database(db_with_songs)
-        db.connect()
-        db.insert_or_update_service(
-            service_date="2026-02-15",
-            service_name="AM Worship",
-            source_file="test2.pptx",
-            source_hash="def456",
-        )
-        db.close()
-
+        """cleanup find-duplicates reports no duplicates (schema now prevents them)."""
         result = runner.invoke(main, [
             "cleanup", "find-duplicates", "--db", str(db_with_songs)
         ])
         assert result.exit_code == 0
-        assert "2026-02-15" in result.output
-        assert "AM Worship" in result.output
+        assert "no duplicate" in result.output.lower()
 
     def test_find_duplicates_none(self, runner, db_with_songs):
         """cleanup find-duplicates with no duplicates reports none."""
@@ -1978,4 +1966,176 @@ class TestCleanupCommand:
         db = Database(db_with_songs)
         db.connect()
         assert db.query_song_by_id(1) is not None
+        db.close()
+
+
+def _make_pre_v3_db_with_duplicates(db_path: Path) -> None:
+    """Create a v2-schema DB with duplicate services (for dedup-services tests)."""
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.executescript("""
+        CREATE TABLE services (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            service_date TEXT NOT NULL,
+            service_name TEXT NOT NULL,
+            source_file TEXT NOT NULL,
+            source_hash TEXT NOT NULL,
+            song_leader TEXT,
+            preacher TEXT,
+            sermon_title TEXT,
+            imported_at TEXT NOT NULL,
+            UNIQUE(service_date, service_name, source_hash)
+        );
+        CREATE TABLE songs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            canonical_title TEXT UNIQUE NOT NULL,
+            display_title TEXT NOT NULL
+        );
+        CREATE TABLE song_editions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            song_id INTEGER NOT NULL,
+            publisher TEXT,
+            words_by TEXT,
+            music_by TEXT,
+            arranger TEXT,
+            copyright_notice TEXT,
+            FOREIGN KEY(song_id) REFERENCES songs(id),
+            UNIQUE(song_id, publisher, words_by, music_by, arranger)
+        );
+        CREATE TABLE service_songs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            service_id INTEGER NOT NULL,
+            song_id INTEGER NOT NULL,
+            song_edition_id INTEGER,
+            ordinal INTEGER NOT NULL,
+            first_slide_index INTEGER,
+            last_slide_index INTEGER,
+            occurrences INTEGER NOT NULL DEFAULT 1,
+            FOREIGN KEY(service_id) REFERENCES services(id),
+            FOREIGN KEY(song_id) REFERENCES songs(id),
+            UNIQUE(service_id, ordinal)
+        );
+        CREATE TABLE copy_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            service_id INTEGER NOT NULL,
+            song_id INTEGER NOT NULL,
+            song_edition_id INTEGER,
+            reproduction_type TEXT NOT NULL,
+            count INTEGER NOT NULL DEFAULT 1,
+            reportable INTEGER NOT NULL DEFAULT 1,
+            FOREIGN KEY(service_id) REFERENCES services(id),
+            FOREIGN KEY(song_id) REFERENCES songs(id),
+            UNIQUE(service_id, song_id, song_edition_id, reproduction_type)
+        );
+        CREATE TABLE import_jobs (
+            job_id TEXT PRIMARY KEY,
+            filename TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            started_at TEXT NOT NULL,
+            completed_at TEXT,
+            songs_imported INTEGER,
+            error_message TEXT
+        );
+        CREATE TABLE schema_migrations (
+            version INTEGER PRIMARY KEY,
+            applied_at TEXT NOT NULL
+        );
+        INSERT INTO schema_migrations VALUES (1, '2024-01-01T00:00:00+00:00');
+        INSERT INTO schema_migrations VALUES (2, '2024-01-01T00:00:00+00:00');
+        INSERT INTO services (service_date, service_name, source_file, source_hash, imported_at)
+            VALUES ('2024-01-07', 'Sunday AM', 'file1.pptx', 'hash1',
+                    '2024-01-07T08:00:00+00:00');
+        INSERT INTO services (service_date, service_name, source_file, source_hash, imported_at)
+            VALUES ('2024-01-07', 'Sunday AM', 'file2.pptx', 'hash2',
+                    '2024-01-07T09:00:00+00:00');
+        INSERT INTO services (service_date, service_name, source_file, source_hash, imported_at)
+            VALUES ('2024-01-14', 'Sunday PM', 'file3.pptx', 'hash3',
+                    '2024-01-14T08:00:00+00:00');
+    """)
+    conn.execute("PRAGMA user_version = 2")
+    conn.commit()
+    conn.close()
+
+
+@pytest.mark.integration
+class TestDedupServicesCommand:
+    """Tests for cleanup dedup-services command."""
+
+    @pytest.fixture
+    def runner(self):
+        return CliRunner()
+
+    @pytest.fixture
+    def clean_db(self, tmp_path):
+        """A normal (post-migration) DB with no duplicates."""
+        db_path = tmp_path / "clean.db"
+        db = Database(db_path)
+        db.connect()
+        db.init_schema()
+        db.insert_or_update_service(
+            service_date="2024-01-07",
+            service_name="Sunday AM",
+            source_file="file1.pptx",
+            source_hash="hash1",
+        )
+        db.close()
+        return db_path
+
+    @pytest.fixture
+    def dup_db(self, tmp_path):
+        """A pre-v3 DB with duplicate services (bypasses the new unique constraint)."""
+        db_path = tmp_path / "dup.db"
+        _make_pre_v3_db_with_duplicates(db_path)
+        return db_path
+
+    def test_dedup_services_listed_in_cleanup_help(self, runner):
+        """cleanup --help lists dedup-services subcommand."""
+        result = runner.invoke(main, ["cleanup", "--help"])
+        assert result.exit_code == 0
+        assert "dedup-services" in result.output
+
+    def test_dedup_services_no_duplicates_exits_0(self, runner, clean_db):
+        """dedup-services exits 0 and reports nothing to remove when DB is clean."""
+        result = runner.invoke(main, [
+            "cleanup", "dedup-services", "--db", str(clean_db), "--yes"
+        ])
+        assert result.exit_code == 0
+        assert "no duplicate" in result.output.lower()
+
+    def test_dedup_services_dry_run_does_not_delete(self, runner, dup_db):
+        """dedup-services --dry-run reports what would be removed without deleting."""
+        db = Database(dup_db)
+        db.connect()
+        cursor = db.conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM services")
+        before = cursor.fetchone()[0]
+        db.close()
+
+        result = runner.invoke(main, [
+            "cleanup", "dedup-services", "--db", str(dup_db), "--dry-run"
+        ])
+        assert result.exit_code == 0
+        assert "dry run" in result.output.lower() or "would" in result.output.lower()
+
+        # Count must be unchanged after dry-run
+        db = Database(dup_db)
+        db.connect()
+        cursor = db.conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM services")
+        after = cursor.fetchone()[0]
+        db.close()
+        assert after == before
+
+    def test_dedup_services_removes_loser_rows(self, runner, dup_db):
+        """dedup-services removes duplicate rows, leaving one per (date, name) group."""
+        # The pre-v3 DB has 3 rows: 2 for 2024-01-07/Sunday AM and 1 for 2024-01-14/Sunday PM.
+        # Migration v3 runs on connect, deduplicating to 2 rows.
+        # Then dedup-services should report nothing left to remove (already clean after migration).
+        result = runner.invoke(main, [
+            "cleanup", "dedup-services", "--db", str(dup_db), "--yes"
+        ])
+        assert result.exit_code == 0
+        db = Database(dup_db)
+        db.connect()
+        assert db.query_duplicate_services() == []
         db.close()
