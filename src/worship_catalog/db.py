@@ -50,6 +50,9 @@ _MIGRATIONS: dict[int, list[str]] = {
         # date+name updates the existing row rather than inserting a duplicate.
         # SQLite doesn't support DROP CONSTRAINT, so we dedup then recreate the table.
         #
+        # Guard: if a previous interrupted migration left services_new behind,
+        # drop it so this migration can run cleanly from scratch.
+        "DROP TABLE IF EXISTS services_new",
         # Step 1 — drop child rows for the loser duplicates (keep highest id per group).
         """
         DELETE FROM copy_events
@@ -97,8 +100,10 @@ _MIGRATIONS: dict[int, list[str]] = {
                song_leader, preacher, sermon_title, imported_at
         FROM services
         """,
-        # Disable FK checks while swapping the table so SQLite allows
-        # DROP TABLE on a parent table referenced by child FKs.
+        # Disable FK enforcement so DROP TABLE succeeds even though child
+        # tables (service_songs, copy_events) have rows referencing services.
+        # _apply_migrations issues COMMIT before any PRAGMA so this PRAGMA
+        # takes effect (it is a no-op inside a transaction).
         "PRAGMA foreign_keys=OFF",
         "DROP TABLE services",
         "ALTER TABLE services_new RENAME TO services",
@@ -383,6 +388,11 @@ class Database:
             if version in applied:
                 continue
             for stmt in _MIGRATIONS[version]:
+                # PRAGMA foreign_keys is a no-op inside a transaction (SQLite
+                # rule).  Commit any pending implicit DML transaction first so
+                # the PRAGMA takes effect immediately.
+                if stmt.strip().upper().startswith("PRAGMA"):
+                    self._conn.commit()
                 cursor.execute(stmt)
             cursor.execute(
                 "INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)",
