@@ -51,7 +51,8 @@
 {% if not songs %}
 <p style="color:#6c757d;">No songs recorded for this service.</p>
 {% else %}
-<div class="card" style="padding:0;overflow:hidden;">
+<div class="card" style="padding:0;">
+  <div class="table-wrap">
   <table>
     <caption class="sr-only">Setlist for {{ service.service_name }} on {{ service.service_date }}</caption>
     <thead>
@@ -84,6 +85,7 @@
       {% endfor %}
     </tbody>
   </table>
+  </div>
 </div>
 {% endif %}
 

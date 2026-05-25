@@ -4,7 +4,8 @@
 <h1>Song Leaders</h1>
 
 {% if leaders %}
-<div class="card" style="padding:0;overflow:hidden;">
+<div class="card" style="padding:0;">
+  <div class="table-wrap">
   <table>
     <thead>
       <tr>
@@ -25,6 +26,7 @@
       {% endfor %}
     </tbody>
   </table>
+  </div>
 </div>
 {% else %}
 <p style="color:#6c757d;">No leaders found. Import some services first.</p>
