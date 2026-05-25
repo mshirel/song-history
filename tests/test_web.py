@@ -3516,7 +3516,7 @@ class TestUploadRateLimiterPersistence:
 
 
 class TestProxyAwareRateLimiter:
-    """Rate limiter should use X-Forwarded-For when TRUSTED_PROXY is set (#283)."""
+    """Rate limiter client-IP resolution behind a trusted proxy (#283, #404)."""
 
     def test_get_client_ip_without_proxy(self, monkeypatch):
         monkeypatch.setenv("TRUSTED_PROXY", "")
@@ -3529,7 +3529,9 @@ class TestProxyAwareRateLimiter:
         req.headers = {}
         assert app_module._get_client_ip(req) == "1.2.3.4"
 
-    def test_get_client_ip_with_proxy(self, monkeypatch):
+    def test_get_client_ip_with_proxy_uses_rightmost_xff(self, monkeypatch):
+        # The leftmost X-Forwarded-For entry is client-controlled and spoofable;
+        # the proxy-appended rightmost entry is the trustworthy one (#404).
         monkeypatch.setenv("TRUSTED_PROXY", "1")
         from importlib import reload
         import worship_catalog.web.app as app_module
@@ -3537,8 +3539,23 @@ class TestProxyAwareRateLimiter:
         from unittest.mock import MagicMock
         req = MagicMock()
         req.client.host = "10.0.0.1"
-        req.headers = {"x-forwarded-for": "5.6.7.8, 10.0.0.1"}
-        assert app_module._get_client_ip(req) == "5.6.7.8"
+        req.headers = {"x-forwarded-for": "5.6.7.8, 198.51.100.2"}
+        assert app_module._get_client_ip(req) == "198.51.100.2"
+
+    def test_get_client_ip_prefers_cf_connecting_ip(self, monkeypatch):
+        # Cloudflare sets CF-Connecting-IP to the unspoofable real client IP (#404).
+        monkeypatch.setenv("TRUSTED_PROXY", "1")
+        from importlib import reload
+        import worship_catalog.web.app as app_module
+        reload(app_module)
+        from unittest.mock import MagicMock
+        req = MagicMock()
+        req.client.host = "10.0.0.1"
+        req.headers = {
+            "cf-connecting-ip": "203.0.113.7",
+            "x-forwarded-for": "5.6.7.8",
+        }
+        assert app_module._get_client_ip(req) == "203.0.113.7"
 
     def test_get_client_ip_proxy_no_xff_header(self, monkeypatch):
         monkeypatch.setenv("TRUSTED_PROXY", "1")
