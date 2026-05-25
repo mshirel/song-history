@@ -311,8 +311,11 @@ jobs:
       - name: Smoke test image
         if: steps.changes.outputs.app == 'true' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         run: |
+          # CSRF_SECRET is mandatory in production (#406); supply an ephemeral
+          # one so the image boots the same code path a real deployment uses.
           docker run -d --name smoke-test \
             -e DB_PATH=/tmp/test.db \
+            -e CSRF_SECRET=smoke-test-ephemeral-secret \
             -p 8765:8000 \
             local-scan:latest
           # Wait for the server to start (max 15s)
