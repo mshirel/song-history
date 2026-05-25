@@ -252,19 +252,33 @@ _PPTX_MIME = (
 # Per-client upload rate limiting (#173)
 _UPLOAD_RATE_LIMIT: int = 10  # max uploads per window
 _UPLOAD_RATE_WINDOW_SECONDS: int = 3600  # 1 hour
-# Env-configurable trusted proxy header (#283).  When TRUSTED_PROXY=1 the rate
-# limiter reads the leftmost X-Forwarded-For value so that clients behind a
-# reverse proxy are identified individually instead of all sharing one bucket.
+# Env-configurable trusted proxy support (#283, #404).  When TRUSTED_PROXY=1 the
+# rate limiter identifies clients via Cloudflare's unspoofable CF-Connecting-IP
+# (or, failing that, the proxy-appended rightmost X-Forwarded-For entry) instead
+# of the socket peer, so clients behind the proxy are bucketed individually.
 _TRUST_PROXY: bool = os.environ.get("TRUSTED_PROXY", "").strip() in ("1", "true", "yes")
 
 
 def _get_client_ip(request: Request) -> str:
-    """Return the real client IP, respecting X-Forwarded-For if trusted (#283)."""
+    """Return the real client IP, respecting trusted-proxy headers (#283, #404).
+
+    The leftmost ``X-Forwarded-For`` entry is supplied by the client and is
+    therefore spoofable — trusting it lets an attacker mint a fresh rate-limit
+    bucket per request. This deployment sits behind Cloudflare, which sets the
+    unspoofable ``CF-Connecting-IP`` header (and strips any client-supplied
+    copy), so prefer it. If it is absent, fall back to the *rightmost*
+    ``X-Forwarded-For`` entry — the address appended by our own proxy — rather
+    than the client-controlled leftmost one.
+    """
     if _TRUST_PROXY:
+        cf_ip = request.headers.get("cf-connecting-ip", "").strip()
+        if cf_ip:
+            return cf_ip
         xff = request.headers.get("x-forwarded-for", "")
         if xff:
-            # Leftmost entry is the original client IP
-            return xff.split(",")[0].strip()
+            parts = [p.strip() for p in xff.split(",") if p.strip()]
+            if parts:
+                return parts[-1]
     return request.client.host if request.client else "unknown"
 
 

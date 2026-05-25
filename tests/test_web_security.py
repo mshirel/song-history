@@ -445,6 +445,71 @@ class TestCsrfSecretStartup:
 
 
 # ---------------------------------------------------------------------------
+# Issue #404 — client IP resolution must not trust spoofable X-Forwarded-For
+# ---------------------------------------------------------------------------
+
+
+class _FakeClient:
+    def __init__(self, host: str) -> None:
+        self.host = host
+
+
+class _FakeRequest:
+    """Minimal stand-in exposing the .headers.get() and .client.host that
+    _get_client_ip relies on (headers are matched case-insensitively)."""
+
+    def __init__(self, headers: dict[str, str], client_host: str = "10.0.0.9") -> None:
+        self.headers = {k.lower(): v for k, v in headers.items()}
+        self.client = _FakeClient(client_host)
+
+
+class TestClientIpResolution:
+    """_get_client_ip must prefer Cloudflare's unspoofable CF-Connecting-IP and
+    never trust the client-controlled leftmost X-Forwarded-For entry (#404)."""
+
+    def _app(self):
+        from importlib import reload
+
+        import worship_catalog.web.app as app_module
+        reload(app_module)
+        return app_module
+
+    def test_cf_connecting_ip_preferred_over_xff(self, monkeypatch) -> None:
+        app_module = self._app()
+        monkeypatch.setattr(app_module, "_TRUST_PROXY", True)
+        req = _FakeRequest({
+            "CF-Connecting-IP": "203.0.113.7",
+            "X-Forwarded-For": "1.2.3.4",  # attacker-supplied leftmost
+        })
+        assert app_module._get_client_ip(req) == "203.0.113.7"
+
+    def test_spoofed_leftmost_xff_ignored(self, monkeypatch) -> None:
+        """Without CF header, the leftmost (client-set) XFF entry must NOT be used;
+        the proxy-appended rightmost entry is the trustworthy one."""
+        app_module = self._app()
+        monkeypatch.setattr(app_module, "_TRUST_PROXY", True)
+        req = _FakeRequest({"X-Forwarded-For": "1.2.3.4, 198.51.100.2"})
+        ip = app_module._get_client_ip(req)
+        assert ip != "1.2.3.4", "Leftmost X-Forwarded-For is client-controlled and spoofable"
+        assert ip == "198.51.100.2"
+
+    def test_proxy_disabled_uses_socket_peer(self, monkeypatch) -> None:
+        app_module = self._app()
+        monkeypatch.setattr(app_module, "_TRUST_PROXY", False)
+        req = _FakeRequest(
+            {"CF-Connecting-IP": "203.0.113.7", "X-Forwarded-For": "1.2.3.4"},
+            client_host="10.0.0.9",
+        )
+        assert app_module._get_client_ip(req) == "10.0.0.9"
+
+    def test_no_proxy_headers_falls_back_to_peer(self, monkeypatch) -> None:
+        app_module = self._app()
+        monkeypatch.setattr(app_module, "_TRUST_PROXY", True)
+        req = _FakeRequest({}, client_host="172.16.0.5")
+        assert app_module._get_client_ip(req) == "172.16.0.5"
+
+
+# ---------------------------------------------------------------------------
 # Issue #173 — Upload rate limiting
 # ---------------------------------------------------------------------------
 
