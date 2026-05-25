@@ -273,6 +273,85 @@ class TestImportCommand:
 
             db.close()
 
+    def test_import_prints_header_summary_and_song_list(self, runner, monkeypatch):
+        """Successful import echoes a service header summary + numbered song list."""
+        from worship_catalog import cli as cli_mod
+        from worship_catalog.import_service import ImportResult, ImportedSong
+
+        fake = ImportResult(
+            service_date="2026-02-15",
+            service_name="AM Worship",
+            songs_imported=2,
+            song_leader="John Smith",
+            preacher="Pastor Dave",
+            sermon_title="Grace Abounds",
+            songs=[ImportedSong(1, "Amazing Grace"), ImportedSong(2, "How Great Thou Art")],
+        )
+        monkeypatch.setattr(cli_mod, "run_import", lambda *a, **k: fake)
+
+        with TemporaryDirectory() as tmpdir:
+            pptx = Path(tmpdir) / "AM Worship 2026.02.15.pptx"
+            pptx.write_bytes(b"PK")  # only needs to exist; run_import is mocked
+            db_path = Path(tmpdir) / "t.db"
+            result = runner.invoke(
+                main, ["import", str(pptx), "--db", str(db_path), "--non-interactive"]
+            )
+
+        assert result.exit_code == 0
+        assert "2026-02-15" in result.output
+        assert "AM Worship" in result.output
+        assert "John Smith" in result.output
+        assert "Pastor Dave" in result.output
+        assert "Grace Abounds" in result.output
+        assert "Songs:" in result.output
+        assert "1. Amazing Grace" in result.output
+        assert "2. How Great Thou Art" in result.output
+
+    def test_import_summary_omits_absent_header_fields(self, runner, monkeypatch):
+        """Empty leader/preacher/sermon are not printed."""
+        from worship_catalog import cli as cli_mod
+        from worship_catalog.import_service import ImportResult, ImportedSong
+
+        fake = ImportResult(
+            service_date="2026-03-01",
+            service_name="PM Worship",
+            songs_imported=1,
+            song_leader=None,
+            preacher=None,
+            sermon_title=None,
+            songs=[ImportedSong(1, "Be Thou My Vision")],
+        )
+        monkeypatch.setattr(cli_mod, "run_import", lambda *a, **k: fake)
+
+        with TemporaryDirectory() as tmpdir:
+            pptx = Path(tmpdir) / "PM Worship 2026.03.01.pptx"
+            pptx.write_bytes(b"PK")
+            db_path = Path(tmpdir) / "t.db"
+            result = runner.invoke(
+                main, ["import", str(pptx), "--db", str(db_path), "--non-interactive"]
+            )
+
+        assert result.exit_code == 0
+        assert "Be Thou My Vision" in result.output
+        assert "Song Leader:" not in result.output
+        assert "Preacher:" not in result.output
+        assert "Sermon:" not in result.output
+
+    @pytest.mark.slow
+    def test_import_real_pptx_lists_songs_and_date(self, runner, pptx_file):
+        """End-to-end: real import surfaces the new summary (Date label + Songs list)."""
+        if not pptx_file.exists():
+            pytest.skip(f"Test PPTX not found: {pptx_file}")
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "test.db"
+            result = runner.invoke(
+                main, ["import", str(pptx_file), "--db", str(db_path), "--non-interactive"]
+            )
+        assert result.exit_code == 0
+        assert "Date:" in result.output
+        assert "Songs:" in result.output
+        assert "1. " in result.output
+
 
 @pytest.mark.integration
 class TestReportCCLICommand:

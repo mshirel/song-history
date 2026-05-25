@@ -12,7 +12,7 @@ import click
 
 from worship_catalog.db import Database
 from worship_catalog.extractor import extract_songs
-from worship_catalog.import_service import run_import
+from worship_catalog.import_service import ImportResult, run_import
 from worship_catalog.log_config import setup as _setup_logging
 from worship_catalog.services.report_service import _STATS_TOP_SONGS as _STATS_TOP_SONGS
 from worship_catalog.services.report_service import compute_stats_data
@@ -134,6 +134,32 @@ def validate(pptx: str, format: str) -> None:
         _log.exception("validate error", extra={"error": str(e)})
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
+
+
+def _echo_import_summary(result: ImportResult) -> None:
+    """Print a brief service-header summary + numbered song list after import."""
+    header = []
+    if result.service_date:
+        header.append(f"Date: {result.service_date}")
+    if result.service_name:
+        header.append(f"Service: {result.service_name}")
+    if header:
+        click.echo(f"    {'  |  '.join(header)}")
+
+    people = []
+    if result.song_leader:
+        people.append(f"Song Leader: {result.song_leader}")
+    if result.preacher:
+        people.append(f"Preacher: {result.preacher}")
+    if result.sermon_title:
+        people.append(f"Sermon: {result.sermon_title}")
+    if people:
+        click.echo(f"    {'  |  '.join(people)}")
+
+    if result.songs:
+        click.echo("    Songs:")
+        for song in result.songs:
+            click.echo(f"      {song.ordinal}. {song.display_title}")
 
 
 @main.command(name="import")
@@ -262,6 +288,7 @@ def import_cmd(
                         f"  ✓ Imported {import_result.songs_imported} songs",
                         err=False,
                     )
+                    _echo_import_summary(import_result)
 
                 except Exception as e:
                     _log.error(

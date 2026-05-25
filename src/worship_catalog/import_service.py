@@ -18,6 +18,14 @@ _log = logging.getLogger(__name__)
 
 
 @dataclass
+class ImportedSong:
+    """A single song surfaced in an import summary."""
+
+    ordinal: int
+    display_title: str
+
+
+@dataclass
 class ImportResult:
     """Summary of a completed import run."""
 
@@ -25,6 +33,10 @@ class ImportResult:
     service_name: str | None
     songs_imported: int
     anomalies: list[dict[str, Any]] = field(default_factory=list)
+    song_leader: str | None = None
+    preacher: str | None = None
+    sermon_title: str | None = None
+    songs: list[ImportedSong] = field(default_factory=list)
 
 
 def run_import(
@@ -157,4 +169,8 @@ def run_import(
         service_name=result.service_name,
         songs_imported=len(result.songs),
         anomalies=result.anomalies,
+        song_leader=result.song_leader,
+        preacher=result.preacher,
+        sermon_title=result.sermon_title,
+        songs=[ImportedSong(s.ordinal, s.display_title) for s in result.songs],
     )
