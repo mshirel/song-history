@@ -36,6 +36,50 @@ def client(db_with_songs, tmp_path, monkeypatch):
     return CsrfAwareClient(TestClient(app_module.app))
 
 
+_STATIC_DIR = Path(__file__).parent.parent / "src" / "worship_catalog" / "web" / "static"
+
+
+class TestUploadJsXssSafety:
+    """upload.js must not render server-provided strings via innerHTML (#401).
+
+    job.error_message and err.message originate from the server (DB-stored
+    exception text and JSON `detail`). Concatenating them into innerHTML is a
+    DOM-XSS sink that CSP `script-src 'self'` does not fully close (e.g.
+    `<img onerror=...>`). They must be rendered with textContent.
+    """
+
+    def _upload_js(self) -> str:
+        return (_STATIC_DIR / "upload.js").read_text()
+
+    @staticmethod
+    def _strip_string_literals(js: str) -> str:
+        """Blank out the CONTENTS of string literals so semicolons inside CSS
+        (e.g. 'color:#c00;') don't masquerade as statement terminators."""
+        import re
+
+        js = re.sub(r"'(?:[^'\\]|\\.)*'", "''", js)
+        js = re.sub(r'"(?:[^"\\]|\\.)*"', '""', js)
+        return re.sub(r"\s+", " ", js)
+
+    def test_error_message_not_assigned_via_innerhtml(self) -> None:
+        import re
+
+        collapsed = self._strip_string_literals(self._upload_js())
+        for sink in ("error_message", "err.message"):
+            # After stripping literals, `[^;]*` reliably spans one statement.
+            pattern = re.compile(r"innerHTML\s*=\s*[^;]*" + re.escape(sink))
+            assert not pattern.search(collapsed), (
+                f"upload.js assigns {sink!r} into innerHTML — DOM-XSS risk. "
+                "Render server-provided strings with textContent instead."
+            )
+
+    def test_server_strings_use_textcontent(self) -> None:
+        js = self._upload_js()
+        assert "textContent" in js, (
+            "upload.js should use textContent to render dynamic server values safely"
+        )
+
+
 # ---------------------------------------------------------------------------
 # Issue #107: HTMX SRI integrity attribute
 # ---------------------------------------------------------------------------

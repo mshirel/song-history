@@ -2,6 +2,10 @@
  * Upload form handler — reads CSRF cookie and submits via fetch with the token header.
  * After a successful upload, polls the job status endpoint until complete (#276).
  * This must be an external file (not inline) to comply with CSP script-src 'self'.
+ *
+ * All server-provided strings (job.error_message, err.message, counts) are
+ * rendered with textContent — never concatenated into innerHTML — so a crafted
+ * error message cannot inject markup (DOM-XSS defence-in-depth, #401).
  */
 (function () {
   "use strict";
@@ -15,6 +19,17 @@
     return token;
   }
 
+  /**
+   * Replace the contents of `el` with a single styled <p> whose text is set
+   * via textContent, so `text` is never interpreted as HTML.
+   */
+  function showMessage(el, color, text) {
+    var p = document.createElement("p");
+    p.style.color = color;
+    p.textContent = text;
+    el.replaceChildren(p);
+  }
+
   /** Poll /jobs/{id} until status is complete or failed (#276). */
   function pollJobStatus(jobId, resultEl) {
     var pollInterval = 2000; // 2 seconds
@@ -24,9 +39,11 @@
     function check() {
       polls++;
       if (polls > maxPolls) {
-        resultEl.innerHTML =
-          '<p style="color:#856404;">Import is still running. ' +
-          'Refresh the page later to check results.</p>';
+        showMessage(
+          resultEl,
+          "#856404",
+          "Import is still running. Refresh the page later to check results."
+        );
         return;
       }
       fetch("/jobs/" + jobId)
@@ -36,26 +53,29 @@
         .then(function (job) {
           if (job.status === "complete") {
             if (job.songs_imported === 0) {
-              resultEl.innerHTML =
-                '<p style="color:#856404;">' +
-                "Import complete \u2014 no songs found. " +
-                "The file may not be a worship slide deck.</p>";
+              showMessage(
+                resultEl,
+                "#856404",
+                "Import complete — no songs found. " +
+                  "The file may not be a worship slide deck."
+              );
             } else {
-              resultEl.innerHTML =
-                '<p style="color:green;">' +
-                "Import complete \u2014 " +
-                job.songs_imported +
-                " song(s) imported.</p>";
+              showMessage(
+                resultEl,
+                "green",
+                "Import complete — " +
+                  job.songs_imported +
+                  " song(s) imported."
+              );
             }
           } else if (job.status === "failed") {
-            resultEl.innerHTML =
-              '<p style="color:#c00;">Import failed: ' +
-              (job.error_message || "unknown error") +
-              "</p>";
+            showMessage(
+              resultEl,
+              "#c00",
+              "Import failed: " + (job.error_message || "unknown error")
+            );
           } else {
-            resultEl.innerHTML =
-              '<p style="color:#495057;">Importing\u2026 ' +
-              '<span class="htmx-indicator" style="opacity:1;">processing</span></p>';
+            showMessage(resultEl, "#495057", "Importing… processing");
             setTimeout(check, pollInterval);
           }
         })
@@ -75,8 +95,8 @@
     var btn = form.querySelector("button[type=submit]");
     var result = document.getElementById("upload-result");
     btn.disabled = true;
-    btn.textContent = "Uploading\u2026";
-    result.innerHTML = "";
+    btn.textContent = "Uploading…";
+    result.replaceChildren();
 
     var data = new FormData(form);
     fetch("/upload", {
@@ -91,13 +111,11 @@
         });
       })
       .then(function (j) {
-        result.innerHTML =
-          '<p style="color:#495057;">Upload accepted \u2014 importing\u2026</p>';
+        showMessage(result, "#495057", "Upload accepted — importing…");
         pollJobStatus(j.job_id, result);
       })
       .catch(function (err) {
-        result.innerHTML =
-          '<p style="color:#c00;">Upload failed: ' + err.message + "</p>";
+        showMessage(result, "#c00", "Upload failed: " + err.message);
       })
       .finally(function () {
         btn.disabled = false;
