@@ -5,7 +5,6 @@ from pathlib import Path
 import pytest
 import yaml
 
-
 CI_PATH = Path(".github/workflows/ci.yml")
 
 
@@ -47,6 +46,50 @@ class TestIntegrationTestStep:
         assert has_count_check, (
             "Integration test step has no minimum test count assertion — "
             "if all integration tests disappear, CI will pass silently"
+        )
+
+
+# Minimum acceptable floor for the main test step (#409).  The suite has
+# 1100+ tests; a floor of 700 left ~400 tests of slack, so whole test files
+# could vanish without CI noticing.  Keep this in step with the suite size.
+_MAIN_TEST_FLOOR_MINIMUM = 950
+
+
+@pytest.mark.skipif(not CI_PATH.exists(), reason="CI config not present")
+class TestMainTestStepFloor:
+    """The main test step's pass-count floor must reflect the real suite size (#409)."""
+
+    def _main_test_run_block(self) -> str:
+        workflow = yaml.safe_load(CI_PATH.read_text())
+        steps = workflow["jobs"]["test"]["steps"]
+        for step in steps:
+            run_cmd = step.get("run", "")
+            # The main test step runs coverage and has a passed-count floor,
+            # distinct from the integration step (which filters by marker).
+            if "--cov" in run_cmd and "integration and not slow" not in run_cmd:
+                return run_cmd
+        raise AssertionError("Main test step (with --cov) not found in ci.yml")
+
+    def test_main_step_has_passed_count_floor(self) -> None:
+        """The main test step must assert a minimum number of passed tests."""
+        run_block = self._main_test_run_block()
+        assert "-lt" in run_block and "passed" in run_block.lower(), (
+            "Main test step has no passed-count floor — whole test files could "
+            "be deleted and CI would still pass."
+        )
+
+    def test_main_step_floor_is_current(self) -> None:
+        """The floor must be >= the agreed minimum, not the stale value of 700."""
+        import re
+
+        run_block = self._main_test_run_block()
+        floors = [int(n) for n in re.findall(r"-lt (\d+)", run_block)]
+        assert floors, "No '-lt <N>' floor comparison found in the main test step"
+        floor = max(floors)
+        assert floor >= _MAIN_TEST_FLOOR_MINIMUM, (
+            f"Main test-count floor is {floor}; expected >= "
+            f"{_MAIN_TEST_FLOOR_MINIMUM}. The suite has 1100+ tests — a low floor "
+            "defeats the purpose of the guard."
         )
 
 

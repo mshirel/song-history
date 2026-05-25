@@ -37,8 +37,11 @@ jobs:
         run: |
           python3 -m pytest --cov=src/worship_catalog --cov-report=term-missing 2>&1 | tee /tmp/test.log
           count=$(grep -oP '\d+ passed' /tmp/test.log | grep -oP '\d+')
-          if [ -z "$count" ] || [ "$count" -lt 700 ]; then
-            echo "ERROR: Expected at least 700 tests to pass, got ${count:-0}"
+          # Floor must track the real suite size (1100+ tests as of 2026-05).
+          # Bump this whenever the suite grows by >50 tests so a deleted test
+          # file can't slip through (#409).
+          if [ -z "$count" ] || [ "$count" -lt 950 ]; then
+            echo "ERROR: Expected at least 950 tests to pass, got ${count:-0}"
             exit 1
           fi
 
