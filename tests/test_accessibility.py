@@ -176,7 +176,41 @@ class TestAriaLiveRegions:
 
     def test_upload_result_has_aria_live(self, client: TestClient) -> None:
         resp = client.get("/upload")
-        assert 'aria-live="assertive"' in resp.text or 'role="alert"' in resp.text
+        # Any live region satisfies #306; #414 makes it polite rather than assertive.
+        assert 'aria-live=' in resp.text
+
+
+class TestUploadResultLiveRegion:
+    """Upload result region must be a polite, atomic live region — not an empty
+    role=alert/assertive element that announces on page load (#414)."""
+
+    @pytest.fixture
+    def client(self, db_with_songs, tmp_path, monkeypatch):
+        inbox = tmp_path / "inbox"
+        inbox.mkdir()
+        monkeypatch.setenv("DB_PATH", str(db_with_songs))
+        monkeypatch.setenv("INBOX_DIR", str(inbox))
+        from importlib import reload
+
+        import worship_catalog.web.app as app_module
+        reload(app_module)
+        return TestClient(app_module.app)
+
+    def test_upload_result_is_polite_not_assertive(self, client: TestClient) -> None:
+        resp = client.get("/upload")
+        assert 'aria-live="assertive"' not in resp.text, (
+            "Upload status is informational — use polite, not assertive (#414)"
+        )
+        assert 'role="alert"' not in resp.text, (
+            "Empty role=alert announces on page load; use a polite live region"
+        )
+
+    def test_upload_result_region_is_polite_atomic(self, client: TestClient) -> None:
+        resp = client.get("/upload")
+        m = re.search(r'id="upload-result"[^>]*>', resp.text)
+        assert m, "upload-result region missing"
+        tag = m.group(0)
+        assert 'aria-live="polite"' in tag and 'aria-atomic="true"' in tag
 
 
 class TestSongsConciseLiveRegion:
