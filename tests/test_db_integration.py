@@ -2973,3 +2973,80 @@ class TestConcurrentInsertOrGet:
             assert cur.fetchone()[0] == 1
         finally:
             check.close()
+
+
+@pytest.mark.integration
+class TestPaginationSnapshotConsistency:
+    """COUNT and SELECT in paginated queries must share one snapshot (#415)."""
+
+    def test_song_pagination_total_matches_rows_under_concurrent_insert(self, tmp_path):
+        db_path = tmp_path / "snap_songs.db"
+        db = Database(db_path)
+        db.connect()
+        db.init_schema()
+        for i in range(10):
+            db.insert_or_get_song(f"song{i:02d}", f"Song {i:02d}")
+
+        # A separate connection inserts a new song right after the COUNT query
+        # runs inside the method, simulating a concurrent importer between the
+        # COUNT and the SELECT.
+        writer = Database(db_path)
+        writer.connect()
+        writer.conn.execute("PRAGMA busy_timeout=5000")
+        state = {"fired": False}
+
+        class _HookCursor:
+            def __init__(self, inner):
+                self._inner = inner
+
+            def execute(self, sql, *args):
+                result = self._inner.execute(sql, *args)
+                if "COUNT(DISTINCT s.id)" in sql and not state["fired"]:
+                    state["fired"] = True
+                    writer.insert_or_get_song("song99", "Song 99")
+                return result
+
+            def __getattr__(self, name):
+                return getattr(self._inner, name)
+
+        class _ConnProxy:
+            """Wrap the connection so cursors are hooked; sqlite3.Connection
+            attributes are read-only, so .cursor can't be patched directly."""
+
+            def __init__(self, inner):
+                self._inner = inner
+
+            def cursor(self):
+                return _HookCursor(self._inner.cursor())
+
+            def __getattr__(self, name):
+                return getattr(self._inner, name)
+
+        real_conn = db.conn
+        db.conn = _ConnProxy(real_conn)
+        try:
+            rows, total = db.query_songs_paginated(page=1, per_page=50)
+        finally:
+            db.conn = real_conn
+            writer.close()
+
+        assert state["fired"], "Hook did not fire — test did not exercise the race"
+        assert len(rows) == total, (
+            f"Pagination inconsistent: {len(rows)} rows but total={total}"
+        )
+        # The concurrent insert must be invisible to this snapshot.
+        assert total == 10, f"total should reflect the pre-insert snapshot, got {total}"
+        db.close()
+
+    def test_song_pagination_page_boundaries(self, tmp_path):
+        """Refactor must not break basic pagination math."""
+        db_path = tmp_path / "snap_pages.db"
+        db = Database(db_path)
+        db.connect()
+        db.init_schema()
+        for i in range(100):
+            db.insert_or_get_song(f"song{i:03d}", f"Song {i:03d}")
+        rows, total = db.query_songs_paginated(page=2, per_page=10)
+        assert total == 100
+        assert len(rows) == 10
+        db.close()
