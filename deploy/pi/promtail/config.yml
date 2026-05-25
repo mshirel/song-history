@@ -1,0 +1,53 @@
+# Promtail config for pi-songs — ships container logs to the homelab Loki.
+#
+# Pushes directly to the Loki host (10.20.100.249:3100), matching the existing
+# promtail convention and the DMZ->Loki:3100 firewall allow. NOTE: loki.tanx95.us
+# resolves to lxc-traefik, a different host/port — do not use it here.
+#
+# Reads the Docker json-file logs read-only; deliberately does NOT mount the
+# Docker socket (this is an internet-exposed host — minimise blast radius).
+server:
+  http_listen_port: 9080   # internal only — not published on the host
+  grpc_listen_port: 0
+
+positions:
+  filename: /etc/promtail/positions.yaml
+
+clients:
+  - url: http://10.20.100.249:3100/loki/api/v1/push
+
+scrape_configs:
+  - job_name: docker
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: docker
+          host: pi-songs
+          __path__: /var/lib/docker/containers/*/*.log
+    pipeline_stages:
+      # 1. Unwrap the Docker json-file envelope ({"log","stream","time"}).
+      - json:
+          expressions:
+            log: log
+            stream: stream
+            time: time
+      - timestamp:
+          source: time
+          format: RFC3339Nano
+      - labels:
+          stream:
+      # 2. The song-history app emits structured JSON on stdout. Promote a
+      #    couple of low-cardinality fields to labels (no-op for non-JSON
+      #    lines like Traefik/watcher output).
+      - json:
+          expressions:
+            level: level
+            logger: logger
+          source: log
+      - labels:
+          level:
+          logger:
+      # 3. Emit the unwrapped application line (drop the Docker envelope).
+      - output:
+          source: log
