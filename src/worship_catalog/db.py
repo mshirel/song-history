@@ -1293,7 +1293,7 @@ class Database:
         to avoid violating ``UNIQUE(service_date, service_name)``.  When
         *dry_run* is True nothing is written.
         """
-        from worship_catalog.pptx_reader import normalize_service_date
+        from worship_catalog.normalize import normalize_service_date
 
         cursor = self._conn.cursor()
         cursor.execute("SELECT id, service_date, service_name FROM services")
