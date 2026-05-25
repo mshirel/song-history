@@ -115,5 +115,25 @@ services:
       traefik:
         condition: service_started
 
+  # ---------------------------------------------------------------------------
+  # promtail — ships this host's container logs to the homelab Loki (#388).
+  # Reads Docker json-file logs read-only; no Docker socket (exposed host).
+  # Requires a DMZ->Loki (10.20.100.249:3100) firewall allow on VLAN 249.
+  # ---------------------------------------------------------------------------
+  promtail:
+    image: grafana/promtail:latest
+    restart: unless-stopped
+    user: root   # needed to read root-owned /var/lib/docker/containers logs
+    command: -config.file=/etc/promtail/config.yml
+    volumes:
+      - /opt/song-history/promtail:/etc/promtail
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+    stop_grace_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
 # Backups are handled by a host cron job running scripts/backup.sh — not a
 # sidecar container.  See docs/pi-deploy.md § Backup for setup instructions.
