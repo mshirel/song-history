@@ -416,13 +416,27 @@ class Database:
         if row:
             return row[0]
 
-        # Insert new
-        cursor.execute(
-            "INSERT INTO songs (canonical_title, display_title) VALUES (?, ?)",
-            (canonical_title, display_title),
-        )
-        self._maybe_commit()
-        return cursor.lastrowid
+        # Insert new — retry-safe under concurrent writers (#400).  A second
+        # importer can insert the same canonical_title between our SELECT and
+        # INSERT; the UNIQUE(canonical_title) constraint then raises
+        # IntegrityError.  Re-read and return the row the other writer created.
+        try:
+            cursor.execute(
+                "INSERT INTO songs (canonical_title, display_title) VALUES (?, ?)",
+                (canonical_title, display_title),
+            )
+            self._maybe_commit()
+            return cursor.lastrowid
+        except sqlite3.IntegrityError:
+            if not self._in_transaction:
+                self._conn.rollback()
+            cursor.execute(
+                "SELECT id FROM songs WHERE canonical_title = ?", (canonical_title,)
+            )
+            row = cursor.fetchone()
+            if row:
+                return row[0]
+            raise
 
     def insert_or_get_song_edition(
         self,
@@ -436,43 +450,55 @@ class Database:
         """Insert or get song edition. Returns edition_id."""
         cursor = self._conn.cursor()
 
-        # Try to get existing - handle NULL comparisons explicitly
-        cursor.execute(
-            """
+        # Try to get existing - handle NULL comparisons explicitly.
+        select_sql = """
             SELECT id FROM song_editions
             WHERE song_id = ?
             AND (publisher = ? OR (publisher IS NULL AND ? IS NULL))
             AND (words_by = ? OR (words_by IS NULL AND ? IS NULL))
             AND (music_by = ? OR (music_by IS NULL AND ? IS NULL))
             AND (arranger = ? OR (arranger IS NULL AND ? IS NULL))
-            """,
-            (
-                song_id,
-                publisher,
-                publisher,
-                words_by,
-                words_by,
-                music_by,
-                music_by,
-                arranger,
-                arranger,
-            ),
+            """
+        select_params = (
+            song_id,
+            publisher,
+            publisher,
+            words_by,
+            words_by,
+            music_by,
+            music_by,
+            arranger,
+            arranger,
         )
+        cursor.execute(select_sql, select_params)
         row = cursor.fetchone()
         if row:
             return row[0]
 
-        # Insert new
-        cursor.execute(
-            """
-            INSERT INTO song_editions
-            (song_id, publisher, words_by, music_by, arranger, copyright_notice)
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (song_id, publisher, words_by, music_by, arranger, copyright_notice),
-        )
-        self._maybe_commit()
-        return cursor.lastrowid
+        # Insert new — retry-safe under concurrent writers when the identity
+        # columns are non-NULL (#400).  NOTE: when publisher/words_by/music_by/
+        # arranger are NULL, SQLite treats each NULL as distinct in the UNIQUE
+        # index, so no IntegrityError fires and concurrent duplicates are still
+        # possible — that NULL-distinct weakness is tracked in #420.
+        try:
+            cursor.execute(
+                """
+                INSERT INTO song_editions
+                (song_id, publisher, words_by, music_by, arranger, copyright_notice)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (song_id, publisher, words_by, music_by, arranger, copyright_notice),
+            )
+            self._maybe_commit()
+            return cursor.lastrowid
+        except sqlite3.IntegrityError:
+            if not self._in_transaction:
+                self._conn.rollback()
+            cursor.execute(select_sql, select_params)
+            row = cursor.fetchone()
+            if row:
+                return row[0]
+            raise
 
     # --- Services ---
 
@@ -624,29 +650,42 @@ class Database:
         cursor = self._conn.cursor()
 
         # Try to get existing - handle NULL comparisons explicitly
-        cursor.execute(
-            """
+        select_sql = """
             SELECT id FROM copy_events
             WHERE service_id = ? AND song_id = ? AND reproduction_type = ?
             AND (song_edition_id = ? OR (song_edition_id IS NULL AND ? IS NULL))
-            """,
-            (service_id, song_id, reproduction_type, song_edition_id, song_edition_id),
+            """
+        select_params = (
+            service_id, song_id, reproduction_type, song_edition_id, song_edition_id,
         )
+        cursor.execute(select_sql, select_params)
         row = cursor.fetchone()
         if row:
             return row[0]
 
-        # Insert new
-        cursor.execute(
-            """
-            INSERT INTO copy_events
-            (service_id, song_id, song_edition_id, reproduction_type, count, reportable)
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (service_id, song_id, song_edition_id, reproduction_type, count, int(reportable)),
-        )
-        self._maybe_commit()
-        return cursor.lastrowid
+        # Insert new — retry-safe under concurrent writers when song_edition_id
+        # is non-NULL (#400).  When song_edition_id is NULL, SQLite's UNIQUE index
+        # treats each NULL as distinct, so no IntegrityError fires and concurrent
+        # duplicates remain possible — tracked in #420.
+        try:
+            cursor.execute(
+                """
+                INSERT INTO copy_events
+                (service_id, song_id, song_edition_id, reproduction_type, count, reportable)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (service_id, song_id, song_edition_id, reproduction_type, count, int(reportable)),
+            )
+            self._maybe_commit()
+            return cursor.lastrowid
+        except sqlite3.IntegrityError:
+            if not self._in_transaction:
+                self._conn.rollback()
+            cursor.execute(select_sql, select_params)
+            row = cursor.fetchone()
+            if row:
+                return row[0]
+            raise
 
     # --- Queries ---
 
