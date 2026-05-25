@@ -407,6 +407,25 @@ class TestCsrfSecretStartup:
         resp = client.get("/health")
         assert resp.status_code == 200
 
+    def test_app_refuses_to_start_without_csrf_secret_in_production(self, tmp_path, monkeypatch):
+        """Outside TESTING mode, a missing CSRF_SECRET must hard-fail at startup so a
+        production deploy can't silently fall back to an ephemeral secret (#406)."""
+        monkeypatch.delenv("CSRF_SECRET", raising=False)
+        monkeypatch.delenv("TESTING", raising=False)
+        monkeypatch.setenv("DB_PATH", str(tmp_path / "csrf_prod.db"))
+        monkeypatch.setenv("INBOX_DIR", str(tmp_path / "inbox_prod"))
+        (tmp_path / "inbox_prod").mkdir()
+        from importlib import reload
+
+        import worship_catalog.web.app as app_module
+        try:
+            with pytest.raises(RuntimeError, match="CSRF_SECRET"):
+                reload(app_module)
+        finally:
+            # Leave a healthy module for the rest of the session.
+            monkeypatch.setenv("TESTING", "1")
+            reload(app_module)
+
     def test_csrf_token_persists_across_requests(self, tmp_path, monkeypatch):
         """CSRF token obtained in one request must be valid in the next."""
         monkeypatch.setenv("CSRF_SECRET", "b" * 64)

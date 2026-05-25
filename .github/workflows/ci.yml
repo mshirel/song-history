@@ -123,7 +123,9 @@ jobs:
 
       - name: Start server
         run: |
-          DB_PATH=/tmp/e2e-test.db INBOX_DIR=/tmp/e2e-inbox \
+          # TESTING=1 lets the app use an ephemeral CSRF secret instead of
+          # requiring CSRF_SECRET, which is mandatory in production (#406).
+          DB_PATH=/tmp/e2e-test.db INBOX_DIR=/tmp/e2e-inbox TESTING=1 \
             python3 -m uvicorn worship_catalog.web.app:app \
               --host 127.0.0.1 --port 8000 &
           # Wait for server to become healthy (max 15s)

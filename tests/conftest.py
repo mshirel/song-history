@@ -1,14 +1,22 @@
 """Shared pytest fixtures for worship-catalog tests."""
 
 import os
-import socket
-from collections.abc import Generator
-from typing import Any
 
-import pytest
+# Mark the whole test session as TESTING so the web app permits an ephemeral
+# CSRF secret instead of hard-failing on a missing CSRF_SECRET (#406). Set at
+# import time — before any test module imports/reloads worship_catalog.web.app —
+# so module-level enforcement never trips during the test run. Individual tests
+# may still delenv("TESTING") to exercise production startup behavior.
+os.environ.setdefault("TESTING", "1")
 
-from worship_catalog.db import Database
-from worship_catalog.pptx_reader import Slide, SlideImage, SlideText
+import socket  # noqa: E402
+from collections.abc import Generator  # noqa: E402
+from typing import Any  # noqa: E402
+
+import pytest  # noqa: E402
+
+from worship_catalog.db import Database  # noqa: E402
+from worship_catalog.pptx_reader import Slide, SlideImage, SlideText  # noqa: E402
 
 # E2E server URL — configurable via env var for CI (default: local dev server)
 E2E_BASE_URL = os.environ.get("E2E_BASE_URL", "http://localhost:8000")

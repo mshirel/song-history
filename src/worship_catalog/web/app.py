@@ -100,13 +100,29 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 app = FastAPI(title="Worship Catalog", lifespan=_lifespan)
 
 # CSRF protection — must be added BEFORE RequestLoggingMiddleware so that 403
-# responses are logged correctly. Secret is read from env; a random value is
-# generated on first start (sufficient for a single-process deployment).
-_CSRF_SECRET = os.environ.get("CSRF_SECRET") or secrets.token_hex(32)
-if not os.environ.get("CSRF_SECRET"):
+# responses are logged correctly. A stable CSRF_SECRET is REQUIRED in
+# production: an ephemeral per-process secret invalidates every outstanding
+# token on restart and fails CSRF validation across workers (#406). Outside
+# TESTING mode a missing secret is a hard error so a misconfigured deploy fails
+# fast instead of silently degrading. TESTING=1 keeps an ephemeral secret for
+# the test suite / local dev.
+_TESTING: bool = os.environ.get("TESTING", "").strip() in ("1", "true", "yes")
+_csrf_secret_env = os.environ.get("CSRF_SECRET")
+if _csrf_secret_env:
+    _CSRF_SECRET = _csrf_secret_env
+elif _TESTING:
+    _CSRF_SECRET = secrets.token_hex(32)
     _log.warning(
-        "CSRF_SECRET not set — using random secret (single-process only). "
-        "Set CSRF_SECRET in .env for multi-process or load-balanced deployments."
+        "CSRF_SECRET not set — using an ephemeral random secret (TESTING mode). "
+        "Set a stable CSRF_SECRET for any real deployment."
+    )
+else:
+    raise RuntimeError(
+        "CSRF_SECRET is not set. Generate a stable secret once with "
+        '`python3 -c "import secrets; print(secrets.token_hex(32))"` and set it '
+        "in the environment so CSRF tokens survive restarts and work across "
+        "workers. For tests or local dev, set TESTING=1 to allow an ephemeral "
+        "random secret."
     )
 # cookie_name is set explicitly so the coupling with client-side JS
 # (upload.js, reports.js) and CsrfAwareClient in conftest.py is visible (#239).
