@@ -504,3 +504,43 @@ class TestUploadWorkflowE2E:
             or "imported" in result_text.lower()
             or "no songs" in result_text.lower()
         ), f"Expected completion message, got: {result_text}"
+
+    def test_upload_then_song_appears_in_songs_library(
+        self, browser_page: Any, upload_probe_pptx
+    ) -> None:
+        """Full pipeline (#412): upload a PPTX → wait for the background import to
+        complete → confirm its (uniquely-titled) song appears in /songs. Proves the
+        upload→thread-pool→SQLite→render path end-to-end, which TestClient can't."""
+        from tests.conftest import UPLOAD_PROBE_SONG_TITLE
+
+        browser_page.goto(f"{BASE_URL}/upload")
+        browser_page.wait_for_load_state("networkidle")
+
+        # Upload the probe deck from a real local file path.
+        browser_page.set_input_files('input[type="file"]', str(upload_probe_pptx))
+        browser_page.click('button[type="submit"]')
+
+        # Wait for the JS poller to report a terminal job state (import runs async).
+        browser_page.wait_for_function(
+            """() => {
+                const el = document.getElementById('upload-result');
+                if (!el) return false;
+                const t = el.textContent.toLowerCase();
+                return t.includes('imported') || t.includes('complete')
+                    || t.includes('no songs') || t.includes('failed');
+            }""",
+            timeout=40000,
+        )
+        result = (browser_page.text_content("#upload-result") or "").lower()
+        assert "failed" not in result, f"Upload reported failure: {result!r}"
+        # "imported" only appears in the success message; "no songs found" does not,
+        # so this requires the import to have actually stored at least one song.
+        assert "imported" in result, f"Upload did not import any songs: {result!r}"
+
+        # The uniquely-titled song must now be in the library (it was not seeded).
+        browser_page.goto(f"{BASE_URL}/songs?q={UPLOAD_PROBE_SONG_TITLE}")
+        browser_page.wait_for_load_state("networkidle")
+        assert browser_page.locator(f"text={UPLOAD_PROBE_SONG_TITLE}").count() > 0, (
+            f"Uploaded song {UPLOAD_PROBE_SONG_TITLE!r} did not appear in /songs — "
+            "the upload→import→display pipeline is broken."
+        )
