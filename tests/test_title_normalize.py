@@ -368,3 +368,22 @@ class TestSermonOutlineNotStripped:
         """'2. Grace' — even short entries with period should not strip."""
         result = strip_title_prefix("2. Grace")
         assert result.startswith("2.")
+
+
+@pytest.mark.unit
+class TestInvalidLineMarkers:
+    """_is_invalid_line marker lists must not contain duplicates (#416)."""
+
+    def test_copyright_marker_list_has_no_duplicates(self):
+        import inspect
+        import re
+
+        src = inspect.getsource(_is_invalid_line)
+        # Only standalone quoted list items (one per line), e.g. `    "copyright",`.
+        # Avoids matching the docstring or inline regex/code.
+        markers = re.findall(r'^\s*"([^"]+)",?\s*$', src, re.MULTILINE)
+        dupes = sorted({m for m in markers if markers.count(m) > 1})
+        assert not dupes, f"Duplicate markers in _is_invalid_line: {dupes}"
+
+    def test_all_rights_reserved_still_filtered(self):
+        assert _is_invalid_line("All Rights Reserved") is True

@@ -229,7 +229,6 @@ def _is_invalid_line(line: str) -> bool:
     if any(marker in lower for marker in [
         "copyright",
         "all rights reserved",
-        "all rights reserved",
         "used by permission",
         "admin. by",
         "c/o",
