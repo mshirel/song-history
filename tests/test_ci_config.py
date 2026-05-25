@@ -93,6 +93,29 @@ class TestMainTestStepFloor:
         )
 
 
+@pytest.mark.skipif(not CI_PATH.exists(), reason="CI config not present")
+class TestSmokeTestCsrf:
+    """The publish smoke test runs the production image, which now hard-requires
+    CSRF_SECRET (#406). The step must supply CSRF_SECRET (or TESTING) or the
+    container exits at startup and the image is never pushed."""
+
+    def _smoke_run_block(self) -> str:
+        workflow = yaml.safe_load(CI_PATH.read_text())
+        for job in workflow["jobs"].values():
+            for step in job.get("steps", []):
+                if step.get("name", "").lower().startswith("smoke test"):
+                    return step.get("run", "")
+        raise AssertionError("Smoke test step not found in ci.yml")
+
+    def test_smoke_test_provides_csrf_config(self) -> None:
+        run_block = self._smoke_run_block()
+        assert "CSRF_SECRET" in run_block or "TESTING" in run_block, (
+            "Smoke test must pass CSRF_SECRET (or TESTING=1) to the container; "
+            "otherwise #406 enforcement makes the image exit at startup and the "
+            "publish push is skipped."
+        )
+
+
 # Known-good SHA for aquasecurity/trivy-action v0.36.0
 _TRIVY_CURRENT_SHA = "ed142fd0673e97e23eac54620cfb913e5ce36c25"
 
