@@ -2,6 +2,7 @@
 
 import logging
 import sqlite3
+import threading
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -2816,3 +2817,159 @@ class TestNormalizeServiceDates:
         # Applying must not raise and must not change the colliding row.
         temp_db.normalize_service_dates()
         assert temp_db.query_service_by_id(b)["service_date"] == "2026.05.10"
+
+
+@pytest.mark.integration
+class TestConcurrentInsertOrGet:
+    """insert_or_get_* must be safe under concurrent writers (#400).
+
+    The web app runs background imports in a ThreadPoolExecutor (up to 4
+    workers), each with its own Database/connection on the same file. Two
+    threads importing files that share a song can both SELECT (find nothing)
+    then both INSERT — the second INSERT hits the UNIQUE constraint. The
+    methods must absorb that IntegrityError and return the existing row.
+
+    A per-connection busy_timeout lets SQLite wait out write-lock contention,
+    so the only failure these tests surface is the UNIQUE-constraint TOCTOU.
+    """
+
+    _THREADS = 4
+    _ITERATIONS = 25
+
+    @staticmethod
+    def _connect(db_path):
+        db = Database(db_path)
+        db.connect()
+        db.conn.execute("PRAGMA busy_timeout=5000")
+        return db
+
+    def test_concurrent_insert_or_get_song_no_error(self, tmp_path):
+        db_path = tmp_path / "race_song.db"
+        init = self._connect(db_path)
+        init.init_schema()
+        init.close()
+
+        errors: list[Exception] = []
+        barrier = threading.Barrier(self._THREADS)
+
+        def worker() -> None:
+            db = self._connect(db_path)
+            try:
+                barrier.wait()
+                for _ in range(self._ITERATIONS):
+                    db.insert_or_get_song("amazing grace", "Amazing Grace")
+            except Exception as exc:  # noqa: BLE001
+                errors.append(exc)
+            finally:
+                db.close()
+
+        threads = [threading.Thread(target=worker) for _ in range(self._THREADS)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert not errors, f"Concurrent insert_or_get_song raised: {errors!r}"
+
+        # Exactly one canonical row must exist despite the stampede.
+        check = self._connect(db_path)
+        try:
+            cur = check.conn.cursor()
+            cur.execute("SELECT COUNT(*) FROM songs WHERE canonical_title = ?", ("amazing grace",))
+            assert cur.fetchone()[0] == 1
+        finally:
+            check.close()
+
+    @pytest.mark.xfail(
+        reason="#420: NULL columns in song_editions UNIQUE are distinct in SQLite, "
+        "so concurrent NULL-credit inserts still duplicate (retry can't catch — no error)",
+        strict=False,
+    )
+    def test_concurrent_insert_or_get_song_edition_no_error(self, tmp_path):
+        db_path = tmp_path / "race_edition.db"
+        init = self._connect(db_path)
+        init.init_schema()
+        song_id = init.insert_or_get_song("how great thou art", "How Great Thou Art")
+        init.close()
+
+        errors: list[Exception] = []
+        barrier = threading.Barrier(self._THREADS)
+
+        def worker() -> None:
+            db = self._connect(db_path)
+            try:
+                barrier.wait()
+                for _ in range(self._ITERATIONS):
+                    db.insert_or_get_song_edition(song_id, words_by="Stuart K. Hine")
+            except Exception as exc:  # noqa: BLE001
+                errors.append(exc)
+            finally:
+                db.close()
+
+        threads = [threading.Thread(target=worker) for _ in range(self._THREADS)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert not errors, f"Concurrent insert_or_get_song_edition raised: {errors!r}"
+
+        check = self._connect(db_path)
+        try:
+            cur = check.conn.cursor()
+            cur.execute(
+                "SELECT COUNT(*) FROM song_editions WHERE song_id = ? AND words_by = ?",
+                (song_id, "Stuart K. Hine"),
+            )
+            assert cur.fetchone()[0] == 1
+        finally:
+            check.close()
+
+    @pytest.mark.xfail(
+        reason="#420: NULL song_edition_id in copy_events UNIQUE is distinct in SQLite, "
+        "so concurrent NULL-edition inserts still duplicate (retry can't catch — no error)",
+        strict=False,
+    )
+    def test_concurrent_insert_or_get_copy_event_no_error(self, tmp_path):
+        db_path = tmp_path / "race_copy.db"
+        init = self._connect(db_path)
+        init.init_schema()
+        song_id = init.insert_or_get_song("blessed assurance", "Blessed Assurance")
+        service_id = init.insert_or_update_service(
+            "2026-02-15", "AM Worship", "f.pptx", "hash1"
+        )
+        init.close()
+
+        errors: list[Exception] = []
+        barrier = threading.Barrier(self._THREADS)
+
+        def worker() -> None:
+            db = self._connect(db_path)
+            try:
+                barrier.wait()
+                for _ in range(self._ITERATIONS):
+                    db.insert_or_get_copy_event(service_id, song_id, "projection")
+            except Exception as exc:  # noqa: BLE001
+                errors.append(exc)
+            finally:
+                db.close()
+
+        threads = [threading.Thread(target=worker) for _ in range(self._THREADS)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert not errors, f"Concurrent insert_or_get_copy_event raised: {errors!r}"
+
+        check = self._connect(db_path)
+        try:
+            cur = check.conn.cursor()
+            cur.execute(
+                "SELECT COUNT(*) FROM copy_events WHERE service_id = ? AND song_id = ? "
+                "AND reproduction_type = ?",
+                (service_id, song_id, "projection"),
+            )
+            assert cur.fetchone()[0] == 1
+        finally:
+            check.close()
