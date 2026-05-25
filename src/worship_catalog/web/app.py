@@ -35,7 +35,7 @@ from fastapi import (
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from prometheus_client import CONTENT_TYPE_LATEST, REGISTRY, Counter, generate_latest
+from prometheus_client import CONTENT_TYPE_LATEST, REGISTRY, Counter, Histogram, generate_latest
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette_csrf import CSRFMiddleware  # type: ignore[attr-defined]
@@ -184,16 +184,35 @@ except ValueError:
         "http_requests_total"
     ]
 
+try:
+    # Request-latency histogram so Grafana/Prometheus can compute p50/p95/p99
+    # per route (#395). Default buckets suit sub-second web responses.
+    _HTTP_REQUEST_DURATION_SECONDS: Histogram = Histogram(
+        "http_request_duration_seconds",
+        "HTTP request duration in seconds by method and path",
+        ["method", "path"],
+    )
+except ValueError:
+    _HTTP_REQUEST_DURATION_SECONDS = REGISTRY._names_to_collectors[  # type: ignore[assignment]
+        "http_request_duration_seconds"
+    ]
+
 
 class _PrometheusMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
+        start = time.perf_counter()
         response = await call_next(request)
         if request.url.path != "/metrics":
+            elapsed = time.perf_counter() - start
             _HTTP_REQUESTS_TOTAL.labels(
                 method=request.method,
                 path=request.url.path,
                 status_code=str(response.status_code),
             ).inc()
+            _HTTP_REQUEST_DURATION_SECONDS.labels(
+                method=request.method,
+                path=request.url.path,
+            ).observe(elapsed)
         return response
 
 
