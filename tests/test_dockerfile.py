@@ -29,6 +29,28 @@ class TestDependencyReproducibility:
         ), "Dockerfile does not reference any lockfile — builds are non-reproducible"
 
 
+class TestDockerfilePythonVersion:
+    """The base image must use a GA (non-pre-release) Python version (#403)."""
+
+    def test_dockerfile_uses_stable_python(self):
+        """Dockerfile base image must use a GA (non-pre-release) Python version.
+
+        Python 3.14 was pre-release as of 2026-05-25; GA versions are <= 3.13.
+        pyproject.toml targets 3.10 and CI runs on 3.12, so production must not
+        run an untested pre-release interpreter.
+        """
+        import re
+
+        dockerfile = (_PROJECT_ROOT / "Dockerfile").read_text()
+        m = re.search(r"FROM python:(\d+)\.(\d+)", dockerfile)
+        assert m, "Could not find a 'FROM python:X.Y' line in the Dockerfile"
+        major, minor = int(m.group(1)), int(m.group(2))
+        assert (major, minor) <= (3, 13), (
+            f"Dockerfile uses Python {major}.{minor} which is pre-release. "
+            "Use a GA Python version (e.g., 3.12 or 3.13)."
+        )
+
+
 class TestDockerfileCMD:
     """Verify the Dockerfile CMD is safe and meaningful."""
 
