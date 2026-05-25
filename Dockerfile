@@ -1,6 +1,8 @@
 # Pin base image to exact digest to prevent supply-chain drift (#26)
-# python:3.14-slim — Dependabot bumped from 3.12; CVE scan passing at this digest
-FROM python:3.14-slim@sha256:fb83750094b46fd6b8adaa80f66e2302ecbe45d513f6cece637a841e1025b4ca
+# python:3.12-slim — GA release matching CI (3.12) and the pyproject target (#403).
+# Reverted from a Dependabot bump to 3.14 (pre-release). Dependabot must be
+# restricted to GA Python minors so it cannot re-introduce a pre-release runtime.
+FROM python:3.12-slim@sha256:090ba77e2958f6af52a5341f788b50b032dd4ca28377d2893dcf1ecbdfdfe203
 
 WORKDIR /app
 
