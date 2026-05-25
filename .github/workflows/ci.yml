@@ -188,7 +188,9 @@ jobs:
           }
 
       - name: Dependency audit (pip-audit)
-        # CVE-2026-3219 affects pip itself; no fix released yet — ignore until pip patch ships
+        # CVE-2026-3219 affects pip itself; no fix released upstream yet.
+        # Re-evaluate at every Dependabot bump of requirements.lock and remove
+        # this --ignore-vuln once a fixed pip ships. Tracked by #408.
         run: python3 -m pip_audit --skip-editable --ignore-vuln CVE-2026-3219
 
       # --- Static security analysis ----------------------------------------
