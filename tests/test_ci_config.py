@@ -116,6 +116,26 @@ class TestSmokeTestCsrf:
         )
 
 
+@pytest.mark.skipif(not CI_PATH.exists(), reason="CI config not present")
+class TestCveSkipReviewNote:
+    """Every pip-audit CVE ignore must carry a re-evaluation note so suppressed
+    vulnerabilities don't become a permanent ratchet (#408)."""
+
+    def test_cve_skips_have_review_note(self) -> None:
+        import re
+
+        ci = CI_PATH.read_text()
+        skips = re.findall(r"--ignore-vuln\s+(CVE-\d{4}-\d+)", ci)
+        # If there are no skips, there's nothing to review — trivially fine.
+        for cve in skips:
+            idx = ci.index(cve)
+            surrounding = ci[max(0, idx - 300):idx + 100].lower()
+            assert "re-evaluate" in surrounding or "review" in surrounding, (
+                f"CVE skip for {cve} has no re-evaluation note. Add a comment "
+                "stating when to remove it (e.g. 'Re-evaluate when pip >= X.Y ships')."
+            )
+
+
 # Known-good SHA for aquasecurity/trivy-action v0.36.0
 _TRIVY_CURRENT_SHA = "ed142fd0673e97e23eac54620cfb913e5ce36c25"
 
