@@ -29,6 +29,31 @@ class TestDependencyReproducibility:
         ), "Dockerfile does not reference any lockfile — builds are non-reproducible"
 
 
+class TestDockerfileHealthcheck:
+    """The image must define a HEALTHCHECK so non-compose deploys have a probe (#402)."""
+
+    def test_dockerfile_has_healthcheck(self):
+        dockerfile = (_PROJECT_ROOT / "Dockerfile").read_text()
+        assert "HEALTHCHECK" in dockerfile, (
+            "Dockerfile must define a HEALTHCHECK so standalone 'docker run' "
+            "invocations (not using the compose healthcheck) detect a dead process."
+        )
+
+    def test_healthcheck_targets_health_endpoint(self):
+        dockerfile = (_PROJECT_ROOT / "Dockerfile").read_text()
+        idx = dockerfile.find("HEALTHCHECK")
+        assert idx != -1
+        assert "/health" in dockerfile[idx:], "HEALTHCHECK must probe the /health endpoint"
+
+    def test_healthcheck_interval_reasonable(self):
+        import re
+
+        dockerfile = (_PROJECT_ROOT / "Dockerfile").read_text()
+        m = re.search(r"--interval=(\d+)s", dockerfile)
+        assert m, "HEALTHCHECK must set an explicit --interval"
+        assert int(m.group(1)) <= 60, "HEALTHCHECK interval should be <= 60s"
+
+
 class TestDockerfilePythonVersion:
     """The base image must use a GA (non-pre-release) Python version (#403)."""
 
