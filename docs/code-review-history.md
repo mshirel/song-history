@@ -7,6 +7,53 @@ Each review produces GitHub issues for every significant finding.
 
 ---
 
+## Review 10 — 2026-05-25
+
+**Branch:** `agent/claude/import-summary-output`
+**Reviewer:** Claude Code (full-code-review skill)
+**Issues created:** #399–#416
+
+### Findings
+
+| Issue | Persona | Title | Severity |
+|-------|---------|-------|----------|
+| #399 | Architect | `Database.normalize_service_dates()` imports from `pptx_reader` — cross-layer coupling | MED |
+| #400 | Developer | `insert_or_get_song/edition/copy_event` have TOCTOU race under concurrent background imports | HIGH |
+| #401 | Developer | `upload.js` injects `job.error_message` into `innerHTML` without HTML escaping | MED |
+| #402 | DevOps | Dockerfile has no `HEALTHCHECK` instruction | MED |
+| #403 | DevOps | Dockerfile base image is Python 3.14 (pre-release) | HIGH |
+| #404 | Security | `X-Forwarded-For` leftmost-IP trust is bypassable — rate limiter can be evaded | MED |
+| #405 | Security | Missing `Strict-Transport-Security` response header | MED |
+| #406 | Security | `CSRF_SECRET` env var not enforced — process restart invalidates all live tokens | MED |
+| #408 | DevSecOps | `pip-audit` CVE skip for CVE-2026-3219 has no expiry mechanism | LOW |
+| #409 | QA | CI test-count floor (700) is stale — actual suite is 1010+ tests | HIGH |
+| #410 | QA | No snapshot test for CCLI CSV column headers | MED |
+| #411 | PM | CCLI report has no inline preview before downloading CSV | LOW |
+| #412 | UAT | No E2E Playwright test verifying songs appear in /songs after successful upload | MED |
+| #413 | Accessibility | `aria-live` on song table announces full table content on every HTMX search swap | MED |
+| #414 | Accessibility | Upload result div uses `role=alert`/`aria-live=assertive` on initially empty element | LOW |
+| #415 | Database | Pagination queries (COUNT + SELECT) run without a shared read snapshot | LOW |
+| #416 | Developer | `_is_invalid_line()` has duplicate "all rights reserved" string — dead code | LOW |
+
+### Grades
+
+| Persona | Grade | Notes |
+|---------|-------|-------|
+| Senior Architect | A- | Clean separation of concerns; cross-layer import in db→pptx_reader is the main structural debt |
+| Senior Developer | B+ | Strong typing and error handling; TOCTOU race in concurrent inserts is a real data-integrity bug; innerHTML XSS risk |
+| Senior DevOps | B+ | Excellent CI pipeline; Python 3.14 pre-release image and missing Dockerfile HEALTHCHECK are operational risks |
+| Senior Security Architect | B+ | CSP, CSRF, parameterized queries, rate limiting all solid; X-Forwarded-For bypass and missing HSTS are gaps |
+| Senior DevSecOps | A- | SHA-pinned actions, Trivy, SBOM, gitleaks all present; CVE skip without expiry is process debt |
+| Senior QA Engineer | B+ | 1010+ tests with strong coverage; CI floor stale, no CCLI header snapshot, mutation testing non-blocking |
+| Product Manager | B+ | Full feature set for the use case; CCLI preview would reduce admin friction |
+| UAT Analyst | B+ | Strong Playwright coverage for CRUD and forms; missing full upload-to-songs pipeline verification |
+| Accessibility Specialist | B+ | Good foundations (skip-nav, aria-sort, labels); aria-live verbosity and assertive role misuse are UX issues |
+| Database / Data Engineer | A- | WAL, indexes, migrations, whitelist-validated ORDER BY all correct; pagination read consistency is minor |
+
+**Overall: B+**
+
+---
+
 ## Review 9 — 2026-03-21
 
 **Branch:** `main`
