@@ -135,5 +135,28 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  # ---------------------------------------------------------------------------
+  # cloudflared — Cloudflare Tunnel for public access to songs.highland-coc.com
+  # (#388 Phase 2). Outbound-only to the Cloudflare edge (no inbound ports);
+  # reaches the app over the internal compose network. Token-managed: the
+  # public-hostname -> service (http://song-history:8000) ingress is configured
+  # in the Cloudflare Zero Trust dashboard. Set TUNNEL_TOKEN in .env.
+  # ---------------------------------------------------------------------------
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run --token ${TUNNEL_TOKEN}
+    # If IPS in Prevention mangles the QUIC/UDP edge connection, force HTTP/2:
+    # command: tunnel --no-autoupdate --protocol http2 run --token ${TUNNEL_TOKEN}
+    depends_on:
+      song-history:
+        condition: service_started
+    stop_grace_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
 # Backups are handled by a host cron job running scripts/backup.sh — not a
 # sidecar container.  See docs/pi-deploy.md § Backup for setup instructions.
