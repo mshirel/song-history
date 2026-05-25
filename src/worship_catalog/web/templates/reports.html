@@ -68,8 +68,21 @@
           <input type="date" id="ccli-to" name="end_date" required>
         </div>
       </div>
-      <button type="submit">Download CSV</button>
+      <div style="display:flex;align-items:center;gap:0.75rem;flex-wrap:wrap;">
+        <button type="submit">Download CSV</button>
+        {# Preview the count inline before downloading so an empty range is
+           obvious without opening the CSV (#411). hx-headers (CSRF) is set
+           globally by reports.js. #}
+        <button type="button" class="btn"
+                style="background:#495057;"
+                hx-post="/reports/ccli/preview"
+                hx-include="#ccli-form"
+                hx-target="#ccli-result"
+                hx-indicator="#ccli-spinner">Preview</button>
+        <span id="ccli-spinner" class="htmx-indicator" style="color:#6c757d;font-size:0.85rem;">loading…</span>
+      </div>
     </form>
+    <div id="ccli-result" style="margin-top:0.5rem;"></div>
   </div>
 </section>
 <script src="/static/reports.js"></script>
