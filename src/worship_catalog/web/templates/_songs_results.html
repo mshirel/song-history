@@ -20,7 +20,8 @@
   <p><code>worship-catalog import "AM Worship 2026.01.01.pptx"</code></p>
 </div>
 {% else %}
-<div class="card" style="padding:0;overflow:hidden;" aria-live="polite">
+<div class="card" style="padding:0;" aria-live="polite">
+  <div class="table-wrap">
   <table>
     <caption class="sr-only">Song library — sortable by title, credits, or performance count</caption>
     <thead>
@@ -36,6 +37,7 @@
       {% include "songs_rows.html" %}
     </tbody>
   </table>
+  </div>
 </div>
 {% endif %}
 

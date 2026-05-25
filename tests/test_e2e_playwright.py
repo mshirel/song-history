@@ -127,3 +127,60 @@ class TestNavigationHTMX:
 
         skip_link = browser_page.locator("a.skip-nav")
         assert skip_link.count() >= 1, "Skip-to-main-content link must be present"
+
+
+@pytest.mark.e2e
+class TestMobileResponsive:
+    """Issue #394 — UI must not overflow horizontally on a 390px phone viewport."""
+
+    MOBILE = {"width": 390, "height": 800}
+
+    def test_songs_no_horizontal_overflow_mobile(self, browser_page) -> None:
+        """/songs must not cause the page body to scroll sideways on a phone."""
+        browser_page.set_viewport_size(self.MOBILE)
+        browser_page.goto(f"{BASE_URL}/songs")
+        browser_page.wait_for_load_state("networkidle")
+
+        scroll_w = browser_page.evaluate("document.body.scrollWidth")
+        client_w = browser_page.evaluate("document.body.clientWidth")
+        assert scroll_w <= client_w + 1, (
+            f"/songs overflows horizontally: scrollWidth={scroll_w} clientWidth={client_w}"
+        )
+
+    def test_services_no_horizontal_overflow_mobile(self, browser_page) -> None:
+        """/services must not cause the page body to scroll sideways on a phone."""
+        browser_page.set_viewport_size(self.MOBILE)
+        browser_page.goto(f"{BASE_URL}/services")
+        browser_page.wait_for_load_state("networkidle")
+
+        scroll_w = browser_page.evaluate("document.body.scrollWidth")
+        client_w = browser_page.evaluate("document.body.clientWidth")
+        assert scroll_w <= client_w + 1, (
+            f"/services overflows horizontally: scrollWidth={scroll_w} clientWidth={client_w}"
+        )
+
+    def test_song_row_is_tappable_mobile(self, browser_page) -> None:
+        """A song row link must be tappable and navigate on a phone viewport."""
+        browser_page.set_viewport_size(self.MOBILE)
+        browser_page.goto(f"{BASE_URL}/songs")
+        browser_page.wait_for_load_state("networkidle")
+
+        first_row_link = browser_page.locator("tbody tr td a").first
+        if first_row_link.count() == 0:
+            pytest.skip("No song rows in the DB to tap")
+        first_row_link.click()
+        browser_page.wait_for_load_state("networkidle")
+        assert "/songs/" in browser_page.url, "Tapping a song row did not open the detail page"
+
+    def test_nav_toggle_reveals_links_mobile(self, browser_page) -> None:
+        """Nav links are hidden until the CSS-only hamburger is toggled (no JS)."""
+        browser_page.set_viewport_size(self.MOBILE)
+        browser_page.goto(f"{BASE_URL}/songs")
+        browser_page.wait_for_load_state("networkidle")
+
+        services_link = browser_page.locator("nav a[href='/services']")
+        assert services_link.count() >= 1
+        assert not services_link.is_visible(), "Nav links should be collapsed on mobile by default"
+
+        browser_page.click("label[for='nav-toggle']")
+        assert services_link.is_visible(), "Hamburger toggle did not reveal the nav links"

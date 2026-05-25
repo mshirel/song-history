@@ -41,6 +41,7 @@
 {% endif %}
 
 <h3 style="font-size:1rem;margin:1rem 0 0.5rem;">{% if all_songs %}All Songs{% else %}Top Songs{% endif %}</h3>
+<div class="table-wrap">
 <table>
   <caption class="sr-only">{% if all_songs %}All songs{% else %}Top songs{% endif %} by performance count</caption>
   <thead>
@@ -62,6 +63,7 @@
     {% endfor %}
   </tbody>
 </table>
+</div>
 
 {% if leader_breakdown %}
 <h3 style="font-size:1rem;margin:1.5rem 0 0.75rem;">By Song Leader</h3>
@@ -88,6 +90,7 @@
 {% endif %}
 
 <h3 style="font-size:1rem;margin:1.5rem 0 0.5rem;">Services</h3>
+<div class="table-wrap">
 <table>
   <thead>
     <tr>
@@ -106,5 +109,6 @@
     {% endfor %}
   </tbody>
 </table>
+</div>
 
 {% endif %}

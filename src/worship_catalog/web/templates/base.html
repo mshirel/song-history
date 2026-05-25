@@ -22,11 +22,21 @@
       display: flex;
       align-items: center;
       gap: 2rem;
+      flex-wrap: wrap;
     }
     nav .brand-logo { height: 2.5rem; width: auto; border-radius: 6px; background: rgba(255,255,255,0.9); padding: 2px 4px; }
     nav .brand { font-weight: 700; font-size: 1.1rem; letter-spacing: .02em; }
+    nav .nav-links { display: flex; align-items: center; gap: 2rem; }
     nav a { color: #ccc; text-decoration: none; font-size: 0.95rem; }
     nav a:hover, nav a.active { color: #fff; }
+
+    /* CSS-only hamburger: hidden checkbox toggles .nav-links on small screens (no JS, CSP-safe). */
+    #nav-toggle { position: absolute; opacity: 0; width: 1px; height: 1px; }
+    .nav-burger { display: none; cursor: pointer; color: #fff; font-size: 1.5rem; line-height: 1; padding: 0.25rem 0.5rem; margin-left: auto; }
+    #nav-toggle:focus-visible + .nav-burger { outline: 2px solid #fff; outline-offset: 2px; }
+
+    /* Horizontal-scroll container so wide tables don't overflow narrow screens. */
+    .table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
 
     main { max-width: 1100px; margin: 2rem auto; padding: 0 1rem; }
 
@@ -107,6 +117,29 @@
       z-index: 9999;
     }
     .skip-nav:focus { top: 0; }
+
+    @media (max-width: 640px) {
+      nav { padding: 0.6rem 1rem; gap: 0.75rem; }
+      .nav-burger { display: block; }
+      nav .nav-links {
+        display: none;
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 0.75rem;
+        flex-basis: 100%;
+        padding-top: 0.5rem;
+      }
+      #nav-toggle:checked ~ .nav-links { display: flex; }
+      nav .nav-links a { padding: 0.4rem 0; font-size: 1.05rem; }
+
+      main { margin: 1rem auto; padding: 0 0.75rem; }
+      h1 { font-size: 1.3rem; }
+
+      .tabs { flex-wrap: wrap; }
+      .search-row { flex-wrap: wrap; }
+      .search-row input { max-width: 100%; }
+      button, .btn { padding: 0.6rem 1rem; }
+    }
   </style>
 </head>
 <body>
@@ -115,12 +148,16 @@
 <nav>
   <img src="/static/highland-logo.png" alt="Highland logo" class="brand-logo">
   <span class="brand">Highland Worship Catalog</span>
-  <a href="/songs" {% if request.url.path.startswith('/songs') %}class="active"{% endif %}>Songs</a>
-  <a href="/services" {% if request.url.path.startswith('/services') %}class="active"{% endif %}>Services</a>
-  <a href="/reports" {% if request.url.path == '/reports' %}class="active"{% endif %}>Reports</a>
-  <a href="/leaders" {% if request.url.path.startswith('/leaders') %}class="active"{% endif %}>Leaders</a>
-  <a href="/about" {% if request.url.path == '/about' %}class="active"{% endif %}>About</a>
-  <a href="/upload" {% if request.url.path == '/upload' %}class="active"{% endif %}>Upload</a>
+  <input type="checkbox" id="nav-toggle" aria-label="Toggle navigation menu">
+  <label class="nav-burger" for="nav-toggle"><span aria-hidden="true">&#9776;</span><span class="sr-only">Menu</span></label>
+  <div class="nav-links">
+    <a href="/songs" {% if request.url.path.startswith('/songs') %}class="active"{% endif %}>Songs</a>
+    <a href="/services" {% if request.url.path.startswith('/services') %}class="active"{% endif %}>Services</a>
+    <a href="/reports" {% if request.url.path == '/reports' %}class="active"{% endif %}>Reports</a>
+    <a href="/leaders" {% if request.url.path.startswith('/leaders') %}class="active"{% endif %}>Leaders</a>
+    <a href="/about" {% if request.url.path == '/about' %}class="active"{% endif %}>About</a>
+    <a href="/upload" {% if request.url.path == '/upload' %}class="active"{% endif %}>Upload</a>
+  </div>
 </nav>
 </header>
 <main id="main">

@@ -2929,6 +2929,53 @@ class TestBranding:
         assert b"Highland" in response.content
 
 
+class TestResponsiveLayout:
+    """Issue #394 — the public UI must be usable on phones."""
+
+    def test_viewport_meta_present(self, client):
+        """base.html must set a device-width viewport (guard against regression)."""
+        resp = client.get("/songs")
+        assert resp.status_code == 200
+        assert 'name="viewport"' in resp.text
+        assert "width=device-width" in resp.text
+
+    def test_base_has_media_query(self, client):
+        """Responsive rules require at least one @media breakpoint in the stylesheet."""
+        resp = client.get("/songs")
+        assert resp.status_code == 200
+        assert "@media" in resp.text, "base.html has no media query — UI is not responsive"
+
+    def test_songs_table_in_scroll_container(self, client):
+        """Songs table must sit inside a horizontal-scroll container for narrow screens."""
+        resp = client.get("/songs")
+        assert resp.status_code == 200
+        assert "table-wrap" in resp.text, (
+            "Songs table is not wrapped in a .table-wrap scroll container"
+        )
+
+    def test_services_table_in_scroll_container(self, client):
+        """Services table must sit inside a horizontal-scroll container."""
+        resp = client.get("/services")
+        assert resp.status_code == 200
+        assert "table-wrap" in resp.text, (
+            "Services table is not wrapped in a .table-wrap scroll container"
+        )
+
+    def test_nav_has_css_only_toggle(self, client):
+        """Mobile nav must collapse via a CSS-only checkbox toggle (no JS, CSP-safe)."""
+        resp = client.get("/songs")
+        assert resp.status_code == 200
+        html = resp.text
+        assert 'id="nav-toggle"' in html, "No #nav-toggle checkbox for the hamburger menu"
+        assert 'for="nav-toggle"' in html, "No <label for=nav-toggle> hamburger control"
+        # The toggle must not introduce any new inline script (CSP blocks inline JS).
+        import re
+        inline_scripts = re.findall(r"<script(?![^>]*\bsrc\b)[^>]*>", html)
+        assert not inline_scripts, (
+            f"Nav added {len(inline_scripts)} inline <script> tag(s) blocked by CSP"
+        )
+
+
 class TestHtmxSelfHosted:
     """htmx must be served from our own static files, not a CDN."""
 
