@@ -158,6 +158,64 @@ def synthetic_pptx(tmp_path_factory):
     return out
 
 
+# A song title that does NOT exist in the E2E seed data, so an upload→songs
+# pipeline test can prove the upload actually imported new content (#412).
+# Must be the SHORTEST candidate on its slide: select_best_title() prefers the
+# shortest line, so the lyric lines below are deliberately longer than this.
+UPLOAD_PROBE_SONG_TITLE = "Zzqprobe"
+
+
+@pytest.fixture(scope="session")
+def upload_probe_pptx(tmp_path_factory):
+    """Build a synthetic PPTX whose song title is unique to the upload pipeline
+    test, so asserting it appears in /songs proves the import ran (#412)."""
+    from pptx import Presentation
+    from pptx.util import Inches
+
+    prs = Presentation()
+    blank_layout = prs.slide_layouts[6]
+
+    def add_text_box(slide, lines):
+        box = slide.shapes.add_textbox(Inches(0.5), Inches(0.5), Inches(9), Inches(2))
+        tf = box.text_frame
+        tf.word_wrap = True
+        for i, line in enumerate(lines):
+            if i == 0:
+                tf.paragraphs[0].text = line
+            else:
+                tf.add_paragraph().text = line
+        return tf
+
+    # Slide 0: metadata table (unique date + service so it's a fresh service row).
+    meta = prs.slides.add_slide(blank_layout)
+    table = meta.shapes.add_table(5, 2, Inches(1), Inches(1), Inches(8), Inches(2)).table
+    for r, (k, v) in enumerate([
+        ("Date", "2026-09-09"),
+        ("Service", "E2E Upload Pipeline Test"),
+        ("Song Leader", "Probe"),
+        ("Preacher", "Probe"),
+        ("Sermon Title", "Pipeline"),
+    ]):
+        table.cell(r, 0).text = k
+        table.cell(r, 1).text = v
+
+    # Song slides — publisher marker is required to start a song group. Lyric
+    # lines are intentionally longer than the title so select_best_title() (which
+    # prefers the shortest candidate) chooses the title, not a lyric line.
+    for lines in (
+        [UPLOAD_PROBE_SONG_TITLE,
+         "This is the first sustained lyric line of the probe anthem here",
+         "Words: Test Author", "PaperlessHymnal.com"],
+        [UPLOAD_PROBE_SONG_TITLE,
+         "This is the second sustained lyric line of the probe anthem here"],
+    ):
+        add_text_box(prs.slides.add_slide(blank_layout), lines)
+
+    out = tmp_path_factory.mktemp("probe_pptx") / "E2E Upload 2026.09.09.pptx"
+    prs.save(out)
+    return out
+
+
 @pytest.fixture
 def db_with_songs(tmp_path):
     """Create a minimal test DB with one service, two songs, and copy events."""
