@@ -701,6 +701,33 @@ async def reports_stats_xlsx(
     )
 
 
+@app.post("/reports/ccli/preview", response_class=HTMLResponse)
+async def reports_ccli_preview(
+    request: Request,
+    start_date: str = Form(...),
+    end_date: str = Form(...),
+    db: Database = Depends(get_db),  # noqa: B008
+) -> HTMLResponse:
+    """Inline summary of the CCLI report before download (#411).
+
+    Lets a church admin confirm the date range covers data before downloading a
+    CSV (which previously could be silently empty).
+    """
+    _validate_date_range(start_date, end_date)
+    events = db.query_copy_events(start_date, end_date)
+    unique_songs = len({e["song_id"] for e in events})
+    return templates.TemplateResponse(
+        request,
+        "ccli_preview.html",
+        {
+            "start_date": start_date,
+            "end_date": end_date,
+            "event_count": len(events),
+            "unique_songs": unique_songs,
+        },
+    )
+
+
 @app.post("/reports/ccli")
 async def reports_ccli_csv(
     start_date: str = Form(...),

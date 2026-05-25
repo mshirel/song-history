@@ -690,6 +690,51 @@ class TestCcliCsvContract:
         )
 
 
+class TestCcliPreview:
+    """Inline CCLI preview before download — count/summary (#411)."""
+
+    def test_preview_shows_event_count_for_nonempty_range(self, client):
+        resp = client.post(
+            "/reports/ccli/preview",
+            data={"start_date": "2020-01-01", "end_date": "2030-12-31"},
+        )
+        assert resp.status_code == 200
+        text = resp.text.lower()
+        assert "event" in text or "reproduction" in text
+        assert "song" in text
+        assert any(str(n) in resp.text for n in (1, 2))
+
+    def test_preview_empty_range_shows_zero(self, client):
+        resp = client.post(
+            "/reports/ccli/preview",
+            data={"start_date": "1990-01-01", "end_date": "1990-12-31"},
+        )
+        assert resp.status_code == 200
+        assert "0" in resp.text
+        assert "no " in resp.text.lower()
+
+    def test_preview_validates_dates(self, client):
+        resp = client.post(
+            "/reports/ccli/preview",
+            data={"start_date": "not-a-date", "end_date": "2026-12-31"},
+        )
+        assert resp.status_code == 422
+
+    def test_preview_is_html_partial_not_full_page(self, client):
+        resp = client.post(
+            "/reports/ccli/preview",
+            data={"start_date": "2020-01-01", "end_date": "2030-12-31"},
+        )
+        assert "<!doctype" not in resp.text.lower()
+        assert "<html" not in resp.text.lower()
+
+    def test_reports_page_has_preview_button_and_download(self, client):
+        resp = client.get("/reports")
+        assert resp.status_code == 200
+        assert "/reports/ccli/preview" in resp.text
+        assert 'action="/reports/ccli"' in resp.text
+
+
 class TestCcliReportWebRoute:
     """Web UI must provide CCLI report generation (#201)."""
 
