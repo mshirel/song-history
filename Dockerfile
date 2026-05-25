@@ -65,5 +65,11 @@ ENV INBOX_DIR=/inbox
 # Drop privileges before running anything
 USER appuser
 
+# Liveness probe baked into the image so standalone `docker run` (and any
+# orchestrator that doesn't use the compose healthcheck) can detect a dead
+# uvicorn process (#402). Mirrors the compose healthcheck.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD ["python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+
 ENTRYPOINT ["uvicorn"]
 CMD ["worship_catalog.web.app:app", "--host", "0.0.0.0", "--port", "8000"]
