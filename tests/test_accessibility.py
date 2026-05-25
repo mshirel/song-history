@@ -179,6 +179,35 @@ class TestAriaLiveRegions:
         assert 'aria-live="assertive"' in resp.text or 'role="alert"' in resp.text
 
 
+class TestSongsConciseLiveRegion:
+    """Songs search must announce a concise result count, not the whole table (#413)."""
+
+    def test_songs_table_card_is_not_the_live_region(self, client: TestClient) -> None:
+        """The table-wrapping card must no longer carry aria-live — otherwise every
+        HTMX search keystroke re-announces all rows to screen readers."""
+        resp = client.get("/songs")
+        assert 'style="padding:0;" aria-live="polite"' not in resp.text, (
+            "Songs table card is still an aria-live region — it announces the entire "
+            "table on every search keystroke. Move aria-live to a concise count region."
+        )
+
+    def test_songs_has_concise_count_live_region(self, client: TestClient) -> None:
+        resp = client.get("/songs")
+        import re
+
+        m = re.search(r'id="songs-count"[^>]*>', resp.text)
+        assert m, "Expected a concise #songs-count live region"
+        tag = m.group(0)
+        assert 'aria-live="polite"' in tag and 'aria-atomic="true"' in tag, (
+            "The count region must be a polite, atomic live region"
+        )
+
+    def test_songs_htmx_partial_includes_count(self, client: TestClient) -> None:
+        """The HTMX search response must re-render the count so it updates on search."""
+        resp = client.get("/songs?q=Amazing", headers={"HX-Request": "true"})
+        assert 'id="songs-count"' in resp.text
+
+
 class TestErrorPageContrast:
     """Tests for error page text contrast (#307)."""
 
