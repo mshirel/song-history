@@ -634,6 +634,62 @@ class TestStatsExport:
         assert "/reports/stats/csv" in response.text
 
 
+class TestCcliCsvContract:
+    """Exact column contract for the CCLI and stats CSV exports (#410).
+
+    Substring checks elsewhere don't catch a reordered, renamed, or added
+    column — which would mis-map data submitted to the CCLI licensing board.
+    These lock the precise header list and column count.
+    """
+
+    CCLI_HEADERS = ["Date", "Service", "Title", "CCLI#", "Reproduction Type", "Count"]
+    STATS_HEADERS = ["Rank", "Title", "Credits", "Count"]
+
+    def test_ccli_csv_headers_exact_and_ordered(self, client):
+        import csv
+        import io
+
+        resp = client.post(
+            "/reports/ccli",
+            data={"start_date": "2020-01-01", "end_date": "2030-12-31"},
+        )
+        assert resp.status_code == 200
+        headers = next(csv.reader(io.StringIO(resp.text)))
+        assert headers == self.CCLI_HEADERS, (
+            f"CCLI CSV header contract changed. Expected {self.CCLI_HEADERS}, "
+            f"got {headers}. Update the report writer if this is intentional."
+        )
+
+    def test_ccli_csv_every_row_has_six_columns(self, client):
+        import csv
+        import io
+
+        resp = client.post(
+            "/reports/ccli",
+            data={"start_date": "2020-01-01", "end_date": "2030-12-31"},
+        )
+        rows = list(csv.reader(io.StringIO(resp.text)))
+        assert len(rows) >= 2, "Fixture should yield at least one CCLI data row"
+        for row in rows:
+            assert len(row) == len(self.CCLI_HEADERS), (
+                f"Expected {len(self.CCLI_HEADERS)} columns, got {len(row)}: {row}"
+            )
+
+    def test_stats_csv_headers_exact_and_ordered(self, client):
+        import csv
+        import io
+
+        resp = client.post(
+            "/reports/stats/csv",
+            data={"start_date": "2020-01-01", "end_date": "2030-12-31"},
+        )
+        assert resp.status_code == 200
+        headers = next(csv.reader(io.StringIO(resp.text)))
+        assert headers == self.STATS_HEADERS, (
+            f"Stats CSV header contract changed. Expected {self.STATS_HEADERS}, got {headers}."
+        )
+
+
 class TestCcliReportWebRoute:
     """Web UI must provide CCLI report generation (#201)."""
 
