@@ -129,8 +129,14 @@ _CSP_POLICY: str = (
 )
 
 
+# HSTS is opt-in via HTTPS_ONLY so that HTTP-only local/CI deployments don't
+# send a policy that would lock a browser into HTTPS for the host (#405).
+_HSTS_ENABLED: bool = os.environ.get("HTTPS_ONLY", "").strip() in ("1", "true", "yes")
+_HSTS_VALUE: str = "max-age=31536000; includeSubDomains"
+
+
 class _SecurityHeadersMiddleware(BaseHTTPMiddleware):
-    """Attach security headers to every response (#197, #282)."""
+    """Attach security headers to every response (#197, #282, #405)."""
 
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         response = await call_next(request)
@@ -140,6 +146,10 @@ class _SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers["Permissions-Policy"] = (
             "camera=(), microphone=(), geolocation=(), payment=()"
         )
+        # Only assert HSTS when the deployment is HTTPS-only (behind Cloudflare/
+        # Traefik). Sending it over plain HTTP would wrongly pin clients to HTTPS.
+        if _HSTS_ENABLED:
+            response.headers["Strict-Transport-Security"] = _HSTS_VALUE
         return response
 
 

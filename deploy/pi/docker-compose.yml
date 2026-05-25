@@ -80,6 +80,8 @@ services:
       # defaults to "highland".
       UPLOAD_PASSWORD: "${UPLOAD_PASSWORD:-}"
       UPLOAD_USERNAME: "${UPLOAD_USERNAME:-highland}"
+      # Emit HSTS when served over HTTPS (behind Cloudflare/Traefik) (#405).
+      HTTPS_ONLY: "${HTTPS_ONLY:-}"
     volumes:
       - /opt/song-history/data:/data
       - /opt/song-history/inbox:/inbox

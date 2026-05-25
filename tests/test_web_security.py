@@ -939,6 +939,47 @@ class TestSecurityHeaders:
         assert "Content-Security-Policy" in resp.headers
 
 
+class TestHstsHeader:
+    """Strict-Transport-Security must be emitted when HTTPS_ONLY is enabled (#405).
+
+    HSTS is gated on HTTPS_ONLY so that local/CI deployments served over plain
+    HTTP do not send an HSTS policy that would lock browsers into HTTPS.
+    """
+
+    def _client(self, tmp_path, monkeypatch, https_only):
+        monkeypatch.setenv("DB_PATH", str(tmp_path / "hsts.db"))
+        inbox = tmp_path / "hsts_inbox"
+        inbox.mkdir(exist_ok=True)
+        monkeypatch.setenv("INBOX_DIR", str(inbox))
+        if https_only is None:
+            monkeypatch.delenv("HTTPS_ONLY", raising=False)
+        else:
+            monkeypatch.setenv("HTTPS_ONLY", https_only)
+        from importlib import reload
+
+        import worship_catalog.web.app as app_module
+        reload(app_module)
+        return TestClient(app_module.app)
+
+    def test_hsts_present_when_https_only_enabled(self, tmp_path, monkeypatch):
+        import re
+
+        client = self._client(tmp_path, monkeypatch, "1")
+        resp = client.get("/health")
+        hsts = resp.headers.get("Strict-Transport-Security", "")
+        assert hsts, "HSTS header missing when HTTPS_ONLY=1"
+        m = re.search(r"max-age=(\d+)", hsts)
+        assert m and int(m.group(1)) >= 31536000, f"HSTS max-age too low: {hsts!r}"
+        assert "includeSubDomains" in hsts
+
+    def test_hsts_absent_by_default(self, tmp_path, monkeypatch):
+        client = self._client(tmp_path, monkeypatch, None)
+        resp = client.get("/health")
+        assert "Strict-Transport-Security" not in resp.headers, (
+            "HSTS must not be sent unless HTTPS_ONLY is enabled (would break HTTP dev)"
+        )
+
+
 # ---------------------------------------------------------------------------
 # #388 Phase 1: simple password gate on the upload page
 # ---------------------------------------------------------------------------
