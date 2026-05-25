@@ -45,6 +45,11 @@ services:
     image: ghcr.io/mshirel/song-history:latest
     restart: unless-stopped
     init: true
+    # The app image ships a HEALTHCHECK that probes :8000 (#402); the watcher
+    # runs an import loop and serves no HTTP, so disable the inherited check to
+    # avoid a permanently "unhealthy" container and false monitoring alerts.
+    healthcheck:
+      disable: true
     entrypoint: /bin/sh
     command: >
       -c "while true; do /app/scripts/import-new.sh; sleep 300; done"
