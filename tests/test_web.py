@@ -3706,6 +3706,23 @@ class TestPrometheusMetrics:
         response = client.get("/metrics")
         assert "http_requests_total" in response.text
 
+    def test_metrics_contains_request_duration_histogram(self, client):
+        """/metrics must expose a request-duration histogram for latency SLOs (#395)."""
+        client.get("/songs")  # generate at least one observation
+        response = client.get("/metrics")
+        assert "http_request_duration_seconds" in response.text, (
+            "No request-duration histogram exposed — cannot compute latency percentiles"
+        )
+        # A Prometheus Histogram exposes _bucket, _count and _sum series.
+        assert "http_request_duration_seconds_bucket" in response.text
+        assert "http_request_duration_seconds_count" in response.text
+
+    def test_request_duration_histogram_labeled_by_method(self, client):
+        """The duration histogram must be labelled so per-route latency is queryable."""
+        client.get("/songs")
+        response = client.get("/metrics")
+        assert 'method="GET"' in response.text
+
     def test_metrics_exempt_from_csrf(self, raw_client):
         """GET /metrics must work without a CSRF token."""
         response = raw_client.get("/metrics")
