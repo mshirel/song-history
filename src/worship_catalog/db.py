@@ -240,6 +240,28 @@ class Database:
         if not self._in_transaction:
             self._conn.commit()
 
+    @contextmanager
+    def _read_snapshot(self) -> Generator[None, None, None]:
+        """Run a group of read queries inside one transaction so they share a
+        single, consistent SQLite snapshot (#415).
+
+        Pagination issues a COUNT then a SELECT; without a shared snapshot a
+        concurrent writer committing between them yields a total that disagrees
+        with the returned rows. A DEFERRED read transaction freezes the snapshot
+        at the first read; WAL still allows concurrent writers. No-ops (and does
+        not roll back) if a transaction is already active, to avoid disturbing an
+        enclosing transaction().
+        """
+        if self._conn.in_transaction:
+            yield
+            return
+        self._conn.execute("BEGIN")
+        try:
+            yield
+        finally:
+            # Read-only: rollback simply releases the snapshot/read lock.
+            self._conn.rollback()
+
     def init_schema(self) -> None:
         """Create database schema and apply any pending migrations.
 
@@ -1111,27 +1133,31 @@ class Database:
             LEFT JOIN service_songs ss ON ss.song_id = s.id
         """
         offset = (page - 1) * per_page
-        if search:
-            like = f"%{_escape_like(search)}%"
-            where = """
-                WHERE (LOWER(s.display_title) LIKE LOWER(?) ESCAPE '\\'
-                   OR LOWER(COALESCE(se.words_by, '')) LIKE LOWER(?) ESCAPE '\\'
-                   OR LOWER(COALESCE(se.music_by, '')) LIKE LOWER(?) ESCAPE '\\')
-            """
-            cursor.execute(count_base + where, (like, like, like))
-            total: int = cursor.fetchone()[0]
-            cursor.execute(
-                base + where + "GROUP BY s.id ORDER BY " + order + " LIMIT ? OFFSET ?",
-                (like, like, like, per_page, offset),
-            )
-        else:
-            cursor.execute(count_base)
-            total = cursor.fetchone()[0]
-            cursor.execute(
-                base + "GROUP BY s.id ORDER BY " + order + " LIMIT ? OFFSET ?",
-                (per_page, offset),
-            )
-        return [dict(row) for row in cursor.fetchall()], total
+        # COUNT and SELECT share one snapshot so the total can't disagree with
+        # the rows when a concurrent import commits between them (#415).
+        with self._read_snapshot():
+            if search:
+                like = f"%{_escape_like(search)}%"
+                where = """
+                    WHERE (LOWER(s.display_title) LIKE LOWER(?) ESCAPE '\\'
+                       OR LOWER(COALESCE(se.words_by, '')) LIKE LOWER(?) ESCAPE '\\'
+                       OR LOWER(COALESCE(se.music_by, '')) LIKE LOWER(?) ESCAPE '\\')
+                """
+                cursor.execute(count_base + where, (like, like, like))
+                total: int = cursor.fetchone()[0]
+                cursor.execute(
+                    base + where + "GROUP BY s.id ORDER BY " + order + " LIMIT ? OFFSET ?",
+                    (like, like, like, per_page, offset),
+                )
+            else:
+                cursor.execute(count_base)
+                total = cursor.fetchone()[0]
+                cursor.execute(
+                    base + "GROUP BY s.id ORDER BY " + order + " LIMIT ? OFFSET ?",
+                    (per_page, offset),
+                )
+            rows = [dict(row) for row in cursor.fetchall()]
+        return rows, total
 
     def query_all_services_paginated(
         self,
@@ -1173,24 +1199,27 @@ class Database:
         order = f"{sort} {_safe_sort_dir(sort_dir)}, sv.service_name"
         offset = (page - 1) * per_page
         cursor = self._conn.cursor()
-        cursor.execute(
-            f"SELECT COUNT(DISTINCT sv.id) FROM services sv {where_sql}",
-            params,
-        )
-        total: int = cursor.fetchone()[0]
-        cursor.execute(
-            f"""
-            SELECT sv.*, COUNT(DISTINCT ss.song_id) AS song_count
-            FROM services sv
-            LEFT JOIN service_songs ss ON ss.service_id = sv.id
-            {where_sql}
-            GROUP BY sv.id
-            ORDER BY {order}
-            LIMIT ? OFFSET ?
-            """,
-            params + [per_page, offset],
-        )
-        return [dict(row) for row in cursor.fetchall()], total
+        # COUNT and SELECT share one snapshot for consistent pagination (#415).
+        with self._read_snapshot():
+            cursor.execute(
+                f"SELECT COUNT(DISTINCT sv.id) FROM services sv {where_sql}",
+                params,
+            )
+            total: int = cursor.fetchone()[0]
+            cursor.execute(
+                f"""
+                SELECT sv.*, COUNT(DISTINCT ss.song_id) AS song_count
+                FROM services sv
+                LEFT JOIN service_songs ss ON ss.service_id = sv.id
+                {where_sql}
+                GROUP BY sv.id
+                ORDER BY {order}
+                LIMIT ? OFFSET ?
+                """,
+                params + [per_page, offset],
+            )
+            rows = [dict(row) for row in cursor.fetchall()]
+        return rows, total
 
     # --- Cleanup queries (#266) ---
 
