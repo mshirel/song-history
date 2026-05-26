@@ -2315,10 +2315,13 @@ class TestDatabaseIndexes:
                 break
         assert has_date_index, "Missing index on services.service_date"
 
-    def test_schema_version_is_3(self, temp_db):
+    def test_schema_version_matches_current(self, temp_db):
+        from worship_catalog.db import _SCHEMA_VERSION
+
         cursor = temp_db.cursor()
         cursor.execute("PRAGMA user_version")
-        assert cursor.fetchone()[0] == 3
+        assert cursor.fetchone()[0] == _SCHEMA_VERSION
+        assert _SCHEMA_VERSION == 4  # bumped for NULL-safe unique indexes (#420)
 
 
 @pytest.mark.integration
@@ -2880,11 +2883,6 @@ class TestConcurrentInsertOrGet:
         finally:
             check.close()
 
-    @pytest.mark.xfail(
-        reason="#420: NULL columns in song_editions UNIQUE are distinct in SQLite, "
-        "so concurrent NULL-credit inserts still duplicate (retry can't catch — no error)",
-        strict=False,
-    )
     def test_concurrent_insert_or_get_song_edition_no_error(self, tmp_path):
         db_path = tmp_path / "race_edition.db"
         init = self._connect(db_path)
@@ -2925,11 +2923,6 @@ class TestConcurrentInsertOrGet:
         finally:
             check.close()
 
-    @pytest.mark.xfail(
-        reason="#420: NULL song_edition_id in copy_events UNIQUE is distinct in SQLite, "
-        "so concurrent NULL-edition inserts still duplicate (retry can't catch — no error)",
-        strict=False,
-    )
     def test_concurrent_insert_or_get_copy_event_no_error(self, tmp_path):
         db_path = tmp_path / "race_copy.db"
         init = self._connect(db_path)
@@ -3049,4 +3042,60 @@ class TestPaginationSnapshotConsistency:
         rows, total = db.query_songs_paginated(page=2, per_page=10)
         assert total == 100
         assert len(rows) == 10
+        db.close()
+
+
+@pytest.mark.integration
+class TestMigrationV4NullSafeUnique:
+    """Migration v4 adds NULL-safe unique indexes + de-dupes existing rows (#420)."""
+
+    def test_v4_creates_null_safe_indexes(self, tmp_path):
+        db = Database(tmp_path / "v4idx.db")
+        db.connect()
+        db.init_schema()
+        cur = db.conn.cursor()
+        cur.execute(
+            "SELECT name FROM sqlite_master WHERE type='index' AND name IN "
+            "('idx_song_editions_identity', 'idx_copy_events_identity')"
+        )
+        names = {r[0] for r in cur.fetchall()}
+        assert names == {"idx_song_editions_identity", "idx_copy_events_identity"}
+        db.close()
+
+    def test_v4_dedupes_existing_null_duplicates(self, tmp_path):
+        db = Database(tmp_path / "v4dedup.db")
+        db.connect()
+        db.init_schema()
+        cur = db.conn.cursor()
+        # Simulate a pre-v4 DB: drop the NULL-safe indexes + unmark migration 4,
+        # so we can insert the duplicate NULL rows the constraint now forbids.
+        cur.execute("DROP INDEX IF EXISTS idx_song_editions_identity")
+        cur.execute("DROP INDEX IF EXISTS idx_copy_events_identity")
+        cur.execute("DELETE FROM schema_migrations WHERE version = 4")
+        song_id = db.insert_or_get_song("dup song", "Dup Song")
+        svc = db.insert_or_update_service("2026-02-15", "AM Worship", "f.pptx", "h1")
+        cur.execute("INSERT INTO song_editions (song_id, words_by) VALUES (?, NULL)", (song_id,))
+        cur.execute("INSERT INTO song_editions (song_id, words_by) VALUES (?, NULL)", (song_id,))
+        cur.execute(
+            "INSERT INTO copy_events (service_id, song_id, reproduction_type) VALUES (?,?,?)",
+            (svc, song_id, "projection"),
+        )
+        cur.execute(
+            "INSERT INTO copy_events (service_id, song_id, reproduction_type) VALUES (?,?,?)",
+            (svc, song_id, "projection"),
+        )
+        db.conn.commit()
+
+        # Re-run migrations → v4 de-dupes and recreates the indexes.
+        db._apply_migrations()
+        db.conn.commit()
+
+        cur.execute("SELECT COUNT(*) FROM song_editions WHERE song_id = ?", (song_id,))
+        assert cur.fetchone()[0] == 1, "duplicate NULL-credit editions must be collapsed"
+        cur.execute(
+            "SELECT COUNT(*) FROM copy_events WHERE service_id=? AND song_id=? "
+            "AND reproduction_type='projection'",
+            (svc, song_id),
+        )
+        assert cur.fetchone()[0] == 1, "duplicate NULL-edition copy_events must be collapsed"
         db.close()

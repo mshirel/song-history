@@ -290,3 +290,46 @@ def test_canonicalize_title_golden(display_title: str, expected_canonical: str) 
     assert result == expected_canonical, (
         f"canonicalize_title({display_title!r}) = {result!r}, expected {expected_canonical!r}"
     )
+
+
+from worship_catalog.normalize import is_non_song_title  # noqa: E402
+
+
+class TestScriptureRefVariants:
+    """Older (pre-2021) decks use dot separators and a leading dash (#427)."""
+
+    @pytest.mark.parametrize("title", [
+        "– 2 Corinthians 3.5",      # leading en-dash + dot separator
+        "2 Corinthians 3.5",         # dot separator, no dash
+        "Romans 12.20",              # dot separator, single ref
+        "– Romans 12.20 – 21",       # leading dash + dot + range
+        "Romans 12.20 – 21",         # dot + range, no dash
+        "- John 3.16",               # hyphen prefix variant
+        "John 3:16",                 # existing colon form still works
+        "1 Peter 1:3-4",             # existing colon + range still works
+    ])
+    def test_scripture_refs_are_non_songs(self, title):
+        assert is_non_song_title(title) is True
+
+    @pytest.mark.parametrize("title", [
+        "Is He Worthy?",             # real song ending in '?'
+        "Amazing Grace",
+        "10,000 Reasons",            # number + comma, real title
+        "Days of Elijah",
+        "Come Thou Fount",
+        "Christ for the World We Sing",
+    ])
+    def test_real_titles_are_not_dropped(self, title):
+        assert is_non_song_title(title) is False
+
+
+class TestSermonPointFragments:
+    """Secondary/exploratory (#427): short sermon points with no scripture/dash
+    signal. Deferred — no heuristic catches 'The problem?' without also dropping
+    legitimate short titles like 'Is He Worthy?'."""
+
+    @pytest.mark.xfail(reason="#427: no safe heuristic that preserves 'Is He Worthy?'",
+                       strict=False)
+    @pytest.mark.parametrize("title", ["The problem?", "Straightness. Fairness."])
+    def test_short_sermon_points_are_non_songs(self, title):
+        assert is_non_song_title(title) is True
