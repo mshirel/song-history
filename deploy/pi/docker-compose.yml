@@ -87,6 +87,9 @@ services:
       UPLOAD_USERNAME: "${UPLOAD_USERNAME:-highland}"
       # Emit HSTS when served over HTTPS (behind Cloudflare/Traefik) (#405).
       HTTPS_ONLY: "${HTTPS_ONLY:-}"
+      # Behind the Cloudflare tunnel, trust CF-Connecting-IP for the real client
+      # IP so the upload rate limiter buckets per client, not per tunnel (#448).
+      TRUSTED_PROXY: "${TRUSTED_PROXY:-1}"
     volumes:
       - /opt/song-history/data:/data
       - /opt/song-history/inbox:/inbox
