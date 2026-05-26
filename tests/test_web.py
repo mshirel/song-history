@@ -3778,16 +3778,20 @@ class TestPrometheusMetrics:
         response = client.get("/metrics")
         assert response.status_code == 200
 
-    def test_metrics_denied_via_cloudflare_tunnel(self, client):
-        """Requests arriving through the public Cloudflare tunnel carry
-        CF-Connecting-IP and must be denied — /metrics is internal-only (#449)."""
-        response = client.get("/metrics", headers={"CF-Connecting-IP": "203.0.113.7"})
-        assert response.status_code == 404, (
-            "/metrics must not be reachable from the public tunnel"
-        )
+    def test_metrics_denied_when_proxied(self, client):
+        """Requests reaching the app through the public proxy chain (Cloudflare
+        tunnel → Traefik) carry forwarding headers and must be denied — /metrics
+        is internal-only (#449). The real tunnel sends X-Forwarded-For (not
+        CF-Connecting-IP), so both must be treated as public."""
+        for hdr in ("X-Forwarded-For", "CF-Connecting-IP", "X-Forwarded-Host"):
+            response = client.get("/metrics", headers={hdr: "203.0.113.7"})
+            assert response.status_code == 404, (
+                f"/metrics must not be reachable from the public proxy chain (via {hdr})"
+            )
 
     def test_metrics_allowed_for_internal_scrape(self, client):
-        """The internal Prometheus scrape (no CF-Connecting-IP) must still work."""
+        """The internal Prometheus scrape (direct to :8000, no forwarding headers)
+        must still work."""
         response = client.get("/metrics")
         assert response.status_code == 200
         assert "http_requests_total" in response.text
