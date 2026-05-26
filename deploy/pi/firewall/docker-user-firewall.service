@@ -1,0 +1,12 @@
+[Unit]
+Description=Restrict Docker-published ports (8000/2000) to Prometheus (#447)
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/docker-user-firewall.sh
+
+[Install]
+WantedBy=multi-user.target
