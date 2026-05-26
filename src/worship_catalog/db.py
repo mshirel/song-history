@@ -14,7 +14,7 @@ _log = logging.getLogger("worship_catalog.db")
 # Bump this integer whenever the schema changes.  Each new version must have a
 # corresponding entry in _MIGRATIONS.  connect() raises SchemaVersionError if the
 # on-disk version is *higher* than this value (DB created by a newer release).
-_SCHEMA_VERSION: int = 3
+_SCHEMA_VERSION: int = 4
 
 # Ordered dict of version → list of SQL statements.  Each migration brings the
 # DB from version (N-1) to version N.  Migration 1 is the baseline — it
@@ -109,6 +109,57 @@ _MIGRATIONS: dict[int, list[str]] = {
         "ALTER TABLE services_new RENAME TO services",
         "PRAGMA foreign_keys=ON",
         "CREATE INDEX IF NOT EXISTS idx_services_date ON services(service_date)",
+    ],
+    4: [
+        # NULL-safe uniqueness for song_editions + copy_events (#420). SQLite's
+        # table-level UNIQUE treats each NULL as distinct, so NULL-credit editions
+        # and NULL-edition copy_events could duplicate under concurrent imports.
+        # De-dupe existing rows (repointing child FKs to the keeper), then add
+        # expression UNIQUE indexes that COALESCE NULLs so the constraint actually
+        # enforces. With these in place, insert_or_get_* raises IntegrityError on a
+        # concurrent NULL duplicate and the existing retry-on-conflict (#400) wins.
+        # --- song_editions: map each row to its canonical keeper (min id) ---
+        """
+        CREATE TEMP TABLE _edition_keep AS
+        SELECT e1.id AS dup_id,
+               (SELECT MIN(e2.id) FROM song_editions e2
+                 WHERE e2.song_id = e1.song_id
+                   AND COALESCE(e2.publisher,'') = COALESCE(e1.publisher,'')
+                   AND COALESCE(e2.words_by,'')  = COALESCE(e1.words_by,'')
+                   AND COALESCE(e2.music_by,'')  = COALESCE(e1.music_by,'')
+                   AND COALESCE(e2.arranger,'')  = COALESCE(e1.arranger,'')) AS keep_id
+        FROM song_editions e1
+        """,
+        """
+        UPDATE service_songs SET song_edition_id =
+            (SELECT keep_id FROM _edition_keep WHERE dup_id = service_songs.song_edition_id)
+        WHERE song_edition_id IN (SELECT dup_id FROM _edition_keep WHERE dup_id <> keep_id)
+        """,
+        """
+        UPDATE copy_events SET song_edition_id =
+            (SELECT keep_id FROM _edition_keep WHERE dup_id = copy_events.song_edition_id)
+        WHERE song_edition_id IN (SELECT dup_id FROM _edition_keep WHERE dup_id <> keep_id)
+        """,
+        "DELETE FROM song_editions WHERE id IN "
+        "(SELECT dup_id FROM _edition_keep WHERE dup_id <> keep_id)",
+        "DROP TABLE _edition_keep",
+        # --- copy_events: collapse duplicates (after the edition repoint) ---
+        """
+        DELETE FROM copy_events WHERE id NOT IN (
+            SELECT MIN(id) FROM copy_events
+            GROUP BY service_id, song_id, COALESCE(song_edition_id, -1), reproduction_type
+        )
+        """,
+        # --- NULL-safe unique indexes (NULLs collapsed via COALESCE) ---
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_song_editions_identity
+        ON song_editions(song_id, COALESCE(publisher,''), COALESCE(words_by,''),
+                         COALESCE(music_by,''), COALESCE(arranger,''))
+        """,
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_copy_events_identity
+        ON copy_events(service_id, song_id, COALESCE(song_edition_id, -1), reproduction_type)
+        """,
     ],
 }
 
