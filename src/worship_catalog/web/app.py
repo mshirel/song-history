@@ -1156,15 +1156,26 @@ async def upload(
 
 
 @app.get("/jobs")
-async def list_jobs(db: Database = Depends(get_db)) -> JSONResponse:  # noqa: B008
-    """Return all import job records, newest first."""
+async def list_jobs(
+    db: Database = Depends(get_db),  # noqa: B008
+    _: None = Depends(require_upload_auth),  # noqa: B008
+) -> JSONResponse:
+    """Return all import job records, newest first.
+
+    Gated behind the upload auth (#451): the job log leaks uploaded filenames
+    and raw error messages, so it's part of the write/admin surface, not public.
+    """
     jobs = db.list_import_jobs()
     return JSONResponse(content=jobs)
 
 
 @app.get("/jobs/{job_id}")
-async def get_job(job_id: str, db: Database = Depends(get_db)) -> JSONResponse:  # noqa: B008
-    """Return a single import job record or 404."""
+async def get_job(
+    job_id: str,
+    db: Database = Depends(get_db),  # noqa: B008
+    _: None = Depends(require_upload_auth),  # noqa: B008
+) -> JSONResponse:
+    """Return a single import job record or 404 (auth-gated like /jobs, #451)."""
     job = db.get_import_job(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="Job not found")

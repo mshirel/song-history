@@ -1091,3 +1091,18 @@ class TestUploadAuth:
     def test_upload_open_when_password_unset(self, client):
         # The default fixture sets no UPLOAD_PASSWORD → upload stays open.
         assert client.get("/upload").status_code == 200
+
+    # /jobs is part of the same write/admin workflow and leaks uploaded
+    # filenames + raw error messages — it must be gated like /upload (#451).
+    def test_jobs_list_requires_auth_when_password_set(self, auth_client):
+        assert auth_client.get("/jobs").status_code == 401
+
+    def test_job_detail_requires_auth_when_password_set(self, auth_client):
+        assert auth_client.get("/jobs/anything").status_code == 401
+
+    def test_jobs_list_succeeds_with_credentials(self, auth_client):
+        assert auth_client.get("/jobs", auth=("highland", "s3cret")).status_code == 200
+
+    def test_jobs_open_when_password_unset(self, client):
+        # Backwards-compatible: scripted consumers keep working when no password.
+        assert client.get("/jobs").status_code == 200
