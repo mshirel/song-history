@@ -358,23 +358,36 @@ class _UploadRateLimiter:
     (useful for tests that don't need persistence).
     """
 
-    _CREATE_TABLE = (
-        "CREATE TABLE IF NOT EXISTS rate_limit_events "
-        "(client_ip TEXT NOT NULL, timestamp REAL NOT NULL)"
-    )
-    _CREATE_INDEX = (
-        "CREATE INDEX IF NOT EXISTS idx_rle_ip_ts "
-        "ON rate_limit_events (client_ip, timestamp)"
-    )
-
-    def __init__(self, db_path: Path | None = None) -> None:
+    def __init__(
+        self,
+        db_path: Path | None = None,
+        limit: int | None = None,
+        window_seconds: int | None = None,
+        table: str = "rate_limit_events",
+    ) -> None:
         self._lock = threading.Lock()
         self._db_path = db_path
+        # When no explicit override is given, fall back to the module constants
+        # at CALL time (see _limit/_window) so tests that patch them still work.
+        self._limit_override = limit
+        self._window_override = window_seconds
+        # Table name is an internal literal (never user input) — safe to inline.
+        self._table = table
         self._conn: Any = None  # persistent SQLite connection (#341)
         # In-memory fallback when no db_path is given
         self._timestamps: dict[str, list[float]] = defaultdict(list)
         if db_path is not None:
             self._init_db()
+
+    @property
+    def _limit(self) -> int:
+        return self._limit_override if self._limit_override is not None else _UPLOAD_RATE_LIMIT
+
+    @property
+    def _window(self) -> int:
+        if self._window_override is not None:
+            return self._window_override
+        return _UPLOAD_RATE_WINDOW_SECONDS
 
     # -- private helpers --------------------------------------------------
 
@@ -382,29 +395,35 @@ class _UploadRateLimiter:
         import sqlite3
 
         self._conn = sqlite3.connect(self._db_path, check_same_thread=False)  # type: ignore[arg-type]
-        self._conn.execute(self._CREATE_TABLE)
-        self._conn.execute(self._CREATE_INDEX)
+        self._conn.execute(
+            f"CREATE TABLE IF NOT EXISTS {self._table} "
+            "(client_ip TEXT NOT NULL, timestamp REAL NOT NULL)"
+        )
+        self._conn.execute(
+            f"CREATE INDEX IF NOT EXISTS idx_{self._table}_ip_ts "
+            f"ON {self._table} (client_ip, timestamp)"
+        )
         self._conn.commit()
 
     def _db_is_allowed(self, client_ip: str) -> tuple[bool, int]:
         now = time.time()
-        window_start = now - _UPLOAD_RATE_WINDOW_SECONDS
+        window_start = now - self._window
 
         conn = self._conn
         # Prune expired entries for this IP
         conn.execute(
-            "DELETE FROM rate_limit_events WHERE client_ip = ? AND timestamp <= ?",
+            f"DELETE FROM {self._table} WHERE client_ip = ? AND timestamp <= ?",
             (client_ip, window_start),
         )
         row = conn.execute(
-            "SELECT COUNT(*) FROM rate_limit_events WHERE client_ip = ? AND timestamp > ?",
+            f"SELECT COUNT(*) FROM {self._table} WHERE client_ip = ? AND timestamp > ?",
             (client_ip, window_start),
         ).fetchone()
         count = row[0] if row else 0
 
-        if count >= _UPLOAD_RATE_LIMIT:
+        if count >= self._limit:
             oldest_row = conn.execute(
-                "SELECT MIN(timestamp) FROM rate_limit_events "
+                f"SELECT MIN(timestamp) FROM {self._table} "
                 "WHERE client_ip = ? AND timestamp > ?",
                 (client_ip, window_start),
             ).fetchone()
@@ -414,7 +433,7 @@ class _UploadRateLimiter:
             return False, max(retry_after, 1)
 
         conn.execute(
-            "INSERT INTO rate_limit_events (client_ip, timestamp) VALUES (?, ?)",
+            f"INSERT INTO {self._table} (client_ip, timestamp) VALUES (?, ?)",
             (client_ip, now),
         )
         conn.commit()
@@ -422,13 +441,13 @@ class _UploadRateLimiter:
 
     def _mem_is_allowed(self, client_ip: str) -> tuple[bool, int]:
         now = time.monotonic()
-        window_start = now - _UPLOAD_RATE_WINDOW_SECONDS
+        window_start = now - self._window
         timestamps = self._timestamps[client_ip]
         self._timestamps[client_ip] = [
             t for t in timestamps if t > window_start
         ]
         timestamps = self._timestamps[client_ip]
-        if len(timestamps) >= _UPLOAD_RATE_LIMIT:
+        if len(timestamps) >= self._limit:
             oldest_in_window = timestamps[0]
             retry_after = int(oldest_in_window - window_start) + 1
             return False, max(retry_after, 1)
@@ -438,7 +457,7 @@ class _UploadRateLimiter:
     # -- public API -------------------------------------------------------
 
     def is_allowed(self, client_ip: str) -> tuple[bool, int]:
-        """Check if the client may upload.
+        """Check whether the client is within its rate budget.
 
         Returns (allowed, retry_after_seconds).
         """
@@ -448,14 +467,42 @@ class _UploadRateLimiter:
             return self._mem_is_allowed(client_ip)
 
 
-def _build_upload_limiter() -> _UploadRateLimiter:
-    """Create the module-level rate limiter, persisted next to the app DB."""
-    db_path_str = os.environ.get("DB_PATH", "data/worship.db")
-    limiter_db = Path(db_path_str).parent / "rate_limits.db"
-    return _UploadRateLimiter(db_path=limiter_db)
+# Report endpoints are public and run unbounded aggregation / openpyxl builds,
+# so they get their own (more generous than upload) per-client budget (#450).
+_REPORT_RATE_LIMIT: int = 60
+_REPORT_RATE_WINDOW_SECONDS: int = 300  # 5 minutes
 
 
-_upload_limiter = _build_upload_limiter()
+def _limiter_db_path() -> Path:
+    """Shared SQLite file (next to the app DB) backing all rate limiters."""
+    return Path(os.environ.get("DB_PATH", "data/worship.db")).parent / "rate_limits.db"
+
+
+# Upload limiter: no explicit limit/window → reads _UPLOAD_RATE_LIMIT/_WINDOW at
+# call time (preserves the existing patch-the-constant test behaviour).
+_upload_limiter = _UploadRateLimiter(db_path=_limiter_db_path(), table="rate_limit_events")
+# Report limiter: its own, more generous budget on a separate table.
+_report_limiter = _UploadRateLimiter(
+    db_path=_limiter_db_path(),
+    limit=_REPORT_RATE_LIMIT,
+    window_seconds=_REPORT_RATE_WINDOW_SECONDS,
+    table="report_rate_limit_events",
+)
+
+
+def _report_rate_limit(request: Request) -> None:
+    """FastAPI dependency: throttle public report generation per client (#450)."""
+    allowed, retry_after = _report_limiter.is_allowed(_get_client_ip(request))
+    if not allowed:
+        _log.warning(
+            "Report rate limit exceeded",
+            extra={"client_ip": _get_client_ip(request), "retry_after": retry_after},
+        )
+        raise HTTPException(
+            status_code=429,
+            detail="Report rate limit exceeded — try again later",
+            headers={"Retry-After": str(retry_after)},
+        )
 
 
 def _validate_date_range(start_date: str, end_date: str) -> None:
@@ -625,6 +672,7 @@ async def reports_stats(
     leader: str = Form(default=""),
     all_songs: bool = Form(default=False),
     db: Database = Depends(get_db),  # noqa: B008
+    _rl: None = Depends(_report_rate_limit),  # noqa: B008
 ) -> HTMLResponse:
     _validate_date_range(start_date, end_date)
     data = _compute_stats(db, start_date, end_date, leader, all_songs)
@@ -654,6 +702,7 @@ async def reports_stats_csv(
     leader: str = Form(default=""),
     all_songs: bool = Form(default=False),
     db: Database = Depends(get_db),  # noqa: B008
+    _rl: None = Depends(_report_rate_limit),  # noqa: B008
 ) -> StreamingResponse:
     _validate_date_range(start_date, end_date)
     data = _compute_stats(db, start_date, end_date, leader, all_songs)
@@ -680,6 +729,7 @@ async def reports_stats_xlsx(
     leader: str = Form(default=""),
     all_songs: bool = Form(default=False),
     db: Database = Depends(get_db),  # noqa: B008
+    _rl: None = Depends(_report_rate_limit),  # noqa: B008
 ) -> StreamingResponse:
     _validate_date_range(start_date, end_date)
     try:
@@ -729,6 +779,7 @@ async def reports_ccli_preview(
     start_date: str = Form(...),
     end_date: str = Form(...),
     db: Database = Depends(get_db),  # noqa: B008
+    _rl: None = Depends(_report_rate_limit),  # noqa: B008
 ) -> HTMLResponse:
     """Inline summary of the CCLI report before download (#411).
 
@@ -755,6 +806,7 @@ async def reports_ccli_csv(
     start_date: str = Form(...),
     end_date: str = Form(...),
     db: Database = Depends(get_db),  # noqa: B008
+    _rl: None = Depends(_report_rate_limit),  # noqa: B008
 ) -> StreamingResponse:
     """Generate CCLI compliance report as a CSV download (#201)."""
     _validate_date_range(start_date, end_date)
@@ -894,6 +946,7 @@ async def leader_top_songs(
 async def leader_top_songs_csv(
     leader_name: str,
     db: Database = Depends(get_db),  # noqa: B008
+    _rl: None = Depends(_report_rate_limit),  # noqa: B008
 ) -> StreamingResponse:
     top_songs = db.query_leader_top_songs(leader_name, min_count=_LEADER_MIN_SONG_COUNT)
 

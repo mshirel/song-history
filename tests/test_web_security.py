@@ -1106,3 +1106,40 @@ class TestUploadAuth:
     def test_jobs_open_when_password_unset(self, client):
         # Backwards-compatible: scripted consumers keep working when no password.
         assert client.get("/jobs").status_code == 200
+
+
+class TestReportRateLimiting:
+    """Public report endpoints must be rate-limited to prevent unauthenticated
+    CPU/memory exhaustion (esp. /reports/stats/xlsx) on the public site (#450)."""
+
+    def test_report_endpoint_rate_limited_after_burst(self, client):
+        import worship_catalog.web.app as m
+        m._report_limiter._limit_override = 3  # shrink for a fast, deterministic test
+        last = None
+        for _ in range(5):
+            last = client.post(
+                "/reports/stats/csv",
+                data={"start_date": "2026-01-01", "end_date": "2026-12-31"},
+            )
+        assert last.status_code == 429, "report endpoints must 429 a burst from one client"
+        assert last.headers.get("retry-after"), "429 should include Retry-After"
+
+    def test_first_report_request_succeeds(self, client):
+        import worship_catalog.web.app as m
+        m._report_limiter._limit_override = 10
+        resp = client.post(
+            "/reports/stats/csv",
+            data={"start_date": "2026-01-01", "end_date": "2026-12-31"},
+        )
+        assert resp.status_code == 200
+
+    def test_xlsx_report_is_rate_limited(self, client):
+        import worship_catalog.web.app as m
+        m._report_limiter._limit_override = 2
+        last = None
+        for _ in range(4):
+            last = client.post(
+                "/reports/stats/xlsx",
+                data={"start_date": "2026-01-01", "end_date": "2026-12-31"},
+            )
+        assert last.status_code == 429
