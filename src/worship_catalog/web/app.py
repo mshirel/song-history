@@ -225,7 +225,17 @@ app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
 
 
 @app.get("/metrics", include_in_schema=False)
-async def metrics() -> Response:
+async def metrics(request: Request) -> Response:
+    """Prometheus metrics — internal scraping only (#449).
+
+    Requests arriving via the public Cloudflare tunnel carry the
+    ``CF-Connecting-IP`` header; the internal Prometheus scrape (direct to the
+    host-published :8000) does not. Deny the tunnel path with 404 so the metrics
+    (route map, traffic, latency) aren't exposed to the internet, while the
+    internal scrape keeps working.
+    """
+    if request.headers.get("cf-connecting-ip"):
+        raise HTTPException(status_code=404)
     return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
