@@ -131,7 +131,8 @@ services:
   # Requires a DMZ->Loki (10.20.100.249:3100) firewall allow on VLAN 249.
   # ---------------------------------------------------------------------------
   promtail:
-    image: grafana/promtail:latest
+    # Digest-pinned (#453) — was :latest. Re-pin on a reviewed Dependabot bump.
+    image: grafana/promtail:latest@sha256:6cfa64ec432b24a912d640e2edb940eeae2666f61861a66c121d763dd7241381
     restart: unless-stopped
     user: root   # needed to read root-owned /var/lib/docker/containers logs
     command: -config.file=/etc/promtail/config.yml
@@ -153,7 +154,9 @@ services:
   # in the Cloudflare Zero Trust dashboard. Set TUNNEL_TOKEN in .env.
   # ---------------------------------------------------------------------------
   cloudflared:
-    image: cloudflare/cloudflared:latest
+    # Digest-pinned (#453) — was :latest. The internet-facing tunnel daemon must
+    # not silently upgrade; re-pin on a reviewed Dependabot bump.
+    image: cloudflare/cloudflared:latest@sha256:59bab8d3aceec09bf6bdb07d6beca0225ca5cd7ab79436a87ea97978fe1dc4f9
     restart: unless-stopped
     command: tunnel --no-autoupdate run --token ${TUNNEL_TOKEN}
     # If IPS in Prevention mangles the QUIC/UDP edge connection, force HTTP/2:

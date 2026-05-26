@@ -9,6 +9,20 @@ COMPOSE_PATH = Path("deploy/pi/docker-compose.yml")
 
 
 @pytest.mark.skipif(not COMPOSE_PATH.exists(), reason="Pi compose file not present")
+class TestImagePinning:
+    """All third-party images on the public host must be digest-pinned (#453)."""
+
+    def test_third_party_images_pinned_to_digest(self) -> None:
+        services = yaml.safe_load(COMPOSE_PATH.read_text())["services"]
+        for name in ("cloudflared", "promtail", "traefik"):
+            image = services[name]["image"]
+            assert "@sha256:" in image, (
+                f"{name} image must be digest-pinned (got {image!r}) — mutable :latest "
+                "is non-reproducible and a supply-chain risk on the public host"
+            )
+
+
+@pytest.mark.skipif(not COMPOSE_PATH.exists(), reason="Pi compose file not present")
 class TestTrustedProxy:
     """Behind the Cloudflare tunnel the app must trust CF-Connecting-IP so the
     rate limiter (and /metrics IP checks) identify real clients, not the tunnel
