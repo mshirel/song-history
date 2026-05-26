@@ -5,6 +5,23 @@ from pathlib import Path
 _PROJECT_ROOT = Path(__file__).parent.parent
 
 
+class TestNoMaliciousFastapi:
+    """The lockfile must not pin the malicious fastapi 0.136.3 (MAL-2026-4750, #458)."""
+
+    def test_lockfile_excludes_malicious_fastapi(self):
+        lock = (_PROJECT_ROOT / "requirements.lock").read_text()
+        assert "fastapi==0.136.3" not in lock, (
+            "fastapi 0.136.3 is malicious (MAL-2026-4750) — it adds an undocumented "
+            "'fastar' dependency. The lockfile must pin a different version."
+        )
+
+    def test_pyproject_excludes_malicious_fastapi(self):
+        pp = (_PROJECT_ROOT / "pyproject.toml").read_text()
+        assert "!=0.136.3" in pp, (
+            "pyproject must exclude fastapi 0.136.3 so pip-compile can't re-pin it"
+        )
+
+
 class TestDependencyReproducibility:
     """A lockfile must exist and be used in the Dockerfile (#174)."""
 
