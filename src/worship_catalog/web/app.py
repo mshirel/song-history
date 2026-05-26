@@ -224,17 +224,29 @@ templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
 app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
 
 
+# Headers added by the public proxy chain (Cloudflare tunnel → Traefik). Their
+# presence means the request did NOT come from the internal Prometheus scrape,
+# which connects directly to the host-published :8000 with none of these (#449).
+_PROXY_HEADERS: tuple[str, ...] = (
+    "x-forwarded-for",
+    "x-forwarded-host",
+    "x-forwarded-proto",
+    "cf-connecting-ip",
+    "forwarded",
+)
+
+
 @app.get("/metrics", include_in_schema=False)
 async def metrics(request: Request) -> Response:
     """Prometheus metrics — internal scraping only (#449).
 
-    Requests arriving via the public Cloudflare tunnel carry the
-    ``CF-Connecting-IP`` header; the internal Prometheus scrape (direct to the
-    host-published :8000) does not. Deny the tunnel path with 404 so the metrics
-    (route map, traffic, latency) aren't exposed to the internet, while the
-    internal scrape keeps working.
+    Public requests reach the app through the proxy chain (Cloudflare tunnel →
+    Traefik) and carry forwarding headers (X-Forwarded-For etc.); the internal
+    Prometheus scrape hits :8000 directly with none of them. Deny the proxied
+    path with 404 so the route map / traffic / latency aren't exposed publicly,
+    while the internal scrape keeps working.
     """
-    if request.headers.get("cf-connecting-ip"):
+    if any(h in request.headers for h in _PROXY_HEADERS):
         raise HTTPException(status_code=404)
     return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
