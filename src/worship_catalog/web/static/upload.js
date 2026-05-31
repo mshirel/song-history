@@ -3,9 +3,8 @@
  * After a successful upload, polls the job status endpoint until complete (#276).
  * This must be an external file (not inline) to comply with CSP script-src 'self'.
  *
- * All server-provided strings (job.error_message, err.message, counts) are
- * rendered with textContent — never concatenated into innerHTML — so a crafted
- * error message cannot inject markup (DOM-XSS defence-in-depth, #401).
+ * All server-provided strings are rendered with textContent — never concatenated
+ * into innerHTML — so crafted values cannot inject markup (DOM-XSS defence, #401).
  */
 (function () {
   "use strict";
@@ -28,6 +27,76 @@
     p.style.color = color;
     p.textContent = text;
     el.replaceChildren(p);
+  }
+
+  /**
+   * Render the success result: a heading with count, optional metadata block,
+   * and a numbered song list.  All values go through textContent — no innerHTML.
+   */
+  function showImportSuccess(el, job) {
+    var frag = document.createDocumentFragment();
+
+    var heading = document.createElement("p");
+    heading.style.color = "green";
+    heading.style.fontWeight = "600";
+    heading.style.marginBottom = "0.5rem";
+    heading.textContent =
+      "Import complete — " + job.songs_imported + " song(s) imported.";
+    frag.appendChild(heading);
+
+    // Metadata rows (only show present values)
+    var metaRows = [
+      ["Date", job.service_date],
+      ["Service", job.service_name],
+      ["Song Leader", job.song_leader],
+      ["Preacher", job.preacher],
+      ["Sermon", job.sermon_title],
+    ];
+    var hasAnyMeta = metaRows.some(function (r) { return r[1]; });
+    if (hasAnyMeta) {
+      var metaTable = document.createElement("table");
+      metaTable.style.cssText =
+        "border-collapse:collapse;font-size:0.85rem;margin-bottom:0.75rem;";
+      metaRows.forEach(function (row) {
+        if (!row[1]) return;
+        var tr = document.createElement("tr");
+        var th = document.createElement("th");
+        th.style.cssText =
+          "text-align:left;padding:1px 0.75rem 1px 0;color:#6c757d;font-weight:600;white-space:nowrap;";
+        th.textContent = row[0];
+        var td = document.createElement("td");
+        td.style.cssText = "padding:1px 0;";
+        td.textContent = row[1];
+        tr.appendChild(th);
+        tr.appendChild(td);
+        metaTable.appendChild(tr);
+      });
+      frag.appendChild(metaTable);
+    }
+
+    // Song list
+    if (job.songs_json) {
+      var songs;
+      try { songs = JSON.parse(job.songs_json); } catch (e) { songs = []; }
+      if (songs.length > 0) {
+        var label = document.createElement("p");
+        label.style.cssText =
+          "font-size:0.85rem;font-weight:600;color:#495057;margin:0 0 0.25rem;";
+        label.textContent = "Songs:";
+        frag.appendChild(label);
+        var ol = document.createElement("ol");
+        ol.style.cssText =
+          "margin:0;padding-left:1.5rem;font-size:0.85rem;color:#212529;";
+        songs.forEach(function (title) {
+          var li = document.createElement("li");
+          li.textContent = title;
+          ol.appendChild(li);
+        });
+        frag.appendChild(ol);
+      }
+    }
+
+    el.replaceChildren(frag);
   }
 
   /** Poll /jobs/{id} until status is complete or failed (#276). */
@@ -60,13 +129,7 @@
                   "The file may not be a worship slide deck."
               );
             } else {
-              showMessage(
-                resultEl,
-                "green",
-                "Import complete — " +
-                  job.songs_imported +
-                  " song(s) imported."
-              );
+              showImportSuccess(resultEl, job);
             }
           } else if (job.status === "failed") {
             showMessage(

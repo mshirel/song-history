@@ -1236,8 +1236,35 @@ class TestJobStatusEndpoint:
         for field in (
             "job_id", "filename", "status", "started_at",
             "completed_at", "songs_imported", "error_message",
+            "service_date", "service_name", "song_leader",
+            "preacher", "sermon_title", "songs_json",
         ):
             assert field in body
+
+    def test_job_response_includes_metadata_when_set(self, client, db):
+        import json
+
+        job_id = str(_uuid_mod.uuid4())
+        db.create_import_job(job_id, filename="test.pptx")
+        db.update_import_job(
+            job_id,
+            status="complete",
+            songs_imported=2,
+            service_date="2026-05-25",
+            service_name="PM Worship",
+            song_leader="Jane Smith",
+            preacher="John Doe",
+            sermon_title="Grace Abounding",
+            songs_json=json.dumps(["Amazing Grace", "How Great Thou Art"]),
+        )
+        resp = client.get(f"/jobs/{job_id}")
+        body = resp.json()
+        assert body["service_date"] == "2026-05-25"
+        assert body["service_name"] == "PM Worship"
+        assert body["song_leader"] == "Jane Smith"
+        assert body["preacher"] == "John Doe"
+        assert body["sermon_title"] == "Grace Abounding"
+        assert json.loads(body["songs_json"]) == ["Amazing Grace", "How Great Thou Art"]
 
 
 class TestJobListEndpoint:

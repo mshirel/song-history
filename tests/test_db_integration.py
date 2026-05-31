@@ -1343,6 +1343,43 @@ class TestUpdateImportJobSQLSafety:
             db.update_import_job(job_id, **{"'; DROP TABLE import_jobs; --": "evil"})  # type: ignore[arg-type]
         db.close()
 
+    def test_update_with_service_metadata_persists(self, temp_db: Database) -> None:
+        import json
+
+        job_id = "meta-job-001"
+        temp_db.create_import_job(job_id, filename="test.pptx")
+        temp_db.update_import_job(
+            job_id,
+            status="complete",
+            songs_imported=3,
+            service_date="2026-05-25",
+            service_name="AM Worship",
+            song_leader="Jane Smith",
+            preacher="John Doe",
+            sermon_title="Grace Abounding",
+            songs_json=json.dumps(["Amazing Grace", "How Great Thou Art", "Holy Holy Holy"]),
+        )
+        row = temp_db.get_import_job(job_id)
+        temp_db.close()
+        assert row is not None
+        assert row["service_date"] == "2026-05-25"
+        assert row["service_name"] == "AM Worship"
+        assert row["song_leader"] == "Jane Smith"
+        assert row["preacher"] == "John Doe"
+        assert row["sermon_title"] == "Grace Abounding"
+        songs = json.loads(row["songs_json"])
+        assert songs == ["Amazing Grace", "How Great Thou Art", "Holy Holy Holy"]
+
+    def test_new_metadata_fields_present_as_none_when_not_set(self, temp_db: Database) -> None:
+        job_id = "meta-job-002"
+        temp_db.create_import_job(job_id, filename="test.pptx")
+        row = temp_db.get_import_job(job_id)
+        temp_db.close()
+        assert row is not None
+        for field in ("service_date", "service_name", "song_leader", "preacher", "sermon_title", "songs_json"):
+            assert field in row, f"Field {field!r} missing from import_job row"
+            assert row[field] is None, f"Field {field!r} should default to None"
+
 
 # ---------------------------------------------------------------------------
 # Issue #98 — all timestamps must be UTC-aware ISO strings.
