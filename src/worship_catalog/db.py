@@ -161,13 +161,27 @@ _MIGRATIONS: dict[int, list[str]] = {
         ON copy_events(service_id, song_id, COALESCE(song_edition_id, -1), reproduction_type)
         """,
     ],
+    5: [
+        # Add service metadata + song list columns to import_jobs so the web UI
+        # can show richer results after a successful import.
+        "ALTER TABLE import_jobs ADD COLUMN service_date TEXT",
+        "ALTER TABLE import_jobs ADD COLUMN service_name TEXT",
+        "ALTER TABLE import_jobs ADD COLUMN song_leader TEXT",
+        "ALTER TABLE import_jobs ADD COLUMN preacher TEXT",
+        "ALTER TABLE import_jobs ADD COLUMN sermon_title TEXT",
+        "ALTER TABLE import_jobs ADD COLUMN songs_json TEXT",
+    ],
 }
 
 # Whitelist of column names that update_import_job is allowed to SET.
 # Any key not in this set will raise ValueError — prevents SQL injection
 # via dynamic field names (issue #100).
 _IMPORT_JOB_MUTABLE_FIELDS: frozenset[str] = frozenset(
-    {"status", "completed_at", "songs_imported", "error_message"}
+    {
+        "status", "completed_at", "songs_imported", "error_message",
+        "service_date", "service_name", "song_leader", "preacher",
+        "sermon_title", "songs_json",
+    }
 )
 
 
@@ -1054,6 +1068,12 @@ class Database:
         status: str | None = None,
         songs_imported: int | None = None,
         error_message: str | None = None,
+        service_date: str | None = None,
+        service_name: str | None = None,
+        song_leader: str | None = None,
+        preacher: str | None = None,
+        sermon_title: str | None = None,
+        songs_json: str | None = None,
         **_extra_kwargs: Any,
     ) -> None:
         """Update mutable fields on an import job record.
@@ -1082,6 +1102,24 @@ class Database:
         if error_message is not None:
             sets.append("error_message = ?")
             params.append(error_message)
+        if service_date is not None:
+            sets.append("service_date = ?")
+            params.append(service_date)
+        if service_name is not None:
+            sets.append("service_name = ?")
+            params.append(service_name)
+        if song_leader is not None:
+            sets.append("song_leader = ?")
+            params.append(song_leader)
+        if preacher is not None:
+            sets.append("preacher = ?")
+            params.append(preacher)
+        if sermon_title is not None:
+            sets.append("sermon_title = ?")
+            params.append(sermon_title)
+        if songs_json is not None:
+            sets.append("songs_json = ?")
+            params.append(songs_json)
         if not sets:
             return
         # Build the SET clause from whitelisted column names only.

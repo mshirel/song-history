@@ -6,6 +6,7 @@ import base64
 import csv
 import importlib.metadata
 import io
+import json
 import logging
 import math
 import os
@@ -1009,7 +1010,17 @@ def _run_import_in_background(job_id: str, pptx_path: Path) -> None:
             _notify_priority = -1
         else:
             db.update_import_job(
-                job_id, status="complete", songs_imported=result.songs_imported
+                job_id,
+                status="complete",
+                songs_imported=result.songs_imported,
+                service_date=result.service_date,
+                service_name=result.service_name,
+                song_leader=result.song_leader,
+                preacher=result.preacher,
+                sermon_title=result.sermon_title,
+                songs_json=json.dumps(
+                    [s.display_title for s in result.songs]
+                ) if result.songs else None,
             )
             _notify_title = "Import complete"
             _notify_message = (
