@@ -156,7 +156,7 @@ services:
   cloudflared:
     # Digest-pinned (#453) — was :latest. The internet-facing tunnel daemon must
     # not silently upgrade; re-pin on a reviewed Dependabot bump.
-    image: cloudflare/cloudflared:latest@sha256:59bab8d3aceec09bf6bdb07d6beca0225ca5cd7ab79436a87ea97978fe1dc4f9
+    image: cloudflare/cloudflared:latest@sha256:12ff5c6992a9863db4da270746af7c244bcaee49353039af8104268a18d6c4f0
     restart: unless-stopped
     command: tunnel --no-autoupdate run --token ${TUNNEL_TOKEN}
     # If IPS in Prevention mangles the QUIC/UDP edge connection, force HTTP/2:
