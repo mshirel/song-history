@@ -207,6 +207,11 @@ class TestNormalizeServiceDate:
         ("2026.5.10", "2026-05-10"),   # single-digit month/day
         ("2026-5-1", "2026-05-01"),
         ("  2026.5.1  ", "2026-05-01"),
+        # US month-first format (Highland is a US congregation) — #483
+        ("05-31-2026", "2026-05-31"),
+        ("5/31/2026", "2026-05-31"),
+        ("5.31.2026", "2026-05-31"),
+        ("1-1-2026", "2026-01-01"),
     ])
     def test_normalizes_to_iso(self, raw, expected):
         from worship_catalog.pptx_reader import normalize_service_date
@@ -217,6 +222,24 @@ class TestNormalizeServiceDate:
         from worship_catalog.pptx_reader import normalize_service_date
 
         assert normalize_service_date("Easter Sunday") == "Easter Sunday"
+
+    def test_unrecognized_format_logs_warning(self, caplog):
+        import logging
+
+        from worship_catalog.pptx_reader import normalize_service_date
+
+        with caplog.at_level(logging.WARNING):
+            assert normalize_service_date("Easter Sunday") == "Easter Sunday"
+        assert any("Easter Sunday" in r.message for r in caplog.records), (
+            "unrecognized date formats must be logged, not silently stored"
+        )
+
+    def test_invalid_calendar_date_passed_through(self):
+        from worship_catalog.pptx_reader import normalize_service_date
+
+        # 2026-13-40 matches the year-first shape but is not a real date — must
+        # not be silently 'normalized' into a bogus ISO string.
+        assert normalize_service_date("2026-13-40") == "2026-13-40"
 
     def test_none_and_empty(self):
         from worship_catalog.pptx_reader import normalize_service_date

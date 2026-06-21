@@ -881,11 +881,22 @@ def _validate_exclusion_input(service_date: str, service_slot: str) -> None:
 async def missing_services_report(
     request: Request,
     days: int = Query(default=DEFAULT_WINDOW_DAYS),
+    login: bool = Query(default=False),
     db: Database = Depends(get_db),  # noqa: B008
     _rl: None = Depends(_report_rate_limit),  # noqa: B008
 ) -> HTMLResponse:
-    """Report Sunday morning/evening services absent from the DB (#480)."""
+    """Report Sunday morning/evening services absent from the DB (#480).
+
+    The page + JSON are always publicly readable; the exclude/include controls
+    render only for a viewer with valid upload credentials (#483). Visiting with
+    ``?login=1`` issues the Basic-auth challenge so a user can authenticate, then
+    the edit controls appear (the browser sends creds to this path thereafter).
+    """
+    authed = _upload_credentials_valid(request)
+    if login and not authed:
+        require_upload_auth(request)  # raises 401 challenge so the browser prompts
     ctx = _missing_services_context(db, days)
+    ctx["can_edit"] = authed
     # HTMX swaps just the result region; a full navigation renders the page.
     template = (
         "_missing_services_result.html"
@@ -915,12 +926,17 @@ async def missing_services_exclude(
     db: Database = Depends(get_db),  # noqa: B008
     _rl: None = Depends(_report_rate_limit),  # noqa: B008
 ) -> HTMLResponse:
-    """Mark a missing slot as intentionally excluded, then re-render (#480)."""
+    """Mark a missing slot as intentionally excluded, then re-render (#480).
+
+    Gated by the same upload auth that protects /upload (#483) — a write, not a
+    read, so it must not be publicly invokable.
+    """
+    require_upload_auth(request)
     _validate_exclusion_input(service_date, service_slot)
     db.add_exclusion(service_date, service_slot, reason=reason or None)
-    return templates.TemplateResponse(
-        request, "_missing_services_result.html", _missing_services_context(db, days)
-    )
+    ctx = _missing_services_context(db, days)
+    ctx["can_edit"] = True  # request is authenticated to have reached here
+    return templates.TemplateResponse(request, "_missing_services_result.html", ctx)
 
 
 @app.post("/reports/missing-services/include", response_class=HTMLResponse)
@@ -932,12 +948,16 @@ async def missing_services_include(
     db: Database = Depends(get_db),  # noqa: B008
     _rl: None = Depends(_report_rate_limit),  # noqa: B008
 ) -> HTMLResponse:
-    """Remove an intentional-exclusion marker, then re-render (#480)."""
+    """Remove an intentional-exclusion marker, then re-render (#480).
+
+    Gated by the same upload auth that protects /upload (#483).
+    """
+    require_upload_auth(request)
     _validate_exclusion_input(service_date, service_slot)
     db.remove_exclusion(service_date, service_slot)
-    return templates.TemplateResponse(
-        request, "_missing_services_result.html", _missing_services_context(db, days)
-    )
+    ctx = _missing_services_context(db, days)
+    ctx["can_edit"] = True
+    return templates.TemplateResponse(request, "_missing_services_result.html", ctx)
 
 
 @app.get("/songs/{song_id}", response_class=HTMLResponse)
@@ -1166,38 +1186,47 @@ def _run_import_in_background(job_id: str, pptx_path: Path) -> None:
 _UPLOAD_USERNAME_DEFAULT = "highland"
 
 
-def require_upload_auth(request: Request) -> None:
-    """Gate the upload routes behind HTTP Basic Auth (#388).
+def _upload_credentials_valid(request: Request) -> bool:
+    """True when upload auth is satisfied for this request (non-raising).
 
-    Active only when ``UPLOAD_PASSWORD`` is set in the environment; when unset
-    the upload stays open (current behavior). The catalog browsing pages are
-    never gated — only write access (the upload form/endpoint).
+    Returns True when ``UPLOAD_PASSWORD`` is unset (auth disabled — open access,
+    current behavior) or when the request carries matching HTTP Basic
+    credentials. This is the companion to :func:`require_upload_auth`, used to
+    decide whether to render edit controls on an otherwise-public page (#483).
     """
     password = os.environ.get("UPLOAD_PASSWORD")
     if not password:
-        return
-
+        return True
     expected_user = os.environ.get("UPLOAD_USERNAME", _UPLOAD_USERNAME_DEFAULT)
-    unauthorized = HTTPException(
+    header = request.headers.get("Authorization", "")
+    scheme, _, encoded = header.partition(" ")
+    if scheme.lower() != "basic" or not encoded:
+        return False
+    try:
+        decoded = base64.b64decode(encoded).decode("utf-8")
+    except (ValueError, UnicodeDecodeError):
+        return False
+    user, _, supplied = decoded.partition(":")
+    return secrets.compare_digest(user, expected_user) and secrets.compare_digest(
+        supplied, password
+    )
+
+
+def require_upload_auth(request: Request) -> None:
+    """Gate write routes behind HTTP Basic Auth (#388, #483).
+
+    Active only when ``UPLOAD_PASSWORD`` is set in the environment; when unset
+    the write stays open (current behavior). The catalog browsing/report pages
+    are never gated — only write access (upload + exclusion edits). The realm is
+    shared so a single login unlocks every write surface.
+    """
+    if _upload_credentials_valid(request):
+        return
+    raise HTTPException(
         status_code=401,
         detail="Authentication required to upload.",
         headers={"WWW-Authenticate": 'Basic realm="Highland Worship Catalog upload"'},
     )
-
-    header = request.headers.get("Authorization", "")
-    scheme, _, encoded = header.partition(" ")
-    if scheme.lower() != "basic" or not encoded:
-        raise unauthorized
-    try:
-        decoded = base64.b64decode(encoded).decode("utf-8")
-    except (ValueError, UnicodeDecodeError):
-        raise unauthorized from None
-    user, _, supplied = decoded.partition(":")
-
-    user_ok = secrets.compare_digest(user, expected_user)
-    pass_ok = secrets.compare_digest(supplied, password)
-    if not (user_ok and pass_ok):
-        raise unauthorized
 
 
 @app.get("/upload", response_class=HTMLResponse)

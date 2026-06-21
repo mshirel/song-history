@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from worship_catalog.normalize import normalize_service_date
+from worship_catalog.service_slots import classify_service_slot
 
 _log = logging.getLogger("worship_catalog.db")
 
@@ -633,7 +634,15 @@ class Database:
         preacher: str | None = None,
         sermon_title: str | None = None,
     ) -> int:
-        """Insert or update service. Returns service_id."""
+        """Insert or update service. Returns service_id.
+
+        ``service_date`` is canonicalized to ISO ``YYYY-MM-DD`` at this write
+        boundary (#483) so non-ISO input (e.g. US ``05-31-2026``) can never be
+        stored — un-normalized dates sort outside ISO ranges and silently vanish
+        from every date-range report. ``normalize_service_dates()`` remains for
+        cleaning up legacy rows written before this guard existed.
+        """
+        service_date = normalize_service_date(service_date) or service_date
         cursor = self._conn.cursor()
 
         # Look up by (date, name) only — the unique constraint is now on these two
@@ -684,6 +693,17 @@ class Database:
                 ),
             )
             service_id = cursor.lastrowid
+
+        # A real service now exists for this Sunday slot, so any prior
+        # "intentionally excluded" marker is obsolete — clear it so a real
+        # import cleanly supersedes a manual exclude and the marker can't
+        # resurface if the service is later deleted (#483).
+        slot = classify_service_slot(service_name)
+        if slot is not None:
+            cursor.execute(
+                "DELETE FROM service_exclusions WHERE service_date = ? AND service_slot = ?",
+                (service_date, slot),  # already normalized to ISO above
+            )
 
         self._maybe_commit()
         return service_id

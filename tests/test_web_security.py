@@ -1109,6 +1109,68 @@ class TestUploadAuth:
         assert client.get("/jobs").status_code == 200
 
 
+class TestExclusionAuth:
+    """Marking services excluded is a write — gated by the same UPLOAD_PASSWORD
+    auth as /upload. The report page + JSON stay publicly readable; edit controls
+    appear only for an authenticated viewer (#483)."""
+
+    _CREDS = ("highland", "s3cret")
+
+    @pytest.fixture
+    def auth_client(self, db_with_songs, tmp_path, monkeypatch):
+        inbox = tmp_path / "inbox"
+        inbox.mkdir()
+        monkeypatch.setenv("DB_PATH", str(db_with_songs))
+        monkeypatch.setenv("INBOX_DIR", str(inbox))
+        monkeypatch.setenv("UPLOAD_PASSWORD", "s3cret")
+        from importlib import reload
+        import worship_catalog.web.app as app_module
+        reload(app_module)
+        return CsrfAwareClient(TestClient(app_module.app))
+
+    _EXCL = {"service_date": "2026-05-31", "service_slot": "evening", "days": "90"}
+
+    def test_exclude_requires_auth_when_password_set(self, auth_client):
+        assert auth_client.post(
+            "/reports/missing-services/exclude", data=self._EXCL
+        ).status_code == 401
+
+    def test_include_requires_auth_when_password_set(self, auth_client):
+        assert auth_client.post(
+            "/reports/missing-services/include", data=self._EXCL
+        ).status_code == 401
+
+    def test_exclude_succeeds_with_credentials(self, auth_client):
+        r = auth_client.post(
+            "/reports/missing-services/exclude", data=self._EXCL, auth=self._CREDS
+        )
+        assert r.status_code == 200
+
+    def test_report_page_and_json_stay_public(self, auth_client):
+        assert auth_client.get("/reports/missing-services").status_code == 200
+        assert auth_client.get("/reports/missing-services.json").status_code == 200
+
+    def test_report_readonly_without_auth(self, auth_client):
+        body = auth_client.get("/reports/missing-services").text
+        assert "Mark excluded" not in body, "edit controls must be hidden when not logged in"
+        assert "Log in to edit" in body
+
+    def test_report_editable_with_auth(self, auth_client):
+        body = auth_client.get("/reports/missing-services", auth=self._CREDS).text
+        assert "Mark excluded" in body
+
+    def test_login_param_challenges_when_unauthed(self, auth_client):
+        r = auth_client.get("/reports/missing-services?login=1")
+        assert r.status_code == 401
+        assert "basic" in r.headers.get("www-authenticate", "").lower()
+
+    def test_exclude_open_when_password_unset(self, client):
+        # No UPLOAD_PASSWORD → write stays open (backwards-compatible).
+        assert client.post(
+            "/reports/missing-services/exclude", data=self._EXCL
+        ).status_code == 200
+
+
 class TestReportRateLimiting:
     """Public report endpoints must be rate-limited to prevent unauthenticated
     CPU/memory exhaustion (esp. /reports/stats/xlsx) on the public site (#450)."""

@@ -1,6 +1,10 @@
 """Title normalization, candidate selection, and credit parsing."""
 
+import logging
 import re
+from datetime import date
+
+_log = logging.getLogger("worship_catalog.normalize")
 
 # Lines longer than this are considered lyrics, not titles
 _TITLE_MAX_LENGTH: int = 120
@@ -81,17 +85,31 @@ def _normalize_whitespace(text: str) -> str:
     return ' '.join(text.split()).strip()
 
 
-# Year-month-day with ., - or / separators and single-or-double-digit month/day.
+# Year-first: ., - or / separators and single-or-double-digit month/day.
 _DATE_PARTS_RE = re.compile(r"^(\d{4})[.\-/](\d{1,2})[.\-/](\d{1,2})$")
+# US month-first: M-D-YYYY (Highland is a US congregation). Year is last, so
+# this never overlaps the year-first pattern above. (#483)
+_US_DATE_RE = re.compile(r"^(\d{1,2})[.\-/](\d{1,2})[.\-/](\d{4})$")
+
+
+def _iso_or_passthrough(year: str, month: str, day: str, original: str) -> str:
+    """Build an ISO date from parts, or return *original* (logged) if invalid."""
+    try:
+        return date(int(year), int(month), int(day)).isoformat()
+    except ValueError:
+        _log.warning("Service date is not a real calendar date; storing as-is: %r", original)
+        return original
 
 
 def normalize_service_date(raw: str | None) -> str | None:
     """Canonicalize a service date string to ISO ``YYYY-MM-DD``.
 
-    Accepts any mix of ``.``, ``-`` and ``/`` separators and single-digit
-    month/day (e.g. ``2026.5.10`` → ``2026-05-10``). Returns None for empty
-    input, and the stripped original for anything that isn't a recognizable
-    year-month-day triple (so we never silently drop an unexpected value).
+    Accepts year-first (``2026.5.10`` → ``2026-05-10``) and US month-first
+    (``05-31-2026`` → ``2026-05-31``) with any mix of ``.``, ``-`` and ``/``
+    separators and single-digit month/day. Returns None for empty input. For
+    anything that matches no known shape — or matches but isn't a real calendar
+    date — the stripped original is returned **and a warning is logged**, so a
+    bad value surfaces instead of silently breaking date-range queries (#483).
 
     Lives here (not in pptx_reader) so the data layer can normalize stored dates
     without importing the PPTX-parsing layer (#399).
@@ -102,10 +120,15 @@ def normalize_service_date(raw: str | None) -> str | None:
     if not stripped:
         return None
     match = _DATE_PARTS_RE.match(stripped)
-    if not match:
-        return stripped
-    year, month, day = match.groups()
-    return f"{year}-{int(month):02d}-{int(day):02d}"
+    if match:
+        year, month, day = match.groups()
+        return _iso_or_passthrough(year, month, day, stripped)
+    match = _US_DATE_RE.match(stripped)
+    if match:
+        month, day, year = match.groups()
+        return _iso_or_passthrough(year, month, day, stripped)
+    _log.warning("Unrecognized service date format; storing as-is: %r", stripped)
+    return stripped
 
 
 def select_best_title(candidates: list[str]) -> str | None:
