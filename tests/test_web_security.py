@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import io
 import os
+import re
 from pathlib import Path
 
 import pytest
@@ -1143,3 +1144,114 @@ class TestReportRateLimiting:
                 data={"start_date": "2026-01-01", "end_date": "2026-12-31"},
             )
         assert last.status_code == 429
+
+
+# ---------------------------------------------------------------------------
+# Self-healing CSRF cookie — stale token never refreshed (web upload failure)
+# ---------------------------------------------------------------------------
+
+# A real-world stale cookie: a structurally valid starlette-csrf token signed
+# with a *previous* CSRF_SECRET. After a secret rotation/redeploy this fails
+# signature verification against the live secret (raises BadSignature).
+from itsdangerous.url_safe import URLSafeSerializer  # noqa: E402
+
+_STALE_OLD_SECRET_TOKEN = URLSafeSerializer("an-old-rotated-secret", "csrftoken").dumps(
+    "stale-token-payload-from-before-the-secret-rotation"
+)
+# A purely malformed cookie value (not even a valid token structure -> BadData).
+_GARBAGE_COOKIE = "totally-not-a-valid-token"
+_PPTX_MIME = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+
+
+def _csrftoken_from_set_cookie(resp) -> str:
+    """Extract the csrftoken value from a response's Set-Cookie header, or ''."""
+    m = re.search(r"csrftoken=([^;]+)", resp.headers.get("set-cookie", ""))
+    return m.group(1) if m else ""
+
+
+class TestSelfHealingCsrfCookie:
+    """A stale ``csrftoken`` cookie (e.g. signed with a previous CSRF_SECRET) must
+    be automatically refreshed.
+
+    starlette-csrf only issues a fresh cookie when the request carries *none*, so
+    a browser replaying a stale cookie is otherwise stuck at 403 on every unsafe
+    request forever — the cause of "Upload failed: Unexpected token 'C', "CSRF
+    token"... is not valid JSON" reported from the web upload page.
+    """
+
+    @pytest.mark.parametrize("stale", [_STALE_OLD_SECRET_TOKEN, _GARBAGE_COOKIE])
+    def test_get_with_stale_cookie_issues_fresh_cookie(self, raw_client, stale):
+        raw_client.cookies.clear()
+        resp = raw_client.get("/songs", headers={"Cookie": f"csrftoken={stale}"})
+        fresh = _csrftoken_from_set_cookie(resp)
+        assert fresh, "A stale csrftoken cookie must be replaced with a fresh Set-Cookie"
+        assert fresh != stale, "The reissued token must differ from the stale one"
+
+    def test_get_with_valid_cookie_is_not_rechurned(self, raw_client):
+        raw_client.cookies.clear()
+        token = raw_client.get("/songs").cookies.get("csrftoken", "")
+        assert token, "GET must establish a valid csrftoken cookie"
+        raw_client.cookies.clear()
+        resp = raw_client.get("/songs", headers={"Cookie": f"csrftoken={token}"})
+        assert "set-cookie" not in resp.headers, (
+            "A valid csrftoken cookie must not be needlessly rotated"
+        )
+
+    def test_post_with_stale_cookie_is_403_but_reissues_cookie(self, raw_client):
+        raw_client.cookies.clear()
+        resp = raw_client.post(
+            "/upload",
+            headers={
+                "Cookie": f"csrftoken={_STALE_OLD_SECRET_TOKEN}",
+                "X-CSRFToken": _STALE_OLD_SECRET_TOKEN,
+            },
+            files={"file": ("t.pptx", io.BytesIO(b"PK\x03\x04x"), _PPTX_MIME)},
+        )
+        # The stale request itself cannot be trusted -> still rejected.
+        assert resp.status_code == 403
+        # ...but the 403 must hand back a fresh token so an auto-retry can succeed.
+        fresh = _csrftoken_from_set_cookie(resp)
+        assert fresh and fresh != _STALE_OLD_SECRET_TOKEN, (
+            "A 403 from a stale cookie must still issue a fresh csrftoken"
+        )
+
+    def test_full_recovery_stale_then_retry_succeeds(self, raw_client):
+        raw_client.cookies.clear()
+        first = raw_client.post(
+            "/upload",
+            headers={
+                "Cookie": f"csrftoken={_STALE_OLD_SECRET_TOKEN}",
+                "X-CSRFToken": _STALE_OLD_SECRET_TOKEN,
+            },
+            files={"file": ("t.pptx", io.BytesIO(b"PK\x03\x04x"), _PPTX_MIME)},
+        )
+        assert first.status_code == 403
+        fresh = _csrftoken_from_set_cookie(first)
+        assert fresh, "Server must issue a fresh csrftoken on the 403"
+        # Retry the double-submit with the freshly issued token.
+        raw_client.cookies.clear()
+        retry = raw_client.post(
+            "/upload",
+            headers={"Cookie": f"csrftoken={fresh}", "X-CSRFToken": fresh},
+            files={"file": ("t.pptx", io.BytesIO(b"PK\x03\x04x"), _PPTX_MIME)},
+        )
+        assert retry.status_code != 403, (
+            "After self-heal, a retry with the fresh token must pass CSRF"
+        )
+
+
+class TestUploadJsErrorHandling:
+    """upload.js must not crash on a non-JSON error response (the literal symptom
+    users saw: 'Upload failed: Unexpected token C ... is not valid JSON')."""
+
+    def test_upload_js_does_not_blindly_parse_error_body_as_json(self, client):
+        resp = client.get("/static/upload.js")
+        assert resp.status_code == 200
+        js = resp.text
+        # On a non-OK response the handler must read text and/or guard JSON parsing,
+        # not call resp.json() unconditionally on an error body.
+        assert "resp.text(" in js or "catch" in js, (
+            "upload.js must tolerate non-JSON error responses"
+        )
+        # On a 403 it must recover (auto-retry once) rather than surface a raw parse error.
+        assert "403" in js, "upload.js must special-case the CSRF 403 for recovery"
