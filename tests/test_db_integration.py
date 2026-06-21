@@ -2827,9 +2827,32 @@ class TestNormalizeServiceDates:
             yield db
             db.close()
 
-    def test_normalize_rewrites_non_iso_dates(self, temp_db):
+    @staticmethod
+    def _seed_legacy(temp_db, service_date, service_name, source_hash):
+        """Insert a row with a NON-canonical date via raw SQL, bypassing the
+        insert_or_update_service normalization guard (#483) so we can exercise
+        normalize_service_dates() against the kind of legacy data it exists to
+        repair."""
+        cur = temp_db.cursor()
+        cur.execute(
+            "INSERT INTO services (service_date, service_name, source_file, "
+            "source_hash, imported_at) VALUES (?,?,?,?,?)",
+            (service_date, service_name, f"{source_hash}.pptx", source_hash,
+             "2026-01-01T00:00:00+00:00"),
+        )
+        temp_db._conn.commit()
+        return cur.lastrowid
+
+    def test_insert_normalizes_non_iso_at_write_boundary(self, temp_db):
+        # The write boundary now canonicalizes dates — no bad data can enter (#483).
         a = temp_db.insert_or_update_service("2026.05.10", "Evening Worship", "f1.pptx", "h1")
-        b = temp_db.insert_or_update_service("2026-05.10", "Morning Worship", "f2.pptx", "h2")
+        b = temp_db.insert_or_update_service("05-31-2026", "Morning Worship", "f2.pptx", "h2")
+        assert temp_db.query_service_by_id(a)["service_date"] == "2026-05-10"
+        assert temp_db.query_service_by_id(b)["service_date"] == "2026-05-31"
+
+    def test_normalize_rewrites_non_iso_dates(self, temp_db):
+        a = self._seed_legacy(temp_db, "2026.05.10", "Evening Worship", "h1")
+        b = self._seed_legacy(temp_db, "2026-05.10", "Morning Worship", "h2")
         temp_db.normalize_service_dates()
         assert temp_db.query_service_by_id(a)["service_date"] == "2026-05-10"
         assert temp_db.query_service_by_id(b)["service_date"] == "2026-05-10"
@@ -2841,17 +2864,17 @@ class TestNormalizeServiceDates:
         assert temp_db.query_service_by_id(a)["service_date"] == "2026-05-17"
 
     def test_dry_run_does_not_modify(self, temp_db):
-        a = temp_db.insert_or_update_service("2026.05.10", "Evening Worship", "f1.pptx", "h1")
+        a = self._seed_legacy(temp_db, "2026.05.10", "Evening Worship", "h1")
         report = temp_db.normalize_service_dates(dry_run=True)
         assert any(r["service_id"] == a and r["new_date"] == "2026-05-10" for r in report)
         # unchanged on dry run
         assert temp_db.query_service_by_id(a)["service_date"] == "2026.05.10"
 
     def test_normalize_skips_when_target_would_collide(self, temp_db):
-        # An ISO row already occupies (2026-05-10, Evening Worship); a dotted
-        # row for the same service must be flagged as a collision, not applied.
+        # An ISO row already occupies (2026-05-10, Evening Worship); a legacy
+        # dotted row for the same service must be flagged as a collision, not applied.
         temp_db.insert_or_update_service("2026-05-10", "Evening Worship", "f1.pptx", "h1")
-        b = temp_db.insert_or_update_service("2026.05.10", "Evening Worship", "f2.pptx", "h2")
+        b = self._seed_legacy(temp_db, "2026.05.10", "Evening Worship", "h2")
         report = temp_db.normalize_service_dates(dry_run=True)
         assert any(r["service_id"] == b and r.get("collision") for r in report)
         # Applying must not raise and must not change the colliding row.
@@ -3188,3 +3211,23 @@ class TestServiceExclusions:
         temp_db.add_exclusion("2026-09-06", "evening")
         rows = temp_db.query_exclusions("2026-06-01", "2026-06-30")
         assert rows == []
+
+    def test_import_clears_matching_exclusion(self, temp_db):
+        # A real import for an excluded (date, slot) supersedes the manual mark (#483).
+        temp_db.add_exclusion("2026-05-31", "morning", reason="thought it was cancelled")
+        temp_db.insert_or_update_service("2026-05-31", "Morning Worship", "f.pptx", "h1")
+        assert temp_db.query_exclusions("2026-05-01", "2026-05-31") == []
+
+    def test_import_clears_exclusion_with_us_date(self, temp_db):
+        # The exclusion is stored ISO; an import passing a US-format date must
+        # still match it (remove_exclusion path normalizes the date).
+        temp_db.add_exclusion("2026-05-31", "evening", reason="rained out")
+        temp_db.insert_or_update_service("05-31-2026", "Evening Worship", "f.pptx", "h2")
+        assert temp_db.query_exclusions("2026-05-01", "2026-05-31") == []
+
+    def test_import_leaves_other_slot_exclusion(self, temp_db):
+        # Importing the morning service must not clear the evening exclusion.
+        temp_db.add_exclusion("2026-05-31", "evening", reason="rained out")
+        temp_db.insert_or_update_service("2026-05-31", "Morning Worship", "f.pptx", "h3")
+        rows = temp_db.query_exclusions("2026-05-01", "2026-05-31")
+        assert len(rows) == 1 and rows[0]["service_slot"] == "evening"

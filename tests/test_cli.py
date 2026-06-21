@@ -2306,7 +2306,15 @@ class TestNormalizeDatesCommand:
         db = Database(db_path)
         db.connect()
         db.init_schema()
-        db.insert_or_update_service("2026.05.10", "Evening Worship", "f1.pptx", "h1")
+        # The dotted date is seeded via raw SQL to bypass the insert-time
+        # normalization guard (#483) — it represents a legacy row written before
+        # that guard, which is exactly what `cleanup normalize-dates` repairs.
+        db.cursor().execute(
+            "INSERT INTO services (service_date, service_name, source_file, "
+            "source_hash, imported_at) VALUES (?,?,?,?,?)",
+            ("2026.05.10", "Evening Worship", "f1.pptx", "h1", "2026-01-01T00:00:00+00:00"),
+        )
+        db._conn.commit()
         db.insert_or_update_service("2026-05-17", "Morning Worship", "f2.pptx", "h2")
         db.close()
         return db_path
