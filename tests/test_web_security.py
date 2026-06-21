@@ -1065,18 +1065,31 @@ class TestUploadAuth:
         reload(app_module)
         return CsrfAwareClient(TestClient(app_module.app))
 
-    def test_get_upload_requires_auth_when_password_set(self, auth_client):
+    def test_get_upload_inert_when_password_set(self, auth_client):
+        # GET /upload is viewable (not a hard 401) but inert: a login affordance,
+        # no upload control, until the viewer has valid credentials (#485).
         r = auth_client.get("/upload")
-        assert r.status_code == 401
-        assert "basic" in r.headers.get("www-authenticate", "").lower()
+        assert r.status_code == 200
+        assert "Log in" in r.text
+        assert 'type="file"' not in r.text
 
     def test_get_upload_succeeds_with_valid_credentials(self, auth_client):
         r = auth_client.get("/upload", auth=("highland", "s3cret"))
         assert r.status_code == 200
+        assert 'type="file"' in r.text  # full functional form
 
-    def test_get_upload_rejects_wrong_password(self, auth_client):
+    def test_get_upload_inert_with_wrong_password(self, auth_client):
+        # Wrong creds = not authenticated → inert page (no hard 401 on GET).
         r = auth_client.get("/upload", auth=("highland", "wrong"))
+        assert r.status_code == 200
+        assert 'type="file"' not in r.text
+
+    def test_login_param_challenges_upload(self, auth_client):
+        # The "Log in" affordance points at ?login=1, which issues the Basic
+        # challenge so the browser caches creds for the /upload realm (#485).
+        r = auth_client.get("/upload?login=1")
         assert r.status_code == 401
+        assert "basic" in r.headers.get("www-authenticate", "").lower()
 
     def test_post_upload_requires_auth(self, auth_client):
         r = auth_client.post(
@@ -1090,8 +1103,11 @@ class TestUploadAuth:
             assert auth_client.get(path).status_code == 200, path
 
     def test_upload_open_when_password_unset(self, client):
-        # The default fixture sets no UPLOAD_PASSWORD → upload stays open.
-        assert client.get("/upload").status_code == 200
+        # The default fixture sets no UPLOAD_PASSWORD → upload stays fully open.
+        r = client.get("/upload")
+        assert r.status_code == 200
+        assert 'type="file"' in r.text
+        assert "Log in" not in r.text
 
     # /jobs is part of the same write/admin workflow and leaks uploaded
     # filenames + raw error messages — it must be gated like /upload (#451).

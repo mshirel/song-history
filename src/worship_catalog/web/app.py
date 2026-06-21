@@ -1232,10 +1232,25 @@ def require_upload_auth(request: Request) -> None:
 @app.get("/upload", response_class=HTMLResponse)
 async def upload_page(
     request: Request,
-    _: None = Depends(require_upload_auth),  # noqa: B008
+    login: bool = Query(default=False),
 ) -> HTMLResponse:
-    """Render the browser upload form for PPTX files."""
-    return templates.TemplateResponse(request, "upload.html")
+    """Render the browser upload form for PPTX files.
+
+    Mirrors the missing-services report (#483, #485): the page is always
+    viewable, but the upload control renders only for a viewer with valid upload
+    credentials — otherwise an inert "Log in to upload" state is shown. Visiting
+    with ``?login=1`` issues the Basic-auth challenge so the browser prompts and
+    caches creds for the /upload realm. POST /upload stays auth-gated, so the
+    inert front-end is never the only guard.
+    """
+    authed = _upload_credentials_valid(request)
+    if login and not authed:
+        require_upload_auth(request)  # raises 401 challenge so the browser prompts
+    return templates.TemplateResponse(
+        request,
+        "upload.html",
+        {"authed": authed, "auth_required": bool(os.environ.get("UPLOAD_PASSWORD"))},
+    )
 
 
 @app.post("/upload")
