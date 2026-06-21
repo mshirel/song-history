@@ -9,12 +9,14 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from worship_catalog.normalize import normalize_service_date
+
 _log = logging.getLogger("worship_catalog.db")
 
 # Bump this integer whenever the schema changes.  Each new version must have a
 # corresponding entry in _MIGRATIONS.  connect() raises SchemaVersionError if the
 # on-disk version is *higher* than this value (DB created by a newer release).
-_SCHEMA_VERSION: int = 4
+_SCHEMA_VERSION: int = 6
 
 # Ordered dict of version → list of SQL statements.  Each migration brings the
 # DB from version (N-1) to version N.  Migration 1 is the baseline — it
@@ -170,6 +172,23 @@ _MIGRATIONS: dict[int, list[str]] = {
         "ALTER TABLE import_jobs ADD COLUMN preacher TEXT",
         "ALTER TABLE import_jobs ADD COLUMN sermon_title TEXT",
         "ALTER TABLE import_jobs ADD COLUMN songs_json TEXT",
+    ],
+    6: [
+        # Track Sunday service slots (morning/evening) that are intentionally
+        # absent, so the missing-services report shows them as deliberate rather
+        # than as gaps (#480).
+        """
+        CREATE TABLE IF NOT EXISTS service_exclusions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            service_date TEXT NOT NULL,
+            service_slot TEXT NOT NULL,
+            reason TEXT,
+            excluded_at TEXT NOT NULL,
+            UNIQUE(service_date, service_slot)
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_service_exclusions_date "
+        "ON service_exclusions(service_date)",
     ],
 }
 
@@ -441,6 +460,21 @@ class Database:
                 completed_at TEXT,
                 songs_imported INTEGER,
                 error_message TEXT
+            )
+            """
+        )
+
+        # Service exclusions table — Sunday slots intentionally left absent so the
+        # missing-services report can distinguish deliberate gaps (#480).
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS service_exclusions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                service_date TEXT NOT NULL,
+                service_slot TEXT NOT NULL,
+                reason TEXT,
+                excluded_at TEXT NOT NULL,
+                UNIQUE(service_date, service_slot)
             )
             """
         )
@@ -850,6 +884,52 @@ class Database:
         while row is not None:
             yield dict(row)
             row = cursor.fetchone()
+
+    # --- Service exclusions (missing-services report) ---
+
+    def add_exclusion(
+        self, service_date: str, service_slot: str, reason: str | None = None
+    ) -> None:
+        """Mark a (date, slot) as intentionally absent; upsert on conflict (#480).
+
+        The date is normalized to ISO ``YYYY-MM-DD`` so it lines up with stored
+        ``services.service_date`` values regardless of the caller's separators.
+        """
+        normalized = normalize_service_date(service_date)
+        now = datetime.now(timezone.utc).isoformat()
+        self._conn.execute(
+            """
+            INSERT INTO service_exclusions (service_date, service_slot, reason, excluded_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(service_date, service_slot)
+            DO UPDATE SET reason = excluded.reason, excluded_at = excluded.excluded_at
+            """,
+            (normalized, service_slot, reason, now),
+        )
+        self._maybe_commit()
+
+    def remove_exclusion(self, service_date: str, service_slot: str) -> None:
+        """Remove an intentional-exclusion marker for a (date, slot) (#480)."""
+        normalized = normalize_service_date(service_date)
+        self._conn.execute(
+            "DELETE FROM service_exclusions WHERE service_date = ? AND service_slot = ?",
+            (normalized, service_slot),
+        )
+        self._maybe_commit()
+
+    def query_exclusions(self, start_date: str, end_date: str) -> list[dict]:
+        """Return intentional-exclusion rows within the inclusive date range."""
+        cursor = self._conn.cursor()
+        cursor.execute(
+            """
+            SELECT id, service_date, service_slot, reason, excluded_at
+            FROM service_exclusions
+            WHERE service_date >= ? AND service_date <= ?
+            ORDER BY service_date, service_slot
+            """,
+            (start_date, end_date),
+        )
+        return [dict(row) for row in cursor.fetchall()]
 
     def query_songs_missing_credits(self) -> list[dict]:
         """

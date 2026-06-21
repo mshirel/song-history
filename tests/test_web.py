@@ -128,6 +128,93 @@ class TestReportsPage:
         assert "/reports/stats" in response.text
 
 
+class TestMissingServicesReport:
+    """Missing-services report: HTML page, HTMX partial, JSON API, exclude toggle."""
+
+    def test_reports_page_has_missing_services_tab(self, client):
+        body = client.get("/reports").text
+        assert "Missing Services" in body
+        assert "/reports/missing-services" in body
+
+    def test_window_selector_offers_all_options(self, client):
+        body = client.get("/reports").text
+        # 90 / 180 / 1 year / 2 years selectable windows.
+        for label in ("Last 90 days", "Last 180 days", "Last 1 year", "Last 2 years"):
+            assert label in body
+
+    def test_get_report_returns_full_page(self, client):
+        resp = client.get("/reports/missing-services")
+        assert resp.status_code == 200
+        assert "text/html" in resp.headers["content-type"]
+        assert "<!doctype" in resp.text.lower() or "<html" in resp.text.lower()
+
+    def test_get_report_htmx_returns_partial(self, client):
+        resp = client.get("/reports/missing-services", headers={"HX-Request": "true"})
+        assert resp.status_code == 200
+        lowered = resp.text.lower()
+        assert "<!doctype" not in lowered
+        assert "<html" not in lowered
+
+    def test_json_endpoint_shape(self, client):
+        data = client.get("/reports/missing-services.json").json()
+        for key in ("window_days", "start_date", "end_date", "weeks", "summary"):
+            assert key in data
+        assert data["window_days"] == 90  # default window
+
+    def test_json_respects_days_param(self, client):
+        data = client.get("/reports/missing-services.json?days=180").json()
+        assert data["window_days"] == 180
+
+    def test_json_invalid_days_falls_back_to_default(self, client):
+        data = client.get("/reports/missing-services.json?days=9999").json()
+        assert data["window_days"] == 90
+
+    def test_post_exclude_marks_slot(self, client, db_with_songs):
+        resp = client.post(
+            "/reports/missing-services/exclude",
+            data={"service_date": "2026-06-14", "service_slot": "evening",
+                  "reason": "Fellowship", "days": "90"},
+        )
+        assert resp.status_code == 200
+        db = Database(db_with_songs)
+        db.connect()
+        rows = db.query_exclusions("2026-06-01", "2026-06-30")
+        db.close()
+        assert len(rows) == 1
+        assert rows[0]["service_slot"] == "evening"
+        assert rows[0]["reason"] == "Fellowship"
+
+    def test_post_include_removes_exclusion(self, client, db_with_songs):
+        client.post(
+            "/reports/missing-services/exclude",
+            data={"service_date": "2026-06-14", "service_slot": "evening", "days": "90"},
+        )
+        resp = client.post(
+            "/reports/missing-services/include",
+            data={"service_date": "2026-06-14", "service_slot": "evening", "days": "90"},
+        )
+        assert resp.status_code == 200
+        db = Database(db_with_songs)
+        db.connect()
+        rows = db.query_exclusions("2026-06-01", "2026-06-30")
+        db.close()
+        assert rows == []
+
+    def test_post_exclude_rejects_invalid_slot(self, client):
+        resp = client.post(
+            "/reports/missing-services/exclude",
+            data={"service_date": "2026-06-14", "service_slot": "noon", "days": "90"},
+        )
+        assert resp.status_code == 422
+
+    def test_post_exclude_rejects_invalid_date(self, client):
+        resp = client.post(
+            "/reports/missing-services/exclude",
+            data={"service_date": "not-a-date", "service_slot": "evening", "days": "90"},
+        )
+        assert resp.status_code == 422
+
+
 class TestReportsTabs:
     """Reports page is tabbed: Song Statistics primary/default, CCLI secondary (#390)."""
 

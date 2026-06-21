@@ -2358,7 +2358,7 @@ class TestDatabaseIndexes:
         cursor = temp_db.cursor()
         cursor.execute("PRAGMA user_version")
         assert cursor.fetchone()[0] == _SCHEMA_VERSION
-        assert _SCHEMA_VERSION == 4  # bumped for NULL-safe unique indexes (#420)
+        assert _SCHEMA_VERSION == 6  # bumped for service_exclusions table (#480)
 
 
 @pytest.mark.integration
@@ -3136,3 +3136,55 @@ class TestMigrationV4NullSafeUnique:
         )
         assert cur.fetchone()[0] == 1, "duplicate NULL-edition copy_events must be collapsed"
         db.close()
+
+
+@pytest.mark.integration
+class TestServiceExclusions:
+    """Tests for the service_exclusions table and CRUD helpers (#480)."""
+
+    @pytest.fixture
+    def temp_db(self):
+        with TemporaryDirectory() as tmpdir:
+            db = Database(Path(tmpdir) / "test.db")
+            db.connect()
+            db.init_schema()
+            yield db
+            db.close()
+
+    def test_exclusions_table_created(self, temp_db):
+        cursor = temp_db.conn.cursor()
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        tables = [row[0] for row in cursor.fetchall()]
+        assert "service_exclusions" in tables
+
+    def test_add_and_query_exclusion(self, temp_db):
+        temp_db.add_exclusion("2026-06-14", "evening", reason="Fellowship meal")
+        rows = temp_db.query_exclusions("2026-06-01", "2026-06-30")
+        assert len(rows) == 1
+        assert rows[0]["service_date"] == "2026-06-14"
+        assert rows[0]["service_slot"] == "evening"
+        assert rows[0]["reason"] == "Fellowship meal"
+        assert rows[0]["excluded_at"]  # timestamp recorded
+
+    def test_add_exclusion_normalizes_date(self, temp_db):
+        temp_db.add_exclusion("2026.6.14", "morning")
+        rows = temp_db.query_exclusions("2026-06-01", "2026-06-30")
+        assert rows[0]["service_date"] == "2026-06-14"
+
+    def test_add_exclusion_upserts_on_conflict(self, temp_db):
+        temp_db.add_exclusion("2026-06-14", "evening", reason="first")
+        temp_db.add_exclusion("2026-06-14", "evening", reason="second")
+        rows = temp_db.query_exclusions("2026-06-01", "2026-06-30")
+        assert len(rows) == 1  # UNIQUE(date, slot) — updated, not duplicated
+        assert rows[0]["reason"] == "second"
+
+    def test_remove_exclusion(self, temp_db):
+        temp_db.add_exclusion("2026-06-14", "evening", reason="x")
+        temp_db.remove_exclusion("2026-06-14", "evening")
+        assert temp_db.query_exclusions("2026-06-01", "2026-06-30") == []
+
+    def test_query_exclusions_respects_range(self, temp_db):
+        temp_db.add_exclusion("2026-03-01", "morning")
+        temp_db.add_exclusion("2026-09-06", "evening")
+        rows = temp_db.query_exclusions("2026-06-01", "2026-06-30")
+        assert rows == []

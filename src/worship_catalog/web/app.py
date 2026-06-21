@@ -45,6 +45,12 @@ from worship_catalog.import_service import run_import
 from worship_catalog.log_config import RequestLoggingMiddleware
 from worship_catalog.log_config import setup as _setup_logging
 from worship_catalog.notify import send_pushover
+from worship_catalog.service_slots import (
+    DEFAULT_WINDOW_DAYS,
+    VALID_SLOTS,
+    WINDOW_OPTIONS,
+)
+from worship_catalog.services.missing_services_report import compute_missing_services
 from worship_catalog.services.report_service import compute_stats_data
 from worship_catalog.web.csrf import SelfHealingCSRFMiddleware
 
@@ -621,7 +627,14 @@ async def songs(
 
 @app.get("/reports", response_class=HTMLResponse)
 async def reports_page(request: Request) -> HTMLResponse:
-    return templates.TemplateResponse(request, "reports.html")
+    return templates.TemplateResponse(
+        request,
+        "reports.html",
+        {
+            "window_options": WINDOW_OPTIONS,
+            "default_window": str(DEFAULT_WINDOW_DAYS),
+        },
+    )
 
 
 @app.get("/about", response_class=HTMLResponse)
@@ -832,6 +845,98 @@ async def reports_ccli_csv(
         iter([output.getvalue()]),
         media_type="text/csv",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+def _missing_services_context(db: Database, days: int) -> dict[str, Any]:
+    """Compute the report for *days* back from today, plus selector context."""
+    data = compute_missing_services(db, days, date.today())
+    data["window_options"] = WINDOW_OPTIONS
+    return data
+
+
+def _validate_exclusion_input(service_date: str, service_slot: str) -> None:
+    """Raise HTTPException 422 for a bad exclusion date or slot."""
+    if not _DATE_RE.match(service_date):
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid service_date: '{service_date}' — expected YYYY-MM-DD",
+        )
+    try:
+        date.fromisoformat(service_date)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid service_date: '{service_date}' — not a real calendar date",
+        ) from exc
+    if service_slot not in VALID_SLOTS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid service_slot: '{service_slot}' — expected one of "
+            f"{sorted(VALID_SLOTS)}",
+        )
+
+
+@app.get("/reports/missing-services", response_class=HTMLResponse)
+async def missing_services_report(
+    request: Request,
+    days: int = Query(default=DEFAULT_WINDOW_DAYS),
+    db: Database = Depends(get_db),  # noqa: B008
+    _rl: None = Depends(_report_rate_limit),  # noqa: B008
+) -> HTMLResponse:
+    """Report Sunday morning/evening services absent from the DB (#480)."""
+    ctx = _missing_services_context(db, days)
+    # HTMX swaps just the result region; a full navigation renders the page.
+    template = (
+        "_missing_services_result.html"
+        if request.headers.get("HX-Request")
+        else "missing_services.html"
+    )
+    return templates.TemplateResponse(request, template, ctx)
+
+
+@app.get("/reports/missing-services.json")
+async def missing_services_report_json(
+    days: int = Query(default=DEFAULT_WINDOW_DAYS),
+    db: Database = Depends(get_db),  # noqa: B008
+    _rl: None = Depends(_report_rate_limit),  # noqa: B008
+) -> JSONResponse:
+    """JSON view of the missing-services report for automation/reuse (#480)."""
+    return JSONResponse(content=_missing_services_context(db, days))
+
+
+@app.post("/reports/missing-services/exclude", response_class=HTMLResponse)
+async def missing_services_exclude(
+    request: Request,
+    service_date: str = Form(...),
+    service_slot: str = Form(...),
+    reason: str = Form(default=""),
+    days: int = Form(default=DEFAULT_WINDOW_DAYS),
+    db: Database = Depends(get_db),  # noqa: B008
+    _rl: None = Depends(_report_rate_limit),  # noqa: B008
+) -> HTMLResponse:
+    """Mark a missing slot as intentionally excluded, then re-render (#480)."""
+    _validate_exclusion_input(service_date, service_slot)
+    db.add_exclusion(service_date, service_slot, reason=reason or None)
+    return templates.TemplateResponse(
+        request, "_missing_services_result.html", _missing_services_context(db, days)
+    )
+
+
+@app.post("/reports/missing-services/include", response_class=HTMLResponse)
+async def missing_services_include(
+    request: Request,
+    service_date: str = Form(...),
+    service_slot: str = Form(...),
+    days: int = Form(default=DEFAULT_WINDOW_DAYS),
+    db: Database = Depends(get_db),  # noqa: B008
+    _rl: None = Depends(_report_rate_limit),  # noqa: B008
+) -> HTMLResponse:
+    """Remove an intentional-exclusion marker, then re-render (#480)."""
+    _validate_exclusion_input(service_date, service_slot)
+    db.remove_exclusion(service_date, service_slot)
+    return templates.TemplateResponse(
+        request, "_missing_services_result.html", _missing_services_context(db, days)
     )
 
 
