@@ -45,9 +45,17 @@ CI config changes and documentation-only changes are exempt, but any change touc
 5. Run linter: python3 -m ruff check src/
 6. Run type check: python3 -m mypy src/
 7. Run QA agents (see below)
-8. Commit and push to the agent branch (do not merge to main — open a PR for review)
-9. Confirm CI passes before closing the issue
+8. Commit and push to the agent branch, then open a PR
+9. Confirm CI passes (test, e2e, security), then merge the PR — auto-merge is OK
+   once all required checks are green. Branch protection requires the head to be
+   up to date with main, so `gh pr update-branch <n>` before merging if needed.
+   Leave a PR unmerged for review only when the change is risky/ambiguous, checks
+   fail, or Matt asked for review.
 ```
+
+> **Merge policy:** auto-merge after green CI is the default (Matt, 2026-06-21).
+> Always go through a PR (never push straight to `main`) so CI runs, but you may
+> merge your own green PR rather than waiting for manual review.
 
 ## Agent Workflow
 
@@ -163,3 +171,13 @@ Every issue should carry at least one **topic label** and, where applicable, one
 ```bash
 gh issue list --state open --label "!deferred"
 ```
+
+## graphify
+
+This project has a knowledge graph at graphify-out/ with god nodes, community structure, and cross-file relationships.
+
+Rules:
+- For codebase questions, first run `graphify query "<question>"` when graphify-out/graph.json exists. Use `graphify path "<A>" "<B>"` for relationships and `graphify explain "<concept>"` for focused concepts. These return a scoped subgraph, usually much smaller than GRAPH_REPORT.md or raw grep output.
+- If graphify-out/wiki/index.md exists, use it for broad navigation instead of raw source browsing.
+- Read graphify-out/GRAPH_REPORT.md only for broad architecture review or when query/path/explain do not surface enough context.
+- After modifying code, run `graphify update .` to keep the graph current (AST-only, no API cost).

@@ -233,3 +233,9 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# graphify (generated knowledge graph; local-only, never committed — rebuilt by hooks / `graphify update .`)
+graphify-out/
+
+# mutation testing output
+mutants/

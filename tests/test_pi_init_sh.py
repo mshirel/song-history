@@ -71,3 +71,24 @@ class TestInitShAcmePermissions:
         assert "chmod" in result.stderr, (
             "Error message must include 'chmod' to guide the operator"
         )
+
+
+@pytest.mark.slow
+class TestInitShEnvPermissions:
+    """deploy/pi/init.sh must reject a world/group-readable .env (#446)."""
+
+    def test_init_sh_fails_when_env_not_600(self, tmp_path: Path) -> None:
+        env_file = tmp_path / ".env"
+        env_file.write_text("CSRF_SECRET=x\n")
+        env_file.chmod(0o644)
+        result = run_init({"ENV_DIR": str(tmp_path), "ENV_FILE": str(env_file),
+                           "ACME_DIR": str(tmp_path)})
+        assert result.returncode != 0, "init.sh must fail when .env is not 600"
+        assert "600" in result.stderr
+
+    def test_init_sh_passes_when_env_600(self, tmp_path: Path) -> None:
+        env_file = tmp_path / ".env"
+        env_file.write_text("CSRF_SECRET=x\n")
+        env_file.chmod(0o600)
+        result = run_init({"ENV_FILE": str(env_file), "ACME_DIR": str(tmp_path)})
+        assert result.returncode == 0, f"init.sh should pass with 600 .env: {result.stderr}"

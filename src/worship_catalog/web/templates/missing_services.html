@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block title %}Missing Services — Highland Worship Catalog{% endblock %}
+{% block content %}
+<h1>Missing Services</h1>
+<p style="font-size:0.9rem;color:#495057;max-width:48rem;">
+  Sundays normally have both a morning and an evening worship service. This report
+  lists the slots with no service in the catalog over the selected time frame, and
+  lets you mark intentional gaps as excluded.
+</p>
+
+<div class="card">
+  <form id="missing-form" style="margin-bottom:1rem;">
+    <label for="missing-window" style="font-size:0.85rem;font-weight:600;color:#495057;margin-right:0.5rem;">Time frame</label>
+    <select id="missing-window" name="days"
+            hx-get="/reports/missing-services"
+            hx-trigger="change"
+            hx-target="#missing-result"
+            hx-swap="innerHTML"
+            hx-indicator="#missing-spinner">
+      {% for value, label in window_options.items() %}
+      <option value="{{ value }}"{% if value == window_days|string %} selected{% endif %}>{{ label }}</option>
+      {% endfor %}
+    </select>
+    <span id="missing-spinner" class="htmx-indicator" style="color:#6c757d;font-size:0.85rem;">loading…</span>
+  </form>
+  <div id="missing-result" aria-live="polite">{% include "_missing_services_result.html" %}</div>
+</div>
+<script src="/static/reports.js"></script>
+{% endblock %}

@@ -1343,6 +1343,43 @@ class TestUpdateImportJobSQLSafety:
             db.update_import_job(job_id, **{"'; DROP TABLE import_jobs; --": "evil"})  # type: ignore[arg-type]
         db.close()
 
+    def test_update_with_service_metadata_persists(self, temp_db: Database) -> None:
+        import json
+
+        job_id = "meta-job-001"
+        temp_db.create_import_job(job_id, filename="test.pptx")
+        temp_db.update_import_job(
+            job_id,
+            status="complete",
+            songs_imported=3,
+            service_date="2026-05-25",
+            service_name="AM Worship",
+            song_leader="Jane Smith",
+            preacher="John Doe",
+            sermon_title="Grace Abounding",
+            songs_json=json.dumps(["Amazing Grace", "How Great Thou Art", "Holy Holy Holy"]),
+        )
+        row = temp_db.get_import_job(job_id)
+        temp_db.close()
+        assert row is not None
+        assert row["service_date"] == "2026-05-25"
+        assert row["service_name"] == "AM Worship"
+        assert row["song_leader"] == "Jane Smith"
+        assert row["preacher"] == "John Doe"
+        assert row["sermon_title"] == "Grace Abounding"
+        songs = json.loads(row["songs_json"])
+        assert songs == ["Amazing Grace", "How Great Thou Art", "Holy Holy Holy"]
+
+    def test_new_metadata_fields_present_as_none_when_not_set(self, temp_db: Database) -> None:
+        job_id = "meta-job-002"
+        temp_db.create_import_job(job_id, filename="test.pptx")
+        row = temp_db.get_import_job(job_id)
+        temp_db.close()
+        assert row is not None
+        for field in ("service_date", "service_name", "song_leader", "preacher", "sermon_title", "songs_json"):
+            assert field in row, f"Field {field!r} missing from import_job row"
+            assert row[field] is None, f"Field {field!r} should default to None"
+
 
 # ---------------------------------------------------------------------------
 # Issue #98 — all timestamps must be UTC-aware ISO strings.
@@ -2315,10 +2352,13 @@ class TestDatabaseIndexes:
                 break
         assert has_date_index, "Missing index on services.service_date"
 
-    def test_schema_version_is_3(self, temp_db):
+    def test_schema_version_matches_current(self, temp_db):
+        from worship_catalog.db import _SCHEMA_VERSION
+
         cursor = temp_db.cursor()
         cursor.execute("PRAGMA user_version")
-        assert cursor.fetchone()[0] == 3
+        assert cursor.fetchone()[0] == _SCHEMA_VERSION
+        assert _SCHEMA_VERSION == 6  # bumped for service_exclusions table (#480)
 
 
 @pytest.mark.integration
@@ -2880,11 +2920,6 @@ class TestConcurrentInsertOrGet:
         finally:
             check.close()
 
-    @pytest.mark.xfail(
-        reason="#420: NULL columns in song_editions UNIQUE are distinct in SQLite, "
-        "so concurrent NULL-credit inserts still duplicate (retry can't catch — no error)",
-        strict=False,
-    )
     def test_concurrent_insert_or_get_song_edition_no_error(self, tmp_path):
         db_path = tmp_path / "race_edition.db"
         init = self._connect(db_path)
@@ -2925,11 +2960,6 @@ class TestConcurrentInsertOrGet:
         finally:
             check.close()
 
-    @pytest.mark.xfail(
-        reason="#420: NULL song_edition_id in copy_events UNIQUE is distinct in SQLite, "
-        "so concurrent NULL-edition inserts still duplicate (retry can't catch — no error)",
-        strict=False,
-    )
     def test_concurrent_insert_or_get_copy_event_no_error(self, tmp_path):
         db_path = tmp_path / "race_copy.db"
         init = self._connect(db_path)
@@ -3050,3 +3080,111 @@ class TestPaginationSnapshotConsistency:
         assert total == 100
         assert len(rows) == 10
         db.close()
+
+
+@pytest.mark.integration
+class TestMigrationV4NullSafeUnique:
+    """Migration v4 adds NULL-safe unique indexes + de-dupes existing rows (#420)."""
+
+    def test_v4_creates_null_safe_indexes(self, tmp_path):
+        db = Database(tmp_path / "v4idx.db")
+        db.connect()
+        db.init_schema()
+        cur = db.conn.cursor()
+        cur.execute(
+            "SELECT name FROM sqlite_master WHERE type='index' AND name IN "
+            "('idx_song_editions_identity', 'idx_copy_events_identity')"
+        )
+        names = {r[0] for r in cur.fetchall()}
+        assert names == {"idx_song_editions_identity", "idx_copy_events_identity"}
+        db.close()
+
+    def test_v4_dedupes_existing_null_duplicates(self, tmp_path):
+        db = Database(tmp_path / "v4dedup.db")
+        db.connect()
+        db.init_schema()
+        cur = db.conn.cursor()
+        # Simulate a pre-v4 DB: drop the NULL-safe indexes + unmark migration 4,
+        # so we can insert the duplicate NULL rows the constraint now forbids.
+        cur.execute("DROP INDEX IF EXISTS idx_song_editions_identity")
+        cur.execute("DROP INDEX IF EXISTS idx_copy_events_identity")
+        cur.execute("DELETE FROM schema_migrations WHERE version = 4")
+        song_id = db.insert_or_get_song("dup song", "Dup Song")
+        svc = db.insert_or_update_service("2026-02-15", "AM Worship", "f.pptx", "h1")
+        cur.execute("INSERT INTO song_editions (song_id, words_by) VALUES (?, NULL)", (song_id,))
+        cur.execute("INSERT INTO song_editions (song_id, words_by) VALUES (?, NULL)", (song_id,))
+        cur.execute(
+            "INSERT INTO copy_events (service_id, song_id, reproduction_type) VALUES (?,?,?)",
+            (svc, song_id, "projection"),
+        )
+        cur.execute(
+            "INSERT INTO copy_events (service_id, song_id, reproduction_type) VALUES (?,?,?)",
+            (svc, song_id, "projection"),
+        )
+        db.conn.commit()
+
+        # Re-run migrations → v4 de-dupes and recreates the indexes.
+        db._apply_migrations()
+        db.conn.commit()
+
+        cur.execute("SELECT COUNT(*) FROM song_editions WHERE song_id = ?", (song_id,))
+        assert cur.fetchone()[0] == 1, "duplicate NULL-credit editions must be collapsed"
+        cur.execute(
+            "SELECT COUNT(*) FROM copy_events WHERE service_id=? AND song_id=? "
+            "AND reproduction_type='projection'",
+            (svc, song_id),
+        )
+        assert cur.fetchone()[0] == 1, "duplicate NULL-edition copy_events must be collapsed"
+        db.close()
+
+
+@pytest.mark.integration
+class TestServiceExclusions:
+    """Tests for the service_exclusions table and CRUD helpers (#480)."""
+
+    @pytest.fixture
+    def temp_db(self):
+        with TemporaryDirectory() as tmpdir:
+            db = Database(Path(tmpdir) / "test.db")
+            db.connect()
+            db.init_schema()
+            yield db
+            db.close()
+
+    def test_exclusions_table_created(self, temp_db):
+        cursor = temp_db.conn.cursor()
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        tables = [row[0] for row in cursor.fetchall()]
+        assert "service_exclusions" in tables
+
+    def test_add_and_query_exclusion(self, temp_db):
+        temp_db.add_exclusion("2026-06-14", "evening", reason="Fellowship meal")
+        rows = temp_db.query_exclusions("2026-06-01", "2026-06-30")
+        assert len(rows) == 1
+        assert rows[0]["service_date"] == "2026-06-14"
+        assert rows[0]["service_slot"] == "evening"
+        assert rows[0]["reason"] == "Fellowship meal"
+        assert rows[0]["excluded_at"]  # timestamp recorded
+
+    def test_add_exclusion_normalizes_date(self, temp_db):
+        temp_db.add_exclusion("2026.6.14", "morning")
+        rows = temp_db.query_exclusions("2026-06-01", "2026-06-30")
+        assert rows[0]["service_date"] == "2026-06-14"
+
+    def test_add_exclusion_upserts_on_conflict(self, temp_db):
+        temp_db.add_exclusion("2026-06-14", "evening", reason="first")
+        temp_db.add_exclusion("2026-06-14", "evening", reason="second")
+        rows = temp_db.query_exclusions("2026-06-01", "2026-06-30")
+        assert len(rows) == 1  # UNIQUE(date, slot) — updated, not duplicated
+        assert rows[0]["reason"] == "second"
+
+    def test_remove_exclusion(self, temp_db):
+        temp_db.add_exclusion("2026-06-14", "evening", reason="x")
+        temp_db.remove_exclusion("2026-06-14", "evening")
+        assert temp_db.query_exclusions("2026-06-01", "2026-06-30") == []
+
+    def test_query_exclusions_respects_range(self, temp_db):
+        temp_db.add_exclusion("2026-03-01", "morning")
+        temp_db.add_exclusion("2026-09-06", "evening")
+        rows = temp_db.query_exclusions("2026-06-01", "2026-06-30")
+        assert rows == []

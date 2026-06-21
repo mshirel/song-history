@@ -164,7 +164,12 @@ def select_best_title(candidates: list[str]) -> str | None:
 # Matches: optional numeric book prefix + book name + chapter:verse[(-|–|—) verse]
 # Accepts hyphens, en-dashes, em-dashes, and optional spaces around the separator (#313).
 _SCRIPTURE_RE = re.compile(
-    r"^(1|2|3)?\s*[A-Za-z][a-z]+(\s[A-Za-z][a-z]+)?\s+\d{1,3}:\d{1,3}(\s*[-–—]\s*\d{1,3})?$",
+    # Optional leading dash/en/em-dash (older decks prefix scripture refs, #427),
+    # optional numeric book prefix, book name, then chapter[:.]verse with an
+    # optional verse range. The [:.] accepts dot-style refs ("Romans 12.20") as
+    # well as the canonical colon ("John 3:16").
+    r"^[–—-]?\s*(1|2|3)?\s*[A-Za-z][a-z]+(\s[A-Za-z][a-z]+)?\s+\d{1,3}[:.]\d{1,3}"
+    r"(\s*[-–—]\s*\d{1,3})?$",
     re.IGNORECASE,
 )
 
