@@ -158,9 +158,15 @@ services:
     # not silently upgrade; re-pin on a reviewed Dependabot bump.
     image: cloudflare/cloudflared:latest@sha256:59bab8d3aceec09bf6bdb07d6beca0225ca5cd7ab79436a87ea97978fe1dc4f9
     restart: unless-stopped
-    command: tunnel --no-autoupdate run --token ${TUNNEL_TOKEN}
+    # --metrics pins the Prometheus endpoint to a stable port (default is
+    # ephemeral). Published on :2000 for Prometheus to scrape (HOME-176). This
+    # port is LAN-only — it is NOT routed through the tunnel; reachability is
+    # gated by the VLAN-249 firewall (only mon-prometheus 10.20.100.245 allowed).
+    command: tunnel --no-autoupdate --metrics 0.0.0.0:2000 run --token ${TUNNEL_TOKEN}
     # If IPS in Prevention mangles the QUIC/UDP edge connection, force HTTP/2:
-    # command: tunnel --no-autoupdate --protocol http2 run --token ${TUNNEL_TOKEN}
+    # command: tunnel --no-autoupdate --protocol http2 --metrics 0.0.0.0:2000 run --token ${TUNNEL_TOKEN}
+    ports:
+      - "2000:2000"   # cloudflared /metrics — Prometheus scrape only (firewall-gated)
     depends_on:
       song-history:
         condition: service_started
