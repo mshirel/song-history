@@ -156,7 +156,7 @@ services:
   cloudflared:
     # Digest-pinned (#453) — was :latest. The internet-facing tunnel daemon must
     # not silently upgrade; re-pin on a reviewed Dependabot bump.
-    image: cloudflare/cloudflared:latest@sha256:59bab8d3aceec09bf6bdb07d6beca0225ca5cd7ab79436a87ea97978fe1dc4f9
+    image: cloudflare/cloudflared:latest@sha256:6d91c121b803126f7a5344005d17a9324788fc09d305b6e2560ec6040a7ae283
     restart: unless-stopped
     # --metrics pins the Prometheus endpoint to a stable port (default is
     # ephemeral). Published on :2000 for Prometheus to scrape (HOME-176). This
