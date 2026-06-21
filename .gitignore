@@ -234,11 +234,8 @@ marimo/_static/
 marimo/_lsp/
 __marimo__/
 
-# graphify (generated; keep only graph.json + report + analysis tracked)
-graphify-out/*
-!graphify-out/graph.json
-!graphify-out/GRAPH_REPORT.md
-!graphify-out/.graphify_analysis.json
+# graphify (generated knowledge graph; local-only, never committed — rebuilt by hooks / `graphify update .`)
+graphify-out/
 
 # mutation testing output
 mutants/
