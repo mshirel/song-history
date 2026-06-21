@@ -6,6 +6,7 @@ import base64
 import csv
 import importlib.metadata
 import io
+import json
 import logging
 import math
 import os
@@ -38,14 +39,20 @@ from fastapi.templating import Jinja2Templates
 from prometheus_client import CONTENT_TYPE_LATEST, REGISTRY, Counter, Histogram, generate_latest
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
-from starlette_csrf import CSRFMiddleware  # type: ignore[attr-defined]
 
 from worship_catalog.db import Database
 from worship_catalog.import_service import run_import
 from worship_catalog.log_config import RequestLoggingMiddleware
 from worship_catalog.log_config import setup as _setup_logging
 from worship_catalog.notify import send_pushover
+from worship_catalog.service_slots import (
+    DEFAULT_WINDOW_DAYS,
+    VALID_SLOTS,
+    WINDOW_OPTIONS,
+)
+from worship_catalog.services.missing_services_report import compute_missing_services
 from worship_catalog.services.report_service import compute_stats_data
+from worship_catalog.web.csrf import SelfHealingCSRFMiddleware
 
 _setup_logging()
 _log = logging.getLogger("worship_catalog.web")
@@ -127,7 +134,7 @@ else:
 # cookie_name is set explicitly so the coupling with client-side JS
 # (upload.js, reports.js) and CsrfAwareClient in conftest.py is visible (#239).
 app.add_middleware(
-    CSRFMiddleware,
+    SelfHealingCSRFMiddleware,
     secret=_CSRF_SECRET,
     cookie_name="csrftoken",
     exempt_urls=[re.compile(r"^/health$"), re.compile(r"^/metrics$")],
@@ -224,8 +231,30 @@ templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
 app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
 
 
+# Headers added by the public proxy chain (Cloudflare tunnel → Traefik). Their
+# presence means the request did NOT come from the internal Prometheus scrape,
+# which connects directly to the host-published :8000 with none of these (#449).
+_PROXY_HEADERS: tuple[str, ...] = (
+    "x-forwarded-for",
+    "x-forwarded-host",
+    "x-forwarded-proto",
+    "cf-connecting-ip",
+    "forwarded",
+)
+
+
 @app.get("/metrics", include_in_schema=False)
-async def metrics() -> Response:
+async def metrics(request: Request) -> Response:
+    """Prometheus metrics — internal scraping only (#449).
+
+    Public requests reach the app through the proxy chain (Cloudflare tunnel →
+    Traefik) and carry forwarding headers (X-Forwarded-For etc.); the internal
+    Prometheus scrape hits :8000 directly with none of them. Deny the proxied
+    path with 404 so the route map / traffic / latency aren't exposed publicly,
+    while the internal scrape keeps working.
+    """
+    if any(h in request.headers for h in _PROXY_HEADERS):
+        raise HTTPException(status_code=404)
     return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
@@ -336,23 +365,36 @@ class _UploadRateLimiter:
     (useful for tests that don't need persistence).
     """
 
-    _CREATE_TABLE = (
-        "CREATE TABLE IF NOT EXISTS rate_limit_events "
-        "(client_ip TEXT NOT NULL, timestamp REAL NOT NULL)"
-    )
-    _CREATE_INDEX = (
-        "CREATE INDEX IF NOT EXISTS idx_rle_ip_ts "
-        "ON rate_limit_events (client_ip, timestamp)"
-    )
-
-    def __init__(self, db_path: Path | None = None) -> None:
+    def __init__(
+        self,
+        db_path: Path | None = None,
+        limit: int | None = None,
+        window_seconds: int | None = None,
+        table: str = "rate_limit_events",
+    ) -> None:
         self._lock = threading.Lock()
         self._db_path = db_path
+        # When no explicit override is given, fall back to the module constants
+        # at CALL time (see _limit/_window) so tests that patch them still work.
+        self._limit_override = limit
+        self._window_override = window_seconds
+        # Table name is an internal literal (never user input) — safe to inline.
+        self._table = table
         self._conn: Any = None  # persistent SQLite connection (#341)
         # In-memory fallback when no db_path is given
         self._timestamps: dict[str, list[float]] = defaultdict(list)
         if db_path is not None:
             self._init_db()
+
+    @property
+    def _limit(self) -> int:
+        return self._limit_override if self._limit_override is not None else _UPLOAD_RATE_LIMIT
+
+    @property
+    def _window(self) -> int:
+        if self._window_override is not None:
+            return self._window_override
+        return _UPLOAD_RATE_WINDOW_SECONDS
 
     # -- private helpers --------------------------------------------------
 
@@ -360,29 +402,35 @@ class _UploadRateLimiter:
         import sqlite3
 
         self._conn = sqlite3.connect(self._db_path, check_same_thread=False)  # type: ignore[arg-type]
-        self._conn.execute(self._CREATE_TABLE)
-        self._conn.execute(self._CREATE_INDEX)
+        self._conn.execute(
+            f"CREATE TABLE IF NOT EXISTS {self._table} "
+            "(client_ip TEXT NOT NULL, timestamp REAL NOT NULL)"
+        )
+        self._conn.execute(
+            f"CREATE INDEX IF NOT EXISTS idx_{self._table}_ip_ts "
+            f"ON {self._table} (client_ip, timestamp)"
+        )
         self._conn.commit()
 
     def _db_is_allowed(self, client_ip: str) -> tuple[bool, int]:
         now = time.time()
-        window_start = now - _UPLOAD_RATE_WINDOW_SECONDS
+        window_start = now - self._window
 
         conn = self._conn
         # Prune expired entries for this IP
         conn.execute(
-            "DELETE FROM rate_limit_events WHERE client_ip = ? AND timestamp <= ?",
+            f"DELETE FROM {self._table} WHERE client_ip = ? AND timestamp <= ?",
             (client_ip, window_start),
         )
         row = conn.execute(
-            "SELECT COUNT(*) FROM rate_limit_events WHERE client_ip = ? AND timestamp > ?",
+            f"SELECT COUNT(*) FROM {self._table} WHERE client_ip = ? AND timestamp > ?",
             (client_ip, window_start),
         ).fetchone()
         count = row[0] if row else 0
 
-        if count >= _UPLOAD_RATE_LIMIT:
+        if count >= self._limit:
             oldest_row = conn.execute(
-                "SELECT MIN(timestamp) FROM rate_limit_events "
+                f"SELECT MIN(timestamp) FROM {self._table} "
                 "WHERE client_ip = ? AND timestamp > ?",
                 (client_ip, window_start),
             ).fetchone()
@@ -392,7 +440,7 @@ class _UploadRateLimiter:
             return False, max(retry_after, 1)
 
         conn.execute(
-            "INSERT INTO rate_limit_events (client_ip, timestamp) VALUES (?, ?)",
+            f"INSERT INTO {self._table} (client_ip, timestamp) VALUES (?, ?)",
             (client_ip, now),
         )
         conn.commit()
@@ -400,13 +448,13 @@ class _UploadRateLimiter:
 
     def _mem_is_allowed(self, client_ip: str) -> tuple[bool, int]:
         now = time.monotonic()
-        window_start = now - _UPLOAD_RATE_WINDOW_SECONDS
+        window_start = now - self._window
         timestamps = self._timestamps[client_ip]
         self._timestamps[client_ip] = [
             t for t in timestamps if t > window_start
         ]
         timestamps = self._timestamps[client_ip]
-        if len(timestamps) >= _UPLOAD_RATE_LIMIT:
+        if len(timestamps) >= self._limit:
             oldest_in_window = timestamps[0]
             retry_after = int(oldest_in_window - window_start) + 1
             return False, max(retry_after, 1)
@@ -416,7 +464,7 @@ class _UploadRateLimiter:
     # -- public API -------------------------------------------------------
 
     def is_allowed(self, client_ip: str) -> tuple[bool, int]:
-        """Check if the client may upload.
+        """Check whether the client is within its rate budget.
 
         Returns (allowed, retry_after_seconds).
         """
@@ -426,14 +474,42 @@ class _UploadRateLimiter:
             return self._mem_is_allowed(client_ip)
 
 
-def _build_upload_limiter() -> _UploadRateLimiter:
-    """Create the module-level rate limiter, persisted next to the app DB."""
-    db_path_str = os.environ.get("DB_PATH", "data/worship.db")
-    limiter_db = Path(db_path_str).parent / "rate_limits.db"
-    return _UploadRateLimiter(db_path=limiter_db)
+# Report endpoints are public and run unbounded aggregation / openpyxl builds,
+# so they get their own (more generous than upload) per-client budget (#450).
+_REPORT_RATE_LIMIT: int = 60
+_REPORT_RATE_WINDOW_SECONDS: int = 300  # 5 minutes
 
 
-_upload_limiter = _build_upload_limiter()
+def _limiter_db_path() -> Path:
+    """Shared SQLite file (next to the app DB) backing all rate limiters."""
+    return Path(os.environ.get("DB_PATH", "data/worship.db")).parent / "rate_limits.db"
+
+
+# Upload limiter: no explicit limit/window → reads _UPLOAD_RATE_LIMIT/_WINDOW at
+# call time (preserves the existing patch-the-constant test behaviour).
+_upload_limiter = _UploadRateLimiter(db_path=_limiter_db_path(), table="rate_limit_events")
+# Report limiter: its own, more generous budget on a separate table.
+_report_limiter = _UploadRateLimiter(
+    db_path=_limiter_db_path(),
+    limit=_REPORT_RATE_LIMIT,
+    window_seconds=_REPORT_RATE_WINDOW_SECONDS,
+    table="report_rate_limit_events",
+)
+
+
+def _report_rate_limit(request: Request) -> None:
+    """FastAPI dependency: throttle public report generation per client (#450)."""
+    allowed, retry_after = _report_limiter.is_allowed(_get_client_ip(request))
+    if not allowed:
+        _log.warning(
+            "Report rate limit exceeded",
+            extra={"client_ip": _get_client_ip(request), "retry_after": retry_after},
+        )
+        raise HTTPException(
+            status_code=429,
+            detail="Report rate limit exceeded — try again later",
+            headers={"Retry-After": str(retry_after)},
+        )
 
 
 def _validate_date_range(start_date: str, end_date: str) -> None:
@@ -551,7 +627,14 @@ async def songs(
 
 @app.get("/reports", response_class=HTMLResponse)
 async def reports_page(request: Request) -> HTMLResponse:
-    return templates.TemplateResponse(request, "reports.html")
+    return templates.TemplateResponse(
+        request,
+        "reports.html",
+        {
+            "window_options": WINDOW_OPTIONS,
+            "default_window": str(DEFAULT_WINDOW_DAYS),
+        },
+    )
 
 
 @app.get("/about", response_class=HTMLResponse)
@@ -603,6 +686,7 @@ async def reports_stats(
     leader: str = Form(default=""),
     all_songs: bool = Form(default=False),
     db: Database = Depends(get_db),  # noqa: B008
+    _rl: None = Depends(_report_rate_limit),  # noqa: B008
 ) -> HTMLResponse:
     _validate_date_range(start_date, end_date)
     data = _compute_stats(db, start_date, end_date, leader, all_songs)
@@ -632,6 +716,7 @@ async def reports_stats_csv(
     leader: str = Form(default=""),
     all_songs: bool = Form(default=False),
     db: Database = Depends(get_db),  # noqa: B008
+    _rl: None = Depends(_report_rate_limit),  # noqa: B008
 ) -> StreamingResponse:
     _validate_date_range(start_date, end_date)
     data = _compute_stats(db, start_date, end_date, leader, all_songs)
@@ -658,6 +743,7 @@ async def reports_stats_xlsx(
     leader: str = Form(default=""),
     all_songs: bool = Form(default=False),
     db: Database = Depends(get_db),  # noqa: B008
+    _rl: None = Depends(_report_rate_limit),  # noqa: B008
 ) -> StreamingResponse:
     _validate_date_range(start_date, end_date)
     try:
@@ -707,6 +793,7 @@ async def reports_ccli_preview(
     start_date: str = Form(...),
     end_date: str = Form(...),
     db: Database = Depends(get_db),  # noqa: B008
+    _rl: None = Depends(_report_rate_limit),  # noqa: B008
 ) -> HTMLResponse:
     """Inline summary of the CCLI report before download (#411).
 
@@ -733,6 +820,7 @@ async def reports_ccli_csv(
     start_date: str = Form(...),
     end_date: str = Form(...),
     db: Database = Depends(get_db),  # noqa: B008
+    _rl: None = Depends(_report_rate_limit),  # noqa: B008
 ) -> StreamingResponse:
     """Generate CCLI compliance report as a CSV download (#201)."""
     _validate_date_range(start_date, end_date)
@@ -757,6 +845,98 @@ async def reports_ccli_csv(
         iter([output.getvalue()]),
         media_type="text/csv",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+def _missing_services_context(db: Database, days: int) -> dict[str, Any]:
+    """Compute the report for *days* back from today, plus selector context."""
+    data = compute_missing_services(db, days, date.today())
+    data["window_options"] = WINDOW_OPTIONS
+    return data
+
+
+def _validate_exclusion_input(service_date: str, service_slot: str) -> None:
+    """Raise HTTPException 422 for a bad exclusion date or slot."""
+    if not _DATE_RE.match(service_date):
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid service_date: '{service_date}' — expected YYYY-MM-DD",
+        )
+    try:
+        date.fromisoformat(service_date)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid service_date: '{service_date}' — not a real calendar date",
+        ) from exc
+    if service_slot not in VALID_SLOTS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid service_slot: '{service_slot}' — expected one of "
+            f"{sorted(VALID_SLOTS)}",
+        )
+
+
+@app.get("/reports/missing-services", response_class=HTMLResponse)
+async def missing_services_report(
+    request: Request,
+    days: int = Query(default=DEFAULT_WINDOW_DAYS),
+    db: Database = Depends(get_db),  # noqa: B008
+    _rl: None = Depends(_report_rate_limit),  # noqa: B008
+) -> HTMLResponse:
+    """Report Sunday morning/evening services absent from the DB (#480)."""
+    ctx = _missing_services_context(db, days)
+    # HTMX swaps just the result region; a full navigation renders the page.
+    template = (
+        "_missing_services_result.html"
+        if request.headers.get("HX-Request")
+        else "missing_services.html"
+    )
+    return templates.TemplateResponse(request, template, ctx)
+
+
+@app.get("/reports/missing-services.json")
+async def missing_services_report_json(
+    days: int = Query(default=DEFAULT_WINDOW_DAYS),
+    db: Database = Depends(get_db),  # noqa: B008
+    _rl: None = Depends(_report_rate_limit),  # noqa: B008
+) -> JSONResponse:
+    """JSON view of the missing-services report for automation/reuse (#480)."""
+    return JSONResponse(content=_missing_services_context(db, days))
+
+
+@app.post("/reports/missing-services/exclude", response_class=HTMLResponse)
+async def missing_services_exclude(
+    request: Request,
+    service_date: str = Form(...),
+    service_slot: str = Form(...),
+    reason: str = Form(default=""),
+    days: int = Form(default=DEFAULT_WINDOW_DAYS),
+    db: Database = Depends(get_db),  # noqa: B008
+    _rl: None = Depends(_report_rate_limit),  # noqa: B008
+) -> HTMLResponse:
+    """Mark a missing slot as intentionally excluded, then re-render (#480)."""
+    _validate_exclusion_input(service_date, service_slot)
+    db.add_exclusion(service_date, service_slot, reason=reason or None)
+    return templates.TemplateResponse(
+        request, "_missing_services_result.html", _missing_services_context(db, days)
+    )
+
+
+@app.post("/reports/missing-services/include", response_class=HTMLResponse)
+async def missing_services_include(
+    request: Request,
+    service_date: str = Form(...),
+    service_slot: str = Form(...),
+    days: int = Form(default=DEFAULT_WINDOW_DAYS),
+    db: Database = Depends(get_db),  # noqa: B008
+    _rl: None = Depends(_report_rate_limit),  # noqa: B008
+) -> HTMLResponse:
+    """Remove an intentional-exclusion marker, then re-render (#480)."""
+    _validate_exclusion_input(service_date, service_slot)
+    db.remove_exclusion(service_date, service_slot)
+    return templates.TemplateResponse(
+        request, "_missing_services_result.html", _missing_services_context(db, days)
     )
 
 
@@ -810,7 +990,7 @@ async def services_list(
         "page": page, "per_page": per_page, "total_pages": total_pages, "total": total,
     }
     if request.headers.get("HX-Request"):
-        return templates.TemplateResponse(request, "services_rows.html", ctx)
+        return templates.TemplateResponse(request, "_services_results.html", ctx)
     ctx["service_names"] = db.query_distinct_service_names()
     ctx["leaders"] = db.query_distinct_song_leaders()
     ctx["preachers"] = db.query_distinct_preachers()
@@ -872,6 +1052,7 @@ async def leader_top_songs(
 async def leader_top_songs_csv(
     leader_name: str,
     db: Database = Depends(get_db),  # noqa: B008
+    _rl: None = Depends(_report_rate_limit),  # noqa: B008
 ) -> StreamingResponse:
     top_songs = db.query_leader_top_songs(leader_name, min_count=_LEADER_MIN_SONG_COUNT)
 
@@ -934,7 +1115,17 @@ def _run_import_in_background(job_id: str, pptx_path: Path) -> None:
             _notify_priority = -1
         else:
             db.update_import_job(
-                job_id, status="complete", songs_imported=result.songs_imported
+                job_id,
+                status="complete",
+                songs_imported=result.songs_imported,
+                service_date=result.service_date,
+                service_name=result.service_name,
+                song_leader=result.song_leader,
+                preacher=result.preacher,
+                sermon_title=result.sermon_title,
+                songs_json=json.dumps(
+                    [s.display_title for s in result.songs]
+                ) if result.songs else None,
             )
             _notify_title = "Import complete"
             _notify_message = (
@@ -1146,15 +1337,26 @@ async def upload(
 
 
 @app.get("/jobs")
-async def list_jobs(db: Database = Depends(get_db)) -> JSONResponse:  # noqa: B008
-    """Return all import job records, newest first."""
+async def list_jobs(
+    db: Database = Depends(get_db),  # noqa: B008
+    _: None = Depends(require_upload_auth),  # noqa: B008
+) -> JSONResponse:
+    """Return all import job records, newest first.
+
+    Gated behind the upload auth (#451): the job log leaks uploaded filenames
+    and raw error messages, so it's part of the write/admin surface, not public.
+    """
     jobs = db.list_import_jobs()
     return JSONResponse(content=jobs)
 
 
 @app.get("/jobs/{job_id}")
-async def get_job(job_id: str, db: Database = Depends(get_db)) -> JSONResponse:  # noqa: B008
-    """Return a single import job record or 404."""
+async def get_job(
+    job_id: str,
+    db: Database = Depends(get_db),  # noqa: B008
+    _: None = Depends(require_upload_auth),  # noqa: B008
+) -> JSONResponse:
+    """Return a single import job record or 404 (auth-gated like /jobs, #451)."""
     job = db.get_import_job(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="Job not found")

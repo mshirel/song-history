@@ -242,6 +242,33 @@ class TestSongsConciseLiveRegion:
         assert 'id="songs-count"' in resp.text
 
 
+class TestServicesConciseLiveRegion:
+    """Services filtering must announce a concise result count, not the whole table (#431)."""
+
+    def test_services_table_card_is_not_the_live_region(self, client: TestClient) -> None:
+        """The table-wrapping card must no longer carry aria-live — otherwise every
+        HTMX filter change re-announces all rows to screen readers."""
+        resp = client.get("/services")
+        assert 'style="padding:0;" aria-live="polite"' not in resp.text, (
+            "Services table card is still an aria-live region — it announces the entire "
+            "table on every filter change. Move aria-live to a concise count region."
+        )
+
+    def test_services_has_concise_count_live_region(self, client: TestClient) -> None:
+        resp = client.get("/services")
+        m = re.search(r'id="services-count"[^>]*>', resp.text)
+        assert m, "Expected a concise #services-count live region"
+        tag = m.group(0)
+        assert 'aria-live="polite"' in tag and 'aria-atomic="true"' in tag, (
+            "The count region must be a polite, atomic live region"
+        )
+
+    def test_services_htmx_partial_includes_count(self, client: TestClient) -> None:
+        """The HTMX filter response must re-render the count so it updates on filter."""
+        resp = client.get("/services?q_service=AM", headers={"HX-Request": "true"})
+        assert 'id="services-count"' in resp.text
+
+
 class TestErrorPageContrast:
     """Tests for error page text contrast (#307)."""
 

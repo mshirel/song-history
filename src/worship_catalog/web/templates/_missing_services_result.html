@@ -1,0 +1,83 @@
+<div class="summary-grid">
+  <div class="stat-box">
+    <div class="val">{{ summary.sundays }}</div>
+    <div class="lbl">Sundays</div>
+  </div>
+  <div class="stat-box">
+    <div class="val" style="color:#198754;">{{ summary.present }}</div>
+    <div class="lbl">Present</div>
+  </div>
+  <div class="stat-box">
+    <div class="val" style="color:#b02a37;">{{ summary.missing }}</div>
+    <div class="lbl">Missing</div>
+  </div>
+  <div class="stat-box">
+    <div class="val" style="color:#6c757d;">{{ summary.excluded }}</div>
+    <div class="lbl">Excluded</div>
+  </div>
+</div>
+
+<p style="font-size:0.85rem;color:#6c757d;margin:0.5rem 0 1rem;">
+  Showing <strong>{{ window_label }}</strong> ({{ start_date }} &rarr; {{ end_date }}).
+  Data collection began {{ collection_start }}; nothing earlier is reported.
+</p>
+
+{% if summary.uncategorized %}
+<p style="font-size:0.8rem;color:#664d03;background:#fff3cd;border:1px solid #ffecb5;border-radius:6px;padding:0.5rem 0.75rem;">
+  {{ summary.uncategorized }} service{{ 's' if summary.uncategorized != 1 else '' }} in this range
+  could not be classified as morning or evening and {{ 'are' if summary.uncategorized != 1 else 'is' }}
+  not counted toward a Sunday slot.
+</p>
+{% endif %}
+
+{% if not weeks %}
+<p style="color:#6c757d;">No Sundays fall within this window.</p>
+{% else %}
+<div class="table-wrap">
+<table>
+  <caption class="sr-only">Sunday morning and evening services present, missing, or intentionally excluded</caption>
+  <thead>
+    <tr>
+      <th scope="col">Sunday</th>
+      <th scope="col">Morning</th>
+      <th scope="col">Evening</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for week in weeks %}
+    <tr>
+      <td style="white-space:nowrap;{% if week.has_missing %}font-weight:600;{% endif %}">{{ week.date }}</td>
+      {% for slot in week.slots %}
+      <td>
+        {% if slot.status == 'present' %}
+          <span style="color:#198754;" title="{{ slot.service.service_name }}">&#10003; Present</span>
+        {% elif slot.status == 'excluded' %}
+          <span style="color:#6c757d;">Excluded{% if slot.reason %} &mdash; {{ slot.reason }}{% endif %}</span>
+          <form hx-post="/reports/missing-services/include" hx-target="#missing-result"
+                hx-swap="innerHTML" style="display:inline;margin-left:0.4rem;">
+            <input type="hidden" name="service_date" value="{{ week.date }}">
+            <input type="hidden" name="service_slot" value="{{ slot.slot }}">
+            <input type="hidden" name="days" value="{{ window_days }}">
+            <button type="submit" style="background:none;border:none;color:#0d6efd;cursor:pointer;padding:0;font-size:0.8rem;text-decoration:underline;">Unmark</button>
+          </form>
+        {% else %}
+          <span style="color:#b02a37;font-weight:600;">Missing</span>
+          <form hx-post="/reports/missing-services/exclude" hx-target="#missing-result"
+                hx-swap="innerHTML" style="display:inline-flex;gap:0.3rem;margin-left:0.4rem;align-items:center;">
+            <input type="hidden" name="service_date" value="{{ week.date }}">
+            <input type="hidden" name="service_slot" value="{{ slot.slot }}">
+            <input type="hidden" name="days" value="{{ window_days }}">
+            <input type="text" name="reason" placeholder="reason (optional)"
+                   aria-label="Reason for excluding {{ week.date }} {{ slot.slot }}"
+                   style="font-size:0.75rem;padding:0.15rem 0.3rem;max-width:150px;">
+            <button type="submit" style="font-size:0.75rem;padding:0.15rem 0.5rem;">Mark excluded</button>
+          </form>
+        {% endif %}
+      </td>
+      {% endfor %}
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endif %}

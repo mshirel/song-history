@@ -87,6 +87,9 @@ services:
       UPLOAD_USERNAME: "${UPLOAD_USERNAME:-highland}"
       # Emit HSTS when served over HTTPS (behind Cloudflare/Traefik) (#405).
       HTTPS_ONLY: "${HTTPS_ONLY:-}"
+      # Behind the Cloudflare tunnel, trust CF-Connecting-IP for the real client
+      # IP so the upload rate limiter buckets per client, not per tunnel (#448).
+      TRUSTED_PROXY: "${TRUSTED_PROXY:-1}"
     volumes:
       - /opt/song-history/data:/data
       - /opt/song-history/inbox:/inbox
@@ -128,7 +131,8 @@ services:
   # Requires a DMZ->Loki (10.20.100.249:3100) firewall allow on VLAN 249.
   # ---------------------------------------------------------------------------
   promtail:
-    image: grafana/promtail:latest
+    # Digest-pinned (#453) — was :latest. Re-pin on a reviewed Dependabot bump.
+    image: grafana/promtail:latest@sha256:6cfa64ec432b24a912d640e2edb940eeae2666f61861a66c121d763dd7241381
     restart: unless-stopped
     user: root   # needed to read root-owned /var/lib/docker/containers logs
     command: -config.file=/etc/promtail/config.yml
@@ -150,11 +154,19 @@ services:
   # in the Cloudflare Zero Trust dashboard. Set TUNNEL_TOKEN in .env.
   # ---------------------------------------------------------------------------
   cloudflared:
-    image: cloudflare/cloudflared:latest
+    # Digest-pinned (#453) — was :latest. The internet-facing tunnel daemon must
+    # not silently upgrade; re-pin on a reviewed Dependabot bump.
+    image: cloudflare/cloudflared:latest@sha256:59bab8d3aceec09bf6bdb07d6beca0225ca5cd7ab79436a87ea97978fe1dc4f9
     restart: unless-stopped
-    command: tunnel --no-autoupdate run --token ${TUNNEL_TOKEN}
+    # --metrics pins the Prometheus endpoint to a stable port (default is
+    # ephemeral). Published on :2000 for Prometheus to scrape (HOME-176). This
+    # port is LAN-only — it is NOT routed through the tunnel; reachability is
+    # gated by the VLAN-249 firewall (only mon-prometheus 10.20.100.245 allowed).
+    command: tunnel --no-autoupdate --metrics 0.0.0.0:2000 run --token ${TUNNEL_TOKEN}
     # If IPS in Prevention mangles the QUIC/UDP edge connection, force HTTP/2:
-    # command: tunnel --no-autoupdate --protocol http2 run --token ${TUNNEL_TOKEN}
+    # command: tunnel --no-autoupdate --protocol http2 --metrics 0.0.0.0:2000 run --token ${TUNNEL_TOKEN}
+    ports:
+      - "2000:2000"   # cloudflared /metrics — Prometheus scrape only (firewall-gated)
     depends_on:
       song-history:
         condition: service_started

@@ -9,12 +9,14 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from worship_catalog.normalize import normalize_service_date
+
 _log = logging.getLogger("worship_catalog.db")
 
 # Bump this integer whenever the schema changes.  Each new version must have a
 # corresponding entry in _MIGRATIONS.  connect() raises SchemaVersionError if the
 # on-disk version is *higher* than this value (DB created by a newer release).
-_SCHEMA_VERSION: int = 3
+_SCHEMA_VERSION: int = 6
 
 # Ordered dict of version → list of SQL statements.  Each migration brings the
 # DB from version (N-1) to version N.  Migration 1 is the baseline — it
@@ -110,13 +112,95 @@ _MIGRATIONS: dict[int, list[str]] = {
         "PRAGMA foreign_keys=ON",
         "CREATE INDEX IF NOT EXISTS idx_services_date ON services(service_date)",
     ],
+    4: [
+        # NULL-safe uniqueness for song_editions + copy_events (#420). SQLite's
+        # table-level UNIQUE treats each NULL as distinct, so NULL-credit editions
+        # and NULL-edition copy_events could duplicate under concurrent imports.
+        # De-dupe existing rows (repointing child FKs to the keeper), then add
+        # expression UNIQUE indexes that COALESCE NULLs so the constraint actually
+        # enforces. With these in place, insert_or_get_* raises IntegrityError on a
+        # concurrent NULL duplicate and the existing retry-on-conflict (#400) wins.
+        # --- song_editions: map each row to its canonical keeper (min id) ---
+        """
+        CREATE TEMP TABLE _edition_keep AS
+        SELECT e1.id AS dup_id,
+               (SELECT MIN(e2.id) FROM song_editions e2
+                 WHERE e2.song_id = e1.song_id
+                   AND COALESCE(e2.publisher,'') = COALESCE(e1.publisher,'')
+                   AND COALESCE(e2.words_by,'')  = COALESCE(e1.words_by,'')
+                   AND COALESCE(e2.music_by,'')  = COALESCE(e1.music_by,'')
+                   AND COALESCE(e2.arranger,'')  = COALESCE(e1.arranger,'')) AS keep_id
+        FROM song_editions e1
+        """,
+        """
+        UPDATE service_songs SET song_edition_id =
+            (SELECT keep_id FROM _edition_keep WHERE dup_id = service_songs.song_edition_id)
+        WHERE song_edition_id IN (SELECT dup_id FROM _edition_keep WHERE dup_id <> keep_id)
+        """,
+        """
+        UPDATE copy_events SET song_edition_id =
+            (SELECT keep_id FROM _edition_keep WHERE dup_id = copy_events.song_edition_id)
+        WHERE song_edition_id IN (SELECT dup_id FROM _edition_keep WHERE dup_id <> keep_id)
+        """,
+        "DELETE FROM song_editions WHERE id IN "
+        "(SELECT dup_id FROM _edition_keep WHERE dup_id <> keep_id)",
+        "DROP TABLE _edition_keep",
+        # --- copy_events: collapse duplicates (after the edition repoint) ---
+        """
+        DELETE FROM copy_events WHERE id NOT IN (
+            SELECT MIN(id) FROM copy_events
+            GROUP BY service_id, song_id, COALESCE(song_edition_id, -1), reproduction_type
+        )
+        """,
+        # --- NULL-safe unique indexes (NULLs collapsed via COALESCE) ---
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_song_editions_identity
+        ON song_editions(song_id, COALESCE(publisher,''), COALESCE(words_by,''),
+                         COALESCE(music_by,''), COALESCE(arranger,''))
+        """,
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_copy_events_identity
+        ON copy_events(service_id, song_id, COALESCE(song_edition_id, -1), reproduction_type)
+        """,
+    ],
+    5: [
+        # Add service metadata + song list columns to import_jobs so the web UI
+        # can show richer results after a successful import.
+        "ALTER TABLE import_jobs ADD COLUMN service_date TEXT",
+        "ALTER TABLE import_jobs ADD COLUMN service_name TEXT",
+        "ALTER TABLE import_jobs ADD COLUMN song_leader TEXT",
+        "ALTER TABLE import_jobs ADD COLUMN preacher TEXT",
+        "ALTER TABLE import_jobs ADD COLUMN sermon_title TEXT",
+        "ALTER TABLE import_jobs ADD COLUMN songs_json TEXT",
+    ],
+    6: [
+        # Track Sunday service slots (morning/evening) that are intentionally
+        # absent, so the missing-services report shows them as deliberate rather
+        # than as gaps (#480).
+        """
+        CREATE TABLE IF NOT EXISTS service_exclusions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            service_date TEXT NOT NULL,
+            service_slot TEXT NOT NULL,
+            reason TEXT,
+            excluded_at TEXT NOT NULL,
+            UNIQUE(service_date, service_slot)
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_service_exclusions_date "
+        "ON service_exclusions(service_date)",
+    ],
 }
 
 # Whitelist of column names that update_import_job is allowed to SET.
 # Any key not in this set will raise ValueError — prevents SQL injection
 # via dynamic field names (issue #100).
 _IMPORT_JOB_MUTABLE_FIELDS: frozenset[str] = frozenset(
-    {"status", "completed_at", "songs_imported", "error_message"}
+    {
+        "status", "completed_at", "songs_imported", "error_message",
+        "service_date", "service_name", "song_leader", "preacher",
+        "sermon_title", "songs_json",
+    }
 )
 
 
@@ -376,6 +460,21 @@ class Database:
                 completed_at TEXT,
                 songs_imported INTEGER,
                 error_message TEXT
+            )
+            """
+        )
+
+        # Service exclusions table — Sunday slots intentionally left absent so the
+        # missing-services report can distinguish deliberate gaps (#480).
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS service_exclusions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                service_date TEXT NOT NULL,
+                service_slot TEXT NOT NULL,
+                reason TEXT,
+                excluded_at TEXT NOT NULL,
+                UNIQUE(service_date, service_slot)
             )
             """
         )
@@ -786,6 +885,52 @@ class Database:
             yield dict(row)
             row = cursor.fetchone()
 
+    # --- Service exclusions (missing-services report) ---
+
+    def add_exclusion(
+        self, service_date: str, service_slot: str, reason: str | None = None
+    ) -> None:
+        """Mark a (date, slot) as intentionally absent; upsert on conflict (#480).
+
+        The date is normalized to ISO ``YYYY-MM-DD`` so it lines up with stored
+        ``services.service_date`` values regardless of the caller's separators.
+        """
+        normalized = normalize_service_date(service_date)
+        now = datetime.now(timezone.utc).isoformat()
+        self._conn.execute(
+            """
+            INSERT INTO service_exclusions (service_date, service_slot, reason, excluded_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(service_date, service_slot)
+            DO UPDATE SET reason = excluded.reason, excluded_at = excluded.excluded_at
+            """,
+            (normalized, service_slot, reason, now),
+        )
+        self._maybe_commit()
+
+    def remove_exclusion(self, service_date: str, service_slot: str) -> None:
+        """Remove an intentional-exclusion marker for a (date, slot) (#480)."""
+        normalized = normalize_service_date(service_date)
+        self._conn.execute(
+            "DELETE FROM service_exclusions WHERE service_date = ? AND service_slot = ?",
+            (normalized, service_slot),
+        )
+        self._maybe_commit()
+
+    def query_exclusions(self, start_date: str, end_date: str) -> list[dict]:
+        """Return intentional-exclusion rows within the inclusive date range."""
+        cursor = self._conn.cursor()
+        cursor.execute(
+            """
+            SELECT id, service_date, service_slot, reason, excluded_at
+            FROM service_exclusions
+            WHERE service_date >= ? AND service_date <= ?
+            ORDER BY service_date, service_slot
+            """,
+            (start_date, end_date),
+        )
+        return [dict(row) for row in cursor.fetchall()]
+
     def query_songs_missing_credits(self) -> list[dict]:
         """
         Return songs that have no credits (words_by, music_by, arranger all NULL).
@@ -1003,6 +1148,12 @@ class Database:
         status: str | None = None,
         songs_imported: int | None = None,
         error_message: str | None = None,
+        service_date: str | None = None,
+        service_name: str | None = None,
+        song_leader: str | None = None,
+        preacher: str | None = None,
+        sermon_title: str | None = None,
+        songs_json: str | None = None,
         **_extra_kwargs: Any,
     ) -> None:
         """Update mutable fields on an import job record.
@@ -1031,6 +1182,24 @@ class Database:
         if error_message is not None:
             sets.append("error_message = ?")
             params.append(error_message)
+        if service_date is not None:
+            sets.append("service_date = ?")
+            params.append(service_date)
+        if service_name is not None:
+            sets.append("service_name = ?")
+            params.append(service_name)
+        if song_leader is not None:
+            sets.append("song_leader = ?")
+            params.append(song_leader)
+        if preacher is not None:
+            sets.append("preacher = ?")
+            params.append(preacher)
+        if sermon_title is not None:
+            sets.append("sermon_title = ?")
+            params.append(sermon_title)
+        if songs_json is not None:
+            sets.append("songs_json = ?")
+            params.append(songs_json)
         if not sets:
             return
         # Build the SET clause from whitelisted column names only.

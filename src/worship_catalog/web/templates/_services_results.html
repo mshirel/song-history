@@ -1,0 +1,63 @@
+{# Services results region: concise count + table + pagination. Rendered in the
+   full page (inside #services-results) and as the HTMX filter response, so the
+   count and pagination stay in sync with the rows shown — and screen readers
+   hear a short "N services found" instead of the whole table (#431, mirrors #386). #}
+{% set filter_qs %}start_date={{ start_date }}&end_date={{ end_date }}&q_service={{ q_service | urlencode }}&q_leader={{ q_leader | urlencode }}&q_preacher={{ q_preacher | urlencode }}&q_sermon={{ q_sermon | urlencode }}{% endset %}
+
+{% macro sort_th(label, col, align="left") %}
+{% set next_dir = "asc" if (sort == col and sort_dir == "desc") else "desc" %}
+{% set aria_sort_val = ("ascending" if sort_dir == "asc" else "descending") if sort == col else "none" %}
+<th scope="col" style="text-align:{{ align }};white-space:nowrap;user-select:none;cursor:pointer;" aria-sort="{{ aria_sort_val }}">
+  <a href="/services?sort={{ col }}&sort_dir={{ next_dir }}&{{ filter_qs }}"
+     style="color:inherit;text-decoration:none;">
+    {{ label }}{% if sort == col %}&nbsp;{{ '▲' if sort_dir == 'asc' else '▼' }}{% endif %}
+  </a>
+</th>
+{% endmacro %}
+
+<p id="services-count" class="sr-only" aria-live="polite" aria-atomic="true">
+  {{ total }} service{{ "s" if total != 1 else "" }} found.
+</p>
+
+{% if total == 0 and not q_service and not q_leader and not q_preacher and not q_sermon and not start_date and not end_date %}
+<div class="card" style="text-align:center;padding:2rem;">
+  <h2>No services yet</h2>
+  <p>Import your first worship service to get started.</p>
+  <p>Upload a PPTX file on the <a href="/upload">Upload</a> page, or run:</p>
+  <p><code>worship-catalog import "AM Worship 2026.01.01.pptx"</code></p>
+</div>
+{% else %}
+<div class="card" style="padding:0;">
+  <div class="table-wrap">
+  <table>
+    <caption class="sr-only">Worship services — sortable and filterable</caption>
+    <thead>
+      <tr>
+        {{ sort_th("Date", "service_date") }}
+        {{ sort_th("Service", "service_name") }}
+        {{ sort_th("Song Leader", "song_leader") }}
+        {{ sort_th("Preacher", "preacher") }}
+        <th scope="col">Sermon</th>
+        {{ sort_th("Songs", "song_count", align="right") }}
+        <th scope="col"><span class="sr-only">Actions</span></th>
+      </tr>
+    </thead>
+    <tbody id="services-tbody">
+      {% include "services_rows.html" %}
+    </tbody>
+  </table>
+  </div>
+</div>
+{% endif %}
+
+{% if total_pages > 1 %}
+<nav class="pagination" aria-label="Pagination">
+  {% if page > 1 %}
+    <a href="/services?page={{ page - 1 }}&per_page={{ per_page }}&sort={{ sort }}&sort_dir={{ sort_dir }}&q_service={{ q_service | urlencode }}&q_leader={{ q_leader | urlencode }}&q_preacher={{ q_preacher | urlencode }}&q_sermon={{ q_sermon | urlencode }}&start_date={{ start_date }}&end_date={{ end_date }}" aria-label="Previous page">← Prev</a>
+  {% endif %}
+  <span>Page {{ page }} of {{ total_pages }}</span>
+  {% if page < total_pages %}
+    <a href="/services?page={{ page + 1 }}&per_page={{ per_page }}&sort={{ sort }}&sort_dir={{ sort_dir }}&q_service={{ q_service | urlencode }}&q_leader={{ q_leader | urlencode }}&q_preacher={{ q_preacher | urlencode }}&q_sermon={{ q_sermon | urlencode }}&start_date={{ start_date }}&end_date={{ end_date }}" aria-label="Next page">Next →</a>
+  {% endif %}
+</nav>
+{% endif %}

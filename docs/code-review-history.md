@@ -7,6 +7,47 @@ Each review produces GitHub issues for every significant finding.
 
 ---
 
+## Review 11 — 2026-05-26
+
+**Branch:** `agent/claude/review-11-history`
+**Reviewer:** Claude Code (full-code-review skill)
+**Focus:** Heavy security emphasis — code **and** the pi-songs host — after `songs.highland-coc.com` was exposed publicly via a cloudflared tunnel.
+**Issues created:** #446–#455
+
+### Findings
+
+| Issue | Persona | Title | Severity |
+|-------|---------|-------|----------|
+| #446 | Security | pi-songs `.env` world-readable (644) — exposes CF API/tunnel tokens, CSRF & upload secrets | HIGH |
+| #447 | Security | App port 8000 (incl. `/metrics`) bound to 0.0.0.0, no host firewall — bypasses Cloudflare/Traefik | HIGH |
+| #448 | Security | `TRUSTED_PROXY` unset → CF-Connecting-IP unused → upload rate limiter buckets all tunnel traffic as one client | MED |
+| #449 | Security | `/metrics` unauthenticated & reachable through the public tunnel — leaks routes/traffic/latency | MED |
+| #450 | Security | Public report endpoints unrate-limited — unauthenticated CPU/memory DoS (esp. `/reports/stats/xlsx`) | MED |
+| #451 | Security | `/jobs` & `/jobs/{id}` public & unauthenticated — leak uploaded filenames + raw error messages | MED |
+| #452 | Security | pi-songs SSH allows password auth, no fail2ban | MED |
+| #453 | DevSecOps | cloudflared & promtail pinned to `:latest` on the public-facing host | MED |
+| #454 | DevOps | pi-deploy runbook still says "LAN-only, no public internet exposure" — now false | MED |
+| #455 | Product | Public exposure publishes leader/preacher names, sermon titles & full history — confirm intended audience (re-triage #2) | MED |
+
+### Grades
+
+| Persona | Grade | Notes |
+|---------|-------|-------|
+| Senior Architect | A- | Code structure clean (Review 10 fixes landed); only smell is the dual public-tunnel vs Traefik path |
+| Senior Developer | A- | No new code-logic bugs; findings are deployment/exposure, not application logic |
+| Senior DevOps | C | Public host has no firewall, app port on 0.0.0.0, unpinned tunnel image, and a runbook that contradicts reality |
+| Senior Security Architect | C | Strong code-level controls (CSP/CSRF/HSTS/param queries), but weak posture for a public service: world-readable secrets, app+metrics reachable off-Cloudflare, defeated rate limiting, public /jobs & /metrics |
+| Senior DevSecOps | B- | CI supply chain solid; the two most-privileged runtime containers are unpinned and secret-at-rest perms are wrong |
+| Senior QA Engineer | A- | Large healthy suite + e2e/contract coverage; gap was no tests asserting deploy security posture (now embedded in issues) |
+| Product Manager | B | Features solid; the live question is the privacy/audience decision for now-public congregant data |
+| UAT Analyst | A- | Strong Playwright coverage incl. the new upload→songs pipeline; no new gaps |
+| Accessibility Specialist | B+ | Songs concise live region + polite upload landed; #431 (services) still open |
+| Database / Data Engineer | A- | WAL, indexes, read-snapshot pagination (#415), retry-safe inserts (#400) landed; #420 still tracked |
+
+**Overall: C+** — the codebase is in good shape, but the production security posture for the newly public deployment has several real, fixable gaps (the focus of this review).
+
+---
+
 ## Review 10 — 2026-05-25
 
 **Branch:** `agent/claude/import-summary-output`

@@ -1,22 +1,58 @@
 # Pi Deployment Guide
 
-Deploy song-history on a Raspberry Pi in the church dmarc rack.
-Traefik handles HTTPS termination via Let's Encrypt DNS-01 (Cloudflare).
-The site is LAN-only — no public internet exposure, no port forwarding required.
+Deploy song-history on a Raspberry Pi (pi-songs, `10.20.249.10`, DMZ VLAN 249).
+
+> **PUBLIC EXPOSURE.** `https://songs.highland-coc.com` is reachable from the
+> **public internet** via a Cloudflare Tunnel (cloudflared). It is NOT LAN-only.
+> Browsing/report data (songs, services, leaders, preachers, sermon titles) is
+> intentionally public (see #455); only the write/admin surface (`/upload`,
+> `/jobs`) is gated by `UPLOAD_PASSWORD`. Treat the host as internet-adjacent and
+> keep it hardened (firewall, key-only SSH, 600 secrets) — see **Security
+> Hardening** below before exposing or re-deploying.
 
 ---
 
 ## Architecture
 
 ```
-Church LAN
-  └── Raspberry Pi (dmarc rack, UPS-backed)
-        ├── Traefik :80/:443  → Let's Encrypt via Cloudflare DNS-01
-        └── song-history :8000 (internal only)
+Public internet ──HTTPS──> Cloudflare edge ──tunnel(outbound)──> cloudflared ─┐
+                                                                              │ (internal docker net)
+Church LAN ──HTTPS──> Traefik :80/:443 ──────────────────────────────────────┤
+                                                                              ▼
+                                                              song-history :8000 (FastAPI)
 
-UniFi DNS: songs.highland-coc.com → Pi LAN IP
-Cloudflare DNS: highland-coc.com (used only for DNS-01 TXT record challenge)
+Raspberry Pi (pi-songs, DMZ VLAN 249, UPS-backed):
+  ├── cloudflared        → outbound tunnel to Cloudflare edge (no inbound ports)
+  ├── traefik :80/:443   → LAN alias (pi-songs.tanx95.us) + Let's Encrypt DNS-01
+  ├── song-history :8000 → app; host port firewalled to the Prometheus scraper
+  ├── watcher            → import loop (same image, healthcheck disabled)
+  └── promtail           → ships container logs to homelab Loki
+
+UniFi DNS: pi-songs.tanx95.us → 10.20.249.10 (LAN alias)
+Cloudflare: songs.highland-coc.com → tunnel; highland-coc.com zone for DNS-01
 ```
+
+---
+
+## Security Hardening (required for the public host)
+
+Because the host serves a public tunnel, lock it down. Codified in the repo:
+`deploy/pi/firewall/`, `deploy/pi/ssh/00-hardening.conf`, and `init.sh`.
+
+- **Secrets (`.env`) must be `600`** — it holds the Cloudflare API + tunnel
+  tokens, CSRF secret, and upload password. `init.sh` refuses a non-600 `.env`
+  (#446). `sudo chmod 600 /opt/song-history/.env`.
+- **Host firewall (ufw)** — deny inbound by default; allow only SSH from the
+  homelab mgmt supernet, 80/443 (Traefik LAN alias + Kuma), and the Prometheus
+  scraper (`10.20.100.245`) to `:9100`. Run `deploy/pi/firewall/ufw-setup.sh`
+  (#447). The public site needs **no** inbound ports (tunnel is outbound).
+- **Docker-published `:8000`/`:2000`** bypass ufw's INPUT chain, so they are
+  restricted to the Prometheus scraper via the `DOCKER-USER` chain —
+  `deploy/pi/firewall/docker-user-firewall.sh` + its systemd unit (#447).
+- **Key-only SSH** — install `deploy/pi/ssh/00-hardening.conf` (the `00-` prefix
+  must sort before `50-cloud-init.conf`); `PasswordAuthentication no` (#452).
+- **Token rotation** — if `.env` was ever world-readable, rotate the Cloudflare
+  API token and tunnel token in the Cloudflare dashboard (#446).
 
 ---
 
@@ -329,10 +365,22 @@ touch /home/songs/backup.log && echo "PASS" || echo "FAIL"
 
 ## 15. Update Procedure
 
+Run as the **`songs`** user — `.env` is `600` and owned by `songs`, so other
+admins (e.g. `matt`) can't read it for `docker compose` and will get
+`open .env: permission denied`:
+
 ```bash
-cd /opt/song-history
-docker compose pull && docker compose up -d
+sudo -u songs bash -c 'cd /opt/song-history && docker compose pull && docker compose up -d'
 ```
+
+> **Note:** recreating the `song-history` container causes a **few-second window**
+> where Traefik returns `404` for the public host until it re-discovers the new
+> container — expected; it clears within seconds. Verify after with
+> `curl -sf https://songs.highland-coc.com/health`.
+
+If the compose file itself changed in the repo, copy it over first (the Pi's
+copy is a manual, drifted copy — `compose pull` does **not** apply compose-file
+changes): reconcile by hand, backing up the existing file.
 
 ---
 

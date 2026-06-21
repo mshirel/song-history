@@ -18,6 +18,9 @@ set -eu
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ACME_DIR="${ACME_DIR:-${SCRIPT_DIR}/traefik}"
 ACME_FILE="${ACME_DIR}/acme.json"
+# .env holds all deployment secrets (Cloudflare/tunnel tokens, CSRF, upload
+# password) — it must be owner-only (600), never world-readable (#446).
+ENV_FILE="${ENV_FILE:-${SCRIPT_DIR}/.env}"
 
 # ---------------------------------------------------------------------------
 # Check: acme.json permissions
@@ -28,6 +31,20 @@ if [ -f "$ACME_FILE" ]; then
     if [ "$PERMS" != "600" ]; then
         echo "ERROR: acme.json has permissions $PERMS — must be 600" >&2
         echo "Fix with: chmod 600 $ACME_FILE" >&2
+        exit 1
+    fi
+fi
+
+# ---------------------------------------------------------------------------
+# Check: .env permissions
+# .env contains every deployment secret; it must be 600 so other local users
+# (and non-root container breakouts) can't read it (#446).
+# ---------------------------------------------------------------------------
+if [ -f "$ENV_FILE" ]; then
+    ENV_PERMS="$(stat -c "%a" "$ENV_FILE")"
+    if [ "$ENV_PERMS" != "600" ]; then
+        echo "ERROR: .env has permissions $ENV_PERMS — must be 600 (it holds secrets)" >&2
+        echo "Fix with: chmod 600 $ENV_FILE" >&2
         exit 1
     fi
 fi
