@@ -4,6 +4,7 @@
 <h1>Upload Slide Deck</h1>
 
 <div class="card">
+  {% if authed %}
   <p style="color:#495057;font-size:0.9rem;margin-top:0;">
     Select a PowerPoint (.pptx) worship slide deck to import.
     Songs and service metadata will be extracted automatically.
@@ -18,7 +19,16 @@
     <button type="submit">Upload</button>
   </form>
   <div id="upload-result" style="margin-top:1rem;" aria-live="polite" aria-atomic="true"></div>
+  {% else %}
+  <p style="color:#495057;font-size:0.9rem;margin-top:0;">
+    Uploading worship slide decks requires logging in.
+  </p>
+  <p>
+    <a class="btn" href="/upload?login=1"
+       style="display:inline-block;padding:0.5rem 1rem;">Log in to upload</a>
+  </p>
+  {% endif %}
 </div>
 
-<script src="/static/upload.js"></script>
+{% if authed %}<script src="/static/upload.js"></script>{% endif %}
 {% endblock %}
