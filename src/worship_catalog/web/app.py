@@ -39,7 +39,6 @@ from fastapi.templating import Jinja2Templates
 from prometheus_client import CONTENT_TYPE_LATEST, REGISTRY, Counter, Histogram, generate_latest
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
-from starlette_csrf import CSRFMiddleware  # type: ignore[attr-defined]
 
 from worship_catalog.db import Database
 from worship_catalog.import_service import run_import
@@ -47,6 +46,7 @@ from worship_catalog.log_config import RequestLoggingMiddleware
 from worship_catalog.log_config import setup as _setup_logging
 from worship_catalog.notify import send_pushover
 from worship_catalog.services.report_service import compute_stats_data
+from worship_catalog.web.csrf import SelfHealingCSRFMiddleware
 
 _setup_logging()
 _log = logging.getLogger("worship_catalog.web")
@@ -128,7 +128,7 @@ else:
 # cookie_name is set explicitly so the coupling with client-side JS
 # (upload.js, reports.js) and CsrfAwareClient in conftest.py is visible (#239).
 app.add_middleware(
-    CSRFMiddleware,
+    SelfHealingCSRFMiddleware,
     secret=_CSRF_SECRET,
     cookie_name="csrftoken",
     exempt_urls=[re.compile(r"^/health$"), re.compile(r"^/metrics$")],

@@ -8,14 +8,14 @@ annotated-doc==0.0.4
     # via fastapi
 annotated-types==0.7.0
     # via pydantic
-anthropic==0.109.1
+anthropic==0.111.0
     # via worship-catalog (pyproject.toml)
-anyio==4.13.0
+anyio==4.14.0
     # via
     #   anthropic
     #   httpx
     #   starlette
-certifi==2026.5.20
+certifi==2026.6.17
     # via
     #   httpcore
     #   httpx
@@ -27,7 +27,7 @@ distro==1.9.0
     # via anthropic
 docstring-parser==0.18.0
     # via anthropic
-fastapi==0.137.0
+fastapi==0.138.0
     # via worship-catalog (pyproject.toml)
 h11==0.16.0
     # via

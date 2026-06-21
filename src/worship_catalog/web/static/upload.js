@@ -153,6 +153,54 @@
   var form = document.getElementById("upload-form");
   if (!form) return;
 
+  /**
+   * Build a human-readable error from a failed response. Error bodies are NOT
+   * always JSON: the CSRF middleware returns plain text ("CSRF token verification
+   * failed") and 5xx pages return HTML, so parsing must never assume JSON — that
+   * was the cause of the opaque "Unexpected token 'C'… is not valid JSON" error.
+   */
+  function errorMessageFromBody(resp, body) {
+    try {
+      var parsed = JSON.parse(body);
+      if (parsed && parsed.detail) return parsed.detail;
+    } catch (e) {
+      /* body was not JSON — fall through to a status-based message */
+    }
+    return resp.statusText || "Upload failed (HTTP " + resp.status + ")";
+  }
+
+  /**
+   * Perform the upload. On a 403 (an expired/rotated CSRF token) the server has
+   * just handed back a fresh csrftoken cookie, so we retry exactly once with the
+   * refreshed token. A 403 is rejected before the import runs, so retrying cannot
+   * cause a duplicate import.
+   */
+  function submitUpload(result, retrying) {
+    var data = new FormData(form);
+    return fetch("/upload", {
+      method: "POST",
+      headers: { "X-CSRFToken": getCsrfToken() },
+      body: data,
+    }).then(function (resp) {
+      if (resp.ok) {
+        return resp.json().then(function (j) {
+          showMessage(result, "#495057", "Upload accepted — importing…");
+          pollJobStatus(j.job_id, result);
+        });
+      }
+      if (resp.status === 403 && !retrying) {
+        return submitUpload(result, true);
+      }
+      return resp.text().then(function (body) {
+        var message =
+          resp.status === 403
+            ? "Your security token expired. Please reload the page and try again."
+            : errorMessageFromBody(resp, body);
+        showMessage(result, "#c00", "Upload failed: " + message);
+      });
+    });
+  }
+
   form.addEventListener("submit", function (e) {
     e.preventDefault();
     var btn = form.querySelector("button[type=submit]");
@@ -161,22 +209,7 @@
     btn.textContent = "Uploading…";
     result.replaceChildren();
 
-    var data = new FormData(form);
-    fetch("/upload", {
-      method: "POST",
-      headers: { "X-CSRFToken": getCsrfToken() },
-      body: data,
-    })
-      .then(function (resp) {
-        if (resp.ok) return resp.json();
-        return resp.json().then(function (j) {
-          throw new Error(j.detail || resp.statusText);
-        });
-      })
-      .then(function (j) {
-        showMessage(result, "#495057", "Upload accepted — importing…");
-        pollJobStatus(j.job_id, result);
-      })
+    submitUpload(result, false)
       .catch(function (err) {
         showMessage(result, "#c00", "Upload failed: " + err.message);
       })
