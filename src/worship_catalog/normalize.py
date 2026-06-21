@@ -81,6 +81,33 @@ def _normalize_whitespace(text: str) -> str:
     return ' '.join(text.split()).strip()
 
 
+# Year-month-day with ., - or / separators and single-or-double-digit month/day.
+_DATE_PARTS_RE = re.compile(r"^(\d{4})[.\-/](\d{1,2})[.\-/](\d{1,2})$")
+
+
+def normalize_service_date(raw: str | None) -> str | None:
+    """Canonicalize a service date string to ISO ``YYYY-MM-DD``.
+
+    Accepts any mix of ``.``, ``-`` and ``/`` separators and single-digit
+    month/day (e.g. ``2026.5.10`` → ``2026-05-10``). Returns None for empty
+    input, and the stripped original for anything that isn't a recognizable
+    year-month-day triple (so we never silently drop an unexpected value).
+
+    Lives here (not in pptx_reader) so the data layer can normalize stored dates
+    without importing the PPTX-parsing layer (#399).
+    """
+    if raw is None:
+        return None
+    stripped = raw.strip()
+    if not stripped:
+        return None
+    match = _DATE_PARTS_RE.match(stripped)
+    if not match:
+        return stripped
+    year, month, day = match.groups()
+    return f"{year}-{int(month):02d}-{int(day):02d}"
+
+
 def select_best_title(candidates: list[str]) -> str | None:
     """
     Select the best title candidate from a list of lines.
@@ -137,7 +164,12 @@ def select_best_title(candidates: list[str]) -> str | None:
 # Matches: optional numeric book prefix + book name + chapter:verse[(-|–|—) verse]
 # Accepts hyphens, en-dashes, em-dashes, and optional spaces around the separator (#313).
 _SCRIPTURE_RE = re.compile(
-    r"^(1|2|3)?\s*[A-Za-z][a-z]+(\s[A-Za-z][a-z]+)?\s+\d{1,3}:\d{1,3}(\s*[-–—]\s*\d{1,3})?$",
+    # Optional leading dash/en/em-dash (older decks prefix scripture refs, #427),
+    # optional numeric book prefix, book name, then chapter[:.]verse with an
+    # optional verse range. The [:.] accepts dot-style refs ("Romans 12.20") as
+    # well as the canonical colon ("John 3:16").
+    r"^[–—-]?\s*(1|2|3)?\s*[A-Za-z][a-z]+(\s[A-Za-z][a-z]+)?\s+\d{1,3}[:.]\d{1,3}"
+    r"(\s*[-–—]\s*\d{1,3})?$",
     re.IGNORECASE,
 )
 
@@ -228,7 +260,6 @@ def _is_invalid_line(line: str) -> bool:
     # Copyright markers
     if any(marker in lower for marker in [
         "copyright",
-        "all rights reserved",
         "all rights reserved",
         "used by permission",
         "admin. by",

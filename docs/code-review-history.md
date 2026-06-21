@@ -7,6 +7,94 @@ Each review produces GitHub issues for every significant finding.
 
 ---
 
+## Review 11 — 2026-05-26
+
+**Branch:** `agent/claude/review-11-history`
+**Reviewer:** Claude Code (full-code-review skill)
+**Focus:** Heavy security emphasis — code **and** the pi-songs host — after `songs.highland-coc.com` was exposed publicly via a cloudflared tunnel.
+**Issues created:** #446–#455
+
+### Findings
+
+| Issue | Persona | Title | Severity |
+|-------|---------|-------|----------|
+| #446 | Security | pi-songs `.env` world-readable (644) — exposes CF API/tunnel tokens, CSRF & upload secrets | HIGH |
+| #447 | Security | App port 8000 (incl. `/metrics`) bound to 0.0.0.0, no host firewall — bypasses Cloudflare/Traefik | HIGH |
+| #448 | Security | `TRUSTED_PROXY` unset → CF-Connecting-IP unused → upload rate limiter buckets all tunnel traffic as one client | MED |
+| #449 | Security | `/metrics` unauthenticated & reachable through the public tunnel — leaks routes/traffic/latency | MED |
+| #450 | Security | Public report endpoints unrate-limited — unauthenticated CPU/memory DoS (esp. `/reports/stats/xlsx`) | MED |
+| #451 | Security | `/jobs` & `/jobs/{id}` public & unauthenticated — leak uploaded filenames + raw error messages | MED |
+| #452 | Security | pi-songs SSH allows password auth, no fail2ban | MED |
+| #453 | DevSecOps | cloudflared & promtail pinned to `:latest` on the public-facing host | MED |
+| #454 | DevOps | pi-deploy runbook still says "LAN-only, no public internet exposure" — now false | MED |
+| #455 | Product | Public exposure publishes leader/preacher names, sermon titles & full history — confirm intended audience (re-triage #2) | MED |
+
+### Grades
+
+| Persona | Grade | Notes |
+|---------|-------|-------|
+| Senior Architect | A- | Code structure clean (Review 10 fixes landed); only smell is the dual public-tunnel vs Traefik path |
+| Senior Developer | A- | No new code-logic bugs; findings are deployment/exposure, not application logic |
+| Senior DevOps | C | Public host has no firewall, app port on 0.0.0.0, unpinned tunnel image, and a runbook that contradicts reality |
+| Senior Security Architect | C | Strong code-level controls (CSP/CSRF/HSTS/param queries), but weak posture for a public service: world-readable secrets, app+metrics reachable off-Cloudflare, defeated rate limiting, public /jobs & /metrics |
+| Senior DevSecOps | B- | CI supply chain solid; the two most-privileged runtime containers are unpinned and secret-at-rest perms are wrong |
+| Senior QA Engineer | A- | Large healthy suite + e2e/contract coverage; gap was no tests asserting deploy security posture (now embedded in issues) |
+| Product Manager | B | Features solid; the live question is the privacy/audience decision for now-public congregant data |
+| UAT Analyst | A- | Strong Playwright coverage incl. the new upload→songs pipeline; no new gaps |
+| Accessibility Specialist | B+ | Songs concise live region + polite upload landed; #431 (services) still open |
+| Database / Data Engineer | A- | WAL, indexes, read-snapshot pagination (#415), retry-safe inserts (#400) landed; #420 still tracked |
+
+**Overall: C+** — the codebase is in good shape, but the production security posture for the newly public deployment has several real, fixable gaps (the focus of this review).
+
+---
+
+## Review 10 — 2026-05-25
+
+**Branch:** `agent/claude/import-summary-output`
+**Reviewer:** Claude Code (full-code-review skill)
+**Issues created:** #399–#416
+
+### Findings
+
+| Issue | Persona | Title | Severity |
+|-------|---------|-------|----------|
+| #399 | Architect | `Database.normalize_service_dates()` imports from `pptx_reader` — cross-layer coupling | MED |
+| #400 | Developer | `insert_or_get_song/edition/copy_event` have TOCTOU race under concurrent background imports | HIGH |
+| #401 | Developer | `upload.js` injects `job.error_message` into `innerHTML` without HTML escaping | MED |
+| #402 | DevOps | Dockerfile has no `HEALTHCHECK` instruction | MED |
+| #403 | DevOps | Dockerfile base image is Python 3.14 (pre-release) | HIGH |
+| #404 | Security | `X-Forwarded-For` leftmost-IP trust is bypassable — rate limiter can be evaded | MED |
+| #405 | Security | Missing `Strict-Transport-Security` response header | MED |
+| #406 | Security | `CSRF_SECRET` env var not enforced — process restart invalidates all live tokens | MED |
+| #408 | DevSecOps | `pip-audit` CVE skip for CVE-2026-3219 has no expiry mechanism | LOW |
+| #409 | QA | CI test-count floor (700) is stale — actual suite is 1010+ tests | HIGH |
+| #410 | QA | No snapshot test for CCLI CSV column headers | MED |
+| #411 | PM | CCLI report has no inline preview before downloading CSV | LOW |
+| #412 | UAT | No E2E Playwright test verifying songs appear in /songs after successful upload | MED |
+| #413 | Accessibility | `aria-live` on song table announces full table content on every HTMX search swap | MED |
+| #414 | Accessibility | Upload result div uses `role=alert`/`aria-live=assertive` on initially empty element | LOW |
+| #415 | Database | Pagination queries (COUNT + SELECT) run without a shared read snapshot | LOW |
+| #416 | Developer | `_is_invalid_line()` has duplicate "all rights reserved" string — dead code | LOW |
+
+### Grades
+
+| Persona | Grade | Notes |
+|---------|-------|-------|
+| Senior Architect | A- | Clean separation of concerns; cross-layer import in db→pptx_reader is the main structural debt |
+| Senior Developer | B+ | Strong typing and error handling; TOCTOU race in concurrent inserts is a real data-integrity bug; innerHTML XSS risk |
+| Senior DevOps | B+ | Excellent CI pipeline; Python 3.14 pre-release image and missing Dockerfile HEALTHCHECK are operational risks |
+| Senior Security Architect | B+ | CSP, CSRF, parameterized queries, rate limiting all solid; X-Forwarded-For bypass and missing HSTS are gaps |
+| Senior DevSecOps | A- | SHA-pinned actions, Trivy, SBOM, gitleaks all present; CVE skip without expiry is process debt |
+| Senior QA Engineer | B+ | 1010+ tests with strong coverage; CI floor stale, no CCLI header snapshot, mutation testing non-blocking |
+| Product Manager | B+ | Full feature set for the use case; CCLI preview would reduce admin friction |
+| UAT Analyst | B+ | Strong Playwright coverage for CRUD and forms; missing full upload-to-songs pipeline verification |
+| Accessibility Specialist | B+ | Good foundations (skip-nav, aria-sort, labels); aria-live verbosity and assertive role misuse are UX issues |
+| Database / Data Engineer | A- | WAL, indexes, migrations, whitelist-validated ORDER BY all correct; pagination read consistency is minor |
+
+**Overall: B+**
+
+---
+
 ## Review 9 — 2026-03-21
 
 **Branch:** `main`

@@ -45,6 +45,11 @@ services:
     image: ghcr.io/mshirel/song-history:latest
     restart: unless-stopped
     init: true
+    # The app image ships a HEALTHCHECK that probes :8000 (#402); the watcher
+    # runs an import loop and serves no HTTP, so disable the inherited check to
+    # avoid a permanently "unhealthy" container and false monitoring alerts.
+    healthcheck:
+      disable: true
     entrypoint: /bin/sh
     command: >
       -c "while true; do /app/scripts/import-new.sh; sleep 300; done"
@@ -80,6 +85,11 @@ services:
       # defaults to "highland".
       UPLOAD_PASSWORD: "${UPLOAD_PASSWORD:-}"
       UPLOAD_USERNAME: "${UPLOAD_USERNAME:-highland}"
+      # Emit HSTS when served over HTTPS (behind Cloudflare/Traefik) (#405).
+      HTTPS_ONLY: "${HTTPS_ONLY:-}"
+      # Behind the Cloudflare tunnel, trust CF-Connecting-IP for the real client
+      # IP so the upload rate limiter buckets per client, not per tunnel (#448).
+      TRUSTED_PROXY: "${TRUSTED_PROXY:-1}"
     volumes:
       - /opt/song-history/data:/data
       - /opt/song-history/inbox:/inbox
@@ -121,7 +131,8 @@ services:
   # Requires a DMZ->Loki (10.20.100.249:3100) firewall allow on VLAN 249.
   # ---------------------------------------------------------------------------
   promtail:
-    image: grafana/promtail:latest
+    # Digest-pinned (#453) — was :latest. Re-pin on a reviewed Dependabot bump.
+    image: grafana/promtail:latest@sha256:6cfa64ec432b24a912d640e2edb940eeae2666f61861a66c121d763dd7241381
     restart: unless-stopped
     user: root   # needed to read root-owned /var/lib/docker/containers logs
     command: -config.file=/etc/promtail/config.yml
@@ -143,7 +154,9 @@ services:
   # in the Cloudflare Zero Trust dashboard. Set TUNNEL_TOKEN in .env.
   # ---------------------------------------------------------------------------
   cloudflared:
-    image: cloudflare/cloudflared:latest
+    # Digest-pinned (#453) — was :latest. The internet-facing tunnel daemon must
+    # not silently upgrade; re-pin on a reviewed Dependabot bump.
+    image: cloudflare/cloudflared:latest@sha256:59bab8d3aceec09bf6bdb07d6beca0225ca5cd7ab79436a87ea97978fe1dc4f9
     restart: unless-stopped
     # --metrics pins the Prometheus endpoint to a stable port (default is
     # ephemeral). Published on :2000 for Prometheus to scrape (HOME-176). This

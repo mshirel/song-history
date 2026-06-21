@@ -128,6 +128,93 @@ class TestReportsPage:
         assert "/reports/stats" in response.text
 
 
+class TestMissingServicesReport:
+    """Missing-services report: HTML page, HTMX partial, JSON API, exclude toggle."""
+
+    def test_reports_page_has_missing_services_tab(self, client):
+        body = client.get("/reports").text
+        assert "Missing Services" in body
+        assert "/reports/missing-services" in body
+
+    def test_window_selector_offers_all_options(self, client):
+        body = client.get("/reports").text
+        # 90 / 180 / 1 year / 2 years selectable windows.
+        for label in ("Last 90 days", "Last 180 days", "Last 1 year", "Last 2 years"):
+            assert label in body
+
+    def test_get_report_returns_full_page(self, client):
+        resp = client.get("/reports/missing-services")
+        assert resp.status_code == 200
+        assert "text/html" in resp.headers["content-type"]
+        assert "<!doctype" in resp.text.lower() or "<html" in resp.text.lower()
+
+    def test_get_report_htmx_returns_partial(self, client):
+        resp = client.get("/reports/missing-services", headers={"HX-Request": "true"})
+        assert resp.status_code == 200
+        lowered = resp.text.lower()
+        assert "<!doctype" not in lowered
+        assert "<html" not in lowered
+
+    def test_json_endpoint_shape(self, client):
+        data = client.get("/reports/missing-services.json").json()
+        for key in ("window_days", "start_date", "end_date", "weeks", "summary"):
+            assert key in data
+        assert data["window_days"] == 90  # default window
+
+    def test_json_respects_days_param(self, client):
+        data = client.get("/reports/missing-services.json?days=180").json()
+        assert data["window_days"] == 180
+
+    def test_json_invalid_days_falls_back_to_default(self, client):
+        data = client.get("/reports/missing-services.json?days=9999").json()
+        assert data["window_days"] == 90
+
+    def test_post_exclude_marks_slot(self, client, db_with_songs):
+        resp = client.post(
+            "/reports/missing-services/exclude",
+            data={"service_date": "2026-06-14", "service_slot": "evening",
+                  "reason": "Fellowship", "days": "90"},
+        )
+        assert resp.status_code == 200
+        db = Database(db_with_songs)
+        db.connect()
+        rows = db.query_exclusions("2026-06-01", "2026-06-30")
+        db.close()
+        assert len(rows) == 1
+        assert rows[0]["service_slot"] == "evening"
+        assert rows[0]["reason"] == "Fellowship"
+
+    def test_post_include_removes_exclusion(self, client, db_with_songs):
+        client.post(
+            "/reports/missing-services/exclude",
+            data={"service_date": "2026-06-14", "service_slot": "evening", "days": "90"},
+        )
+        resp = client.post(
+            "/reports/missing-services/include",
+            data={"service_date": "2026-06-14", "service_slot": "evening", "days": "90"},
+        )
+        assert resp.status_code == 200
+        db = Database(db_with_songs)
+        db.connect()
+        rows = db.query_exclusions("2026-06-01", "2026-06-30")
+        db.close()
+        assert rows == []
+
+    def test_post_exclude_rejects_invalid_slot(self, client):
+        resp = client.post(
+            "/reports/missing-services/exclude",
+            data={"service_date": "2026-06-14", "service_slot": "noon", "days": "90"},
+        )
+        assert resp.status_code == 422
+
+    def test_post_exclude_rejects_invalid_date(self, client):
+        resp = client.post(
+            "/reports/missing-services/exclude",
+            data={"service_date": "not-a-date", "service_slot": "evening", "days": "90"},
+        )
+        assert resp.status_code == 422
+
+
 class TestReportsTabs:
     """Reports page is tabbed: Song Statistics primary/default, CCLI secondary (#390)."""
 
@@ -634,6 +721,107 @@ class TestStatsExport:
         assert "/reports/stats/csv" in response.text
 
 
+class TestCcliCsvContract:
+    """Exact column contract for the CCLI and stats CSV exports (#410).
+
+    Substring checks elsewhere don't catch a reordered, renamed, or added
+    column — which would mis-map data submitted to the CCLI licensing board.
+    These lock the precise header list and column count.
+    """
+
+    CCLI_HEADERS = ["Date", "Service", "Title", "CCLI#", "Reproduction Type", "Count"]
+    STATS_HEADERS = ["Rank", "Title", "Credits", "Count"]
+
+    def test_ccli_csv_headers_exact_and_ordered(self, client):
+        import csv
+        import io
+
+        resp = client.post(
+            "/reports/ccli",
+            data={"start_date": "2020-01-01", "end_date": "2030-12-31"},
+        )
+        assert resp.status_code == 200
+        headers = next(csv.reader(io.StringIO(resp.text)))
+        assert headers == self.CCLI_HEADERS, (
+            f"CCLI CSV header contract changed. Expected {self.CCLI_HEADERS}, "
+            f"got {headers}. Update the report writer if this is intentional."
+        )
+
+    def test_ccli_csv_every_row_has_six_columns(self, client):
+        import csv
+        import io
+
+        resp = client.post(
+            "/reports/ccli",
+            data={"start_date": "2020-01-01", "end_date": "2030-12-31"},
+        )
+        rows = list(csv.reader(io.StringIO(resp.text)))
+        assert len(rows) >= 2, "Fixture should yield at least one CCLI data row"
+        for row in rows:
+            assert len(row) == len(self.CCLI_HEADERS), (
+                f"Expected {len(self.CCLI_HEADERS)} columns, got {len(row)}: {row}"
+            )
+
+    def test_stats_csv_headers_exact_and_ordered(self, client):
+        import csv
+        import io
+
+        resp = client.post(
+            "/reports/stats/csv",
+            data={"start_date": "2020-01-01", "end_date": "2030-12-31"},
+        )
+        assert resp.status_code == 200
+        headers = next(csv.reader(io.StringIO(resp.text)))
+        assert headers == self.STATS_HEADERS, (
+            f"Stats CSV header contract changed. Expected {self.STATS_HEADERS}, got {headers}."
+        )
+
+
+class TestCcliPreview:
+    """Inline CCLI preview before download — count/summary (#411)."""
+
+    def test_preview_shows_event_count_for_nonempty_range(self, client):
+        resp = client.post(
+            "/reports/ccli/preview",
+            data={"start_date": "2020-01-01", "end_date": "2030-12-31"},
+        )
+        assert resp.status_code == 200
+        text = resp.text.lower()
+        assert "event" in text or "reproduction" in text
+        assert "song" in text
+        assert any(str(n) in resp.text for n in (1, 2))
+
+    def test_preview_empty_range_shows_zero(self, client):
+        resp = client.post(
+            "/reports/ccli/preview",
+            data={"start_date": "1990-01-01", "end_date": "1990-12-31"},
+        )
+        assert resp.status_code == 200
+        assert "0" in resp.text
+        assert "no " in resp.text.lower()
+
+    def test_preview_validates_dates(self, client):
+        resp = client.post(
+            "/reports/ccli/preview",
+            data={"start_date": "not-a-date", "end_date": "2026-12-31"},
+        )
+        assert resp.status_code == 422
+
+    def test_preview_is_html_partial_not_full_page(self, client):
+        resp = client.post(
+            "/reports/ccli/preview",
+            data={"start_date": "2020-01-01", "end_date": "2030-12-31"},
+        )
+        assert "<!doctype" not in resp.text.lower()
+        assert "<html" not in resp.text.lower()
+
+    def test_reports_page_has_preview_button_and_download(self, client):
+        resp = client.get("/reports")
+        assert resp.status_code == 200
+        assert "/reports/ccli/preview" in resp.text
+        assert 'action="/reports/ccli"' in resp.text
+
+
 class TestCcliReportWebRoute:
     """Web UI must provide CCLI report generation (#201)."""
 
@@ -1135,8 +1323,35 @@ class TestJobStatusEndpoint:
         for field in (
             "job_id", "filename", "status", "started_at",
             "completed_at", "songs_imported", "error_message",
+            "service_date", "service_name", "song_leader",
+            "preacher", "sermon_title", "songs_json",
         ):
             assert field in body
+
+    def test_job_response_includes_metadata_when_set(self, client, db):
+        import json
+
+        job_id = str(_uuid_mod.uuid4())
+        db.create_import_job(job_id, filename="test.pptx")
+        db.update_import_job(
+            job_id,
+            status="complete",
+            songs_imported=2,
+            service_date="2026-05-25",
+            service_name="PM Worship",
+            song_leader="Jane Smith",
+            preacher="John Doe",
+            sermon_title="Grace Abounding",
+            songs_json=json.dumps(["Amazing Grace", "How Great Thou Art"]),
+        )
+        resp = client.get(f"/jobs/{job_id}")
+        body = resp.json()
+        assert body["service_date"] == "2026-05-25"
+        assert body["service_name"] == "PM Worship"
+        assert body["song_leader"] == "Jane Smith"
+        assert body["preacher"] == "John Doe"
+        assert body["sermon_title"] == "Grace Abounding"
+        assert json.loads(body["songs_json"]) == ["Amazing Grace", "How Great Thou Art"]
 
 
 class TestJobListEndpoint:
@@ -2929,6 +3144,53 @@ class TestBranding:
         assert b"Highland" in response.content
 
 
+class TestResponsiveLayout:
+    """Issue #394 — the public UI must be usable on phones."""
+
+    def test_viewport_meta_present(self, client):
+        """base.html must set a device-width viewport (guard against regression)."""
+        resp = client.get("/songs")
+        assert resp.status_code == 200
+        assert 'name="viewport"' in resp.text
+        assert "width=device-width" in resp.text
+
+    def test_base_has_media_query(self, client):
+        """Responsive rules require at least one @media breakpoint in the stylesheet."""
+        resp = client.get("/songs")
+        assert resp.status_code == 200
+        assert "@media" in resp.text, "base.html has no media query — UI is not responsive"
+
+    def test_songs_table_in_scroll_container(self, client):
+        """Songs table must sit inside a horizontal-scroll container for narrow screens."""
+        resp = client.get("/songs")
+        assert resp.status_code == 200
+        assert "table-wrap" in resp.text, (
+            "Songs table is not wrapped in a .table-wrap scroll container"
+        )
+
+    def test_services_table_in_scroll_container(self, client):
+        """Services table must sit inside a horizontal-scroll container."""
+        resp = client.get("/services")
+        assert resp.status_code == 200
+        assert "table-wrap" in resp.text, (
+            "Services table is not wrapped in a .table-wrap scroll container"
+        )
+
+    def test_nav_has_css_only_toggle(self, client):
+        """Mobile nav must collapse via a CSS-only checkbox toggle (no JS, CSP-safe)."""
+        resp = client.get("/songs")
+        assert resp.status_code == 200
+        html = resp.text
+        assert 'id="nav-toggle"' in html, "No #nav-toggle checkbox for the hamburger menu"
+        assert 'for="nav-toggle"' in html, "No <label for=nav-toggle> hamburger control"
+        # The toggle must not introduce any new inline script (CSP blocks inline JS).
+        import re
+        inline_scripts = re.findall(r"<script(?![^>]*\bsrc\b)[^>]*>", html)
+        assert not inline_scripts, (
+            f"Nav added {len(inline_scripts)} inline <script> tag(s) blocked by CSP"
+        )
+
+
 class TestHtmxSelfHosted:
     """htmx must be served from our own static files, not a CDN."""
 
@@ -3469,7 +3731,7 @@ class TestUploadRateLimiterPersistence:
 
 
 class TestProxyAwareRateLimiter:
-    """Rate limiter should use X-Forwarded-For when TRUSTED_PROXY is set (#283)."""
+    """Rate limiter client-IP resolution behind a trusted proxy (#283, #404)."""
 
     def test_get_client_ip_without_proxy(self, monkeypatch):
         monkeypatch.setenv("TRUSTED_PROXY", "")
@@ -3482,7 +3744,9 @@ class TestProxyAwareRateLimiter:
         req.headers = {}
         assert app_module._get_client_ip(req) == "1.2.3.4"
 
-    def test_get_client_ip_with_proxy(self, monkeypatch):
+    def test_get_client_ip_with_proxy_uses_rightmost_xff(self, monkeypatch):
+        # The leftmost X-Forwarded-For entry is client-controlled and spoofable;
+        # the proxy-appended rightmost entry is the trustworthy one (#404).
         monkeypatch.setenv("TRUSTED_PROXY", "1")
         from importlib import reload
         import worship_catalog.web.app as app_module
@@ -3490,8 +3754,23 @@ class TestProxyAwareRateLimiter:
         from unittest.mock import MagicMock
         req = MagicMock()
         req.client.host = "10.0.0.1"
-        req.headers = {"x-forwarded-for": "5.6.7.8, 10.0.0.1"}
-        assert app_module._get_client_ip(req) == "5.6.7.8"
+        req.headers = {"x-forwarded-for": "5.6.7.8, 198.51.100.2"}
+        assert app_module._get_client_ip(req) == "198.51.100.2"
+
+    def test_get_client_ip_prefers_cf_connecting_ip(self, monkeypatch):
+        # Cloudflare sets CF-Connecting-IP to the unspoofable real client IP (#404).
+        monkeypatch.setenv("TRUSTED_PROXY", "1")
+        from importlib import reload
+        import worship_catalog.web.app as app_module
+        reload(app_module)
+        from unittest.mock import MagicMock
+        req = MagicMock()
+        req.client.host = "10.0.0.1"
+        req.headers = {
+            "cf-connecting-ip": "203.0.113.7",
+            "x-forwarded-for": "5.6.7.8",
+        }
+        assert app_module._get_client_ip(req) == "203.0.113.7"
 
     def test_get_client_ip_proxy_no_xff_header(self, monkeypatch):
         monkeypatch.setenv("TRUSTED_PROXY", "1")
@@ -3586,6 +3865,23 @@ class TestPrometheusMetrics:
         response = client.get("/metrics")
         assert "http_requests_total" in response.text
 
+    def test_metrics_contains_request_duration_histogram(self, client):
+        """/metrics must expose a request-duration histogram for latency SLOs (#395)."""
+        client.get("/songs")  # generate at least one observation
+        response = client.get("/metrics")
+        assert "http_request_duration_seconds" in response.text, (
+            "No request-duration histogram exposed — cannot compute latency percentiles"
+        )
+        # A Prometheus Histogram exposes _bucket, _count and _sum series.
+        assert "http_request_duration_seconds_bucket" in response.text
+        assert "http_request_duration_seconds_count" in response.text
+
+    def test_request_duration_histogram_labeled_by_method(self, client):
+        """The duration histogram must be labelled so per-route latency is queryable."""
+        client.get("/songs")
+        response = client.get("/metrics")
+        assert 'method="GET"' in response.text
+
     def test_metrics_exempt_from_csrf(self, raw_client):
         """GET /metrics must work without a CSRF token."""
         response = raw_client.get("/metrics")
@@ -3595,6 +3891,24 @@ class TestPrometheusMetrics:
         """Scraping /metrics must not create a recursive metric for /metrics requests."""
         response = client.get("/metrics")
         assert response.status_code == 200
+
+    def test_metrics_denied_when_proxied(self, client):
+        """Requests reaching the app through the public proxy chain (Cloudflare
+        tunnel → Traefik) carry forwarding headers and must be denied — /metrics
+        is internal-only (#449). The real tunnel sends X-Forwarded-For (not
+        CF-Connecting-IP), so both must be treated as public."""
+        for hdr in ("X-Forwarded-For", "CF-Connecting-IP", "X-Forwarded-Host"):
+            response = client.get("/metrics", headers={hdr: "203.0.113.7"})
+            assert response.status_code == 404, (
+                f"/metrics must not be reachable from the public proxy chain (via {hdr})"
+            )
+
+    def test_metrics_allowed_for_internal_scrape(self, client):
+        """The internal Prometheus scrape (direct to :8000, no forwarding headers)
+        must still work."""
+        response = client.get("/metrics")
+        assert response.status_code == 200
+        assert "http_requests_total" in response.text
 
 
 class TestBuildDateFormatting:

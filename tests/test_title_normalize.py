@@ -368,3 +368,46 @@ class TestSermonOutlineNotStripped:
         """'2. Grace' — even short entries with period should not strip."""
         result = strip_title_prefix("2. Grace")
         assert result.startswith("2.")
+
+
+@pytest.mark.unit
+class TestInvalidLineMarkers:
+    """_is_invalid_line marker lists must not contain duplicates (#416)."""
+
+    def test_copyright_marker_list_has_no_duplicates(self):
+        import inspect
+        import re
+
+        src = inspect.getsource(_is_invalid_line)
+        # Only standalone quoted list items (one per line), e.g. `    "copyright",`.
+        # Avoids matching the docstring or inline regex/code.
+        markers = re.findall(r'^\s*"([^"]+)",?\s*$', src, re.MULTILINE)
+        dupes = sorted({m for m in markers if markers.count(m) > 1})
+        assert not dupes, f"Duplicate markers in _is_invalid_line: {dupes}"
+
+    def test_all_rights_reserved_still_filtered(self):
+        assert _is_invalid_line("All Rights Reserved") is True
+
+
+@pytest.mark.unit
+class TestNormalizeServiceDateLayering:
+    """normalize_service_date belongs in normalize.py, not pptx_reader, so the
+    data layer (db.py) doesn't import the parsing layer (#399)."""
+
+    def test_importable_from_normalize(self):
+        from worship_catalog.normalize import normalize_service_date
+
+        assert normalize_service_date("2026.1.11") == "2026-01-11"
+        assert normalize_service_date(None) is None
+        assert normalize_service_date("Easter") == "Easter"
+
+    def test_db_does_not_import_pptx_reader_for_dates(self):
+        import inspect
+
+        from worship_catalog.db import Database
+
+        src = inspect.getsource(Database.normalize_service_dates)
+        assert "pptx_reader" not in src, (
+            "Database.normalize_service_dates must import normalize_service_date "
+            "from worship_catalog.normalize, not pptx_reader (#399)."
+        )

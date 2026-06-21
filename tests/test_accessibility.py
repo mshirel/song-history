@@ -176,7 +176,97 @@ class TestAriaLiveRegions:
 
     def test_upload_result_has_aria_live(self, client: TestClient) -> None:
         resp = client.get("/upload")
-        assert 'aria-live="assertive"' in resp.text or 'role="alert"' in resp.text
+        # Any live region satisfies #306; #414 makes it polite rather than assertive.
+        assert 'aria-live=' in resp.text
+
+
+class TestUploadResultLiveRegion:
+    """Upload result region must be a polite, atomic live region — not an empty
+    role=alert/assertive element that announces on page load (#414)."""
+
+    @pytest.fixture
+    def client(self, db_with_songs, tmp_path, monkeypatch):
+        inbox = tmp_path / "inbox"
+        inbox.mkdir()
+        monkeypatch.setenv("DB_PATH", str(db_with_songs))
+        monkeypatch.setenv("INBOX_DIR", str(inbox))
+        from importlib import reload
+
+        import worship_catalog.web.app as app_module
+        reload(app_module)
+        return TestClient(app_module.app)
+
+    def test_upload_result_is_polite_not_assertive(self, client: TestClient) -> None:
+        resp = client.get("/upload")
+        assert 'aria-live="assertive"' not in resp.text, (
+            "Upload status is informational — use polite, not assertive (#414)"
+        )
+        assert 'role="alert"' not in resp.text, (
+            "Empty role=alert announces on page load; use a polite live region"
+        )
+
+    def test_upload_result_region_is_polite_atomic(self, client: TestClient) -> None:
+        resp = client.get("/upload")
+        m = re.search(r'id="upload-result"[^>]*>', resp.text)
+        assert m, "upload-result region missing"
+        tag = m.group(0)
+        assert 'aria-live="polite"' in tag and 'aria-atomic="true"' in tag
+
+
+class TestSongsConciseLiveRegion:
+    """Songs search must announce a concise result count, not the whole table (#413)."""
+
+    def test_songs_table_card_is_not_the_live_region(self, client: TestClient) -> None:
+        """The table-wrapping card must no longer carry aria-live — otherwise every
+        HTMX search keystroke re-announces all rows to screen readers."""
+        resp = client.get("/songs")
+        assert 'style="padding:0;" aria-live="polite"' not in resp.text, (
+            "Songs table card is still an aria-live region — it announces the entire "
+            "table on every search keystroke. Move aria-live to a concise count region."
+        )
+
+    def test_songs_has_concise_count_live_region(self, client: TestClient) -> None:
+        resp = client.get("/songs")
+        import re
+
+        m = re.search(r'id="songs-count"[^>]*>', resp.text)
+        assert m, "Expected a concise #songs-count live region"
+        tag = m.group(0)
+        assert 'aria-live="polite"' in tag and 'aria-atomic="true"' in tag, (
+            "The count region must be a polite, atomic live region"
+        )
+
+    def test_songs_htmx_partial_includes_count(self, client: TestClient) -> None:
+        """The HTMX search response must re-render the count so it updates on search."""
+        resp = client.get("/songs?q=Amazing", headers={"HX-Request": "true"})
+        assert 'id="songs-count"' in resp.text
+
+
+class TestServicesConciseLiveRegion:
+    """Services filtering must announce a concise result count, not the whole table (#431)."""
+
+    def test_services_table_card_is_not_the_live_region(self, client: TestClient) -> None:
+        """The table-wrapping card must no longer carry aria-live — otherwise every
+        HTMX filter change re-announces all rows to screen readers."""
+        resp = client.get("/services")
+        assert 'style="padding:0;" aria-live="polite"' not in resp.text, (
+            "Services table card is still an aria-live region — it announces the entire "
+            "table on every filter change. Move aria-live to a concise count region."
+        )
+
+    def test_services_has_concise_count_live_region(self, client: TestClient) -> None:
+        resp = client.get("/services")
+        m = re.search(r'id="services-count"[^>]*>', resp.text)
+        assert m, "Expected a concise #services-count live region"
+        tag = m.group(0)
+        assert 'aria-live="polite"' in tag and 'aria-atomic="true"' in tag, (
+            "The count region must be a polite, atomic live region"
+        )
+
+    def test_services_htmx_partial_includes_count(self, client: TestClient) -> None:
+        """The HTMX filter response must re-render the count so it updates on filter."""
+        resp = client.get("/services?q_service=AM", headers={"HX-Request": "true"})
+        assert 'id="services-count"' in resp.text
 
 
 class TestErrorPageContrast:

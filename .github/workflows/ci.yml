@@ -37,8 +37,11 @@ jobs:
         run: |
           python3 -m pytest --cov=src/worship_catalog --cov-report=term-missing 2>&1 | tee /tmp/test.log
           count=$(grep -oP '\d+ passed' /tmp/test.log | grep -oP '\d+')
-          if [ -z "$count" ] || [ "$count" -lt 700 ]; then
-            echo "ERROR: Expected at least 700 tests to pass, got ${count:-0}"
+          # Floor must track the real suite size (1100+ tests as of 2026-05).
+          # Bump this whenever the suite grows by >50 tests so a deleted test
+          # file can't slip through (#409).
+          if [ -z "$count" ] || [ "$count" -lt 950 ]; then
+            echo "ERROR: Expected at least 950 tests to pass, got ${count:-0}"
             exit 1
           fi
 
@@ -120,7 +123,9 @@ jobs:
 
       - name: Start server
         run: |
-          DB_PATH=/tmp/e2e-test.db INBOX_DIR=/tmp/e2e-inbox \
+          # TESTING=1 lets the app use an ephemeral CSRF secret instead of
+          # requiring CSRF_SECRET, which is mandatory in production (#406).
+          DB_PATH=/tmp/e2e-test.db INBOX_DIR=/tmp/e2e-inbox TESTING=1 \
             python3 -m uvicorn worship_catalog.web.app:app \
               --host 127.0.0.1 --port 8000 &
           # Wait for server to become healthy (max 15s)
@@ -183,7 +188,9 @@ jobs:
           }
 
       - name: Dependency audit (pip-audit)
-        # CVE-2026-3219 affects pip itself; no fix released yet — ignore until pip patch ships
+        # CVE-2026-3219 affects pip itself; no fix released upstream yet.
+        # Re-evaluate at every Dependabot bump of requirements.lock and remove
+        # this --ignore-vuln once a fixed pip ships. Tracked by #408.
         run: python3 -m pip_audit --skip-editable --ignore-vuln CVE-2026-3219
 
       # --- Static security analysis ----------------------------------------
@@ -306,8 +313,11 @@ jobs:
       - name: Smoke test image
         if: steps.changes.outputs.app == 'true' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         run: |
+          # CSRF_SECRET is mandatory in production (#406); supply an ephemeral
+          # one so the image boots the same code path a real deployment uses.
           docker run -d --name smoke-test \
             -e DB_PATH=/tmp/test.db \
+            -e CSRF_SECRET=smoke-test-ephemeral-secret \
             -p 8765:8000 \
             local-scan:latest
           # Wait for the server to start (max 15s)

@@ -9,12 +9,14 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from worship_catalog.normalize import normalize_service_date
+
 _log = logging.getLogger("worship_catalog.db")
 
 # Bump this integer whenever the schema changes.  Each new version must have a
 # corresponding entry in _MIGRATIONS.  connect() raises SchemaVersionError if the
 # on-disk version is *higher* than this value (DB created by a newer release).
-_SCHEMA_VERSION: int = 3
+_SCHEMA_VERSION: int = 6
 
 # Ordered dict of version → list of SQL statements.  Each migration brings the
 # DB from version (N-1) to version N.  Migration 1 is the baseline — it
@@ -110,13 +112,95 @@ _MIGRATIONS: dict[int, list[str]] = {
         "PRAGMA foreign_keys=ON",
         "CREATE INDEX IF NOT EXISTS idx_services_date ON services(service_date)",
     ],
+    4: [
+        # NULL-safe uniqueness for song_editions + copy_events (#420). SQLite's
+        # table-level UNIQUE treats each NULL as distinct, so NULL-credit editions
+        # and NULL-edition copy_events could duplicate under concurrent imports.
+        # De-dupe existing rows (repointing child FKs to the keeper), then add
+        # expression UNIQUE indexes that COALESCE NULLs so the constraint actually
+        # enforces. With these in place, insert_or_get_* raises IntegrityError on a
+        # concurrent NULL duplicate and the existing retry-on-conflict (#400) wins.
+        # --- song_editions: map each row to its canonical keeper (min id) ---
+        """
+        CREATE TEMP TABLE _edition_keep AS
+        SELECT e1.id AS dup_id,
+               (SELECT MIN(e2.id) FROM song_editions e2
+                 WHERE e2.song_id = e1.song_id
+                   AND COALESCE(e2.publisher,'') = COALESCE(e1.publisher,'')
+                   AND COALESCE(e2.words_by,'')  = COALESCE(e1.words_by,'')
+                   AND COALESCE(e2.music_by,'')  = COALESCE(e1.music_by,'')
+                   AND COALESCE(e2.arranger,'')  = COALESCE(e1.arranger,'')) AS keep_id
+        FROM song_editions e1
+        """,
+        """
+        UPDATE service_songs SET song_edition_id =
+            (SELECT keep_id FROM _edition_keep WHERE dup_id = service_songs.song_edition_id)
+        WHERE song_edition_id IN (SELECT dup_id FROM _edition_keep WHERE dup_id <> keep_id)
+        """,
+        """
+        UPDATE copy_events SET song_edition_id =
+            (SELECT keep_id FROM _edition_keep WHERE dup_id = copy_events.song_edition_id)
+        WHERE song_edition_id IN (SELECT dup_id FROM _edition_keep WHERE dup_id <> keep_id)
+        """,
+        "DELETE FROM song_editions WHERE id IN "
+        "(SELECT dup_id FROM _edition_keep WHERE dup_id <> keep_id)",
+        "DROP TABLE _edition_keep",
+        # --- copy_events: collapse duplicates (after the edition repoint) ---
+        """
+        DELETE FROM copy_events WHERE id NOT IN (
+            SELECT MIN(id) FROM copy_events
+            GROUP BY service_id, song_id, COALESCE(song_edition_id, -1), reproduction_type
+        )
+        """,
+        # --- NULL-safe unique indexes (NULLs collapsed via COALESCE) ---
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_song_editions_identity
+        ON song_editions(song_id, COALESCE(publisher,''), COALESCE(words_by,''),
+                         COALESCE(music_by,''), COALESCE(arranger,''))
+        """,
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_copy_events_identity
+        ON copy_events(service_id, song_id, COALESCE(song_edition_id, -1), reproduction_type)
+        """,
+    ],
+    5: [
+        # Add service metadata + song list columns to import_jobs so the web UI
+        # can show richer results after a successful import.
+        "ALTER TABLE import_jobs ADD COLUMN service_date TEXT",
+        "ALTER TABLE import_jobs ADD COLUMN service_name TEXT",
+        "ALTER TABLE import_jobs ADD COLUMN song_leader TEXT",
+        "ALTER TABLE import_jobs ADD COLUMN preacher TEXT",
+        "ALTER TABLE import_jobs ADD COLUMN sermon_title TEXT",
+        "ALTER TABLE import_jobs ADD COLUMN songs_json TEXT",
+    ],
+    6: [
+        # Track Sunday service slots (morning/evening) that are intentionally
+        # absent, so the missing-services report shows them as deliberate rather
+        # than as gaps (#480).
+        """
+        CREATE TABLE IF NOT EXISTS service_exclusions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            service_date TEXT NOT NULL,
+            service_slot TEXT NOT NULL,
+            reason TEXT,
+            excluded_at TEXT NOT NULL,
+            UNIQUE(service_date, service_slot)
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_service_exclusions_date "
+        "ON service_exclusions(service_date)",
+    ],
 }
 
 # Whitelist of column names that update_import_job is allowed to SET.
 # Any key not in this set will raise ValueError — prevents SQL injection
 # via dynamic field names (issue #100).
 _IMPORT_JOB_MUTABLE_FIELDS: frozenset[str] = frozenset(
-    {"status", "completed_at", "songs_imported", "error_message"}
+    {
+        "status", "completed_at", "songs_imported", "error_message",
+        "service_date", "service_name", "song_leader", "preacher",
+        "sermon_title", "songs_json",
+    }
 )
 
 
@@ -240,6 +324,28 @@ class Database:
         if not self._in_transaction:
             self._conn.commit()
 
+    @contextmanager
+    def _read_snapshot(self) -> Generator[None, None, None]:
+        """Run a group of read queries inside one transaction so they share a
+        single, consistent SQLite snapshot (#415).
+
+        Pagination issues a COUNT then a SELECT; without a shared snapshot a
+        concurrent writer committing between them yields a total that disagrees
+        with the returned rows. A DEFERRED read transaction freezes the snapshot
+        at the first read; WAL still allows concurrent writers. No-ops (and does
+        not roll back) if a transaction is already active, to avoid disturbing an
+        enclosing transaction().
+        """
+        if self._conn.in_transaction:
+            yield
+            return
+        self._conn.execute("BEGIN")
+        try:
+            yield
+        finally:
+            # Read-only: rollback simply releases the snapshot/read lock.
+            self._conn.rollback()
+
     def init_schema(self) -> None:
         """Create database schema and apply any pending migrations.
 
@@ -358,6 +464,21 @@ class Database:
             """
         )
 
+        # Service exclusions table — Sunday slots intentionally left absent so the
+        # missing-services report can distinguish deliberate gaps (#480).
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS service_exclusions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                service_date TEXT NOT NULL,
+                service_slot TEXT NOT NULL,
+                reason TEXT,
+                excluded_at TEXT NOT NULL,
+                UNIQUE(service_date, service_slot)
+            )
+            """
+        )
+
         # --- Migration tracking & execution ---
         self._apply_migrations()
 
@@ -416,13 +537,27 @@ class Database:
         if row:
             return row[0]
 
-        # Insert new
-        cursor.execute(
-            "INSERT INTO songs (canonical_title, display_title) VALUES (?, ?)",
-            (canonical_title, display_title),
-        )
-        self._maybe_commit()
-        return cursor.lastrowid
+        # Insert new — retry-safe under concurrent writers (#400).  A second
+        # importer can insert the same canonical_title between our SELECT and
+        # INSERT; the UNIQUE(canonical_title) constraint then raises
+        # IntegrityError.  Re-read and return the row the other writer created.
+        try:
+            cursor.execute(
+                "INSERT INTO songs (canonical_title, display_title) VALUES (?, ?)",
+                (canonical_title, display_title),
+            )
+            self._maybe_commit()
+            return cursor.lastrowid
+        except sqlite3.IntegrityError:
+            if not self._in_transaction:
+                self._conn.rollback()
+            cursor.execute(
+                "SELECT id FROM songs WHERE canonical_title = ?", (canonical_title,)
+            )
+            row = cursor.fetchone()
+            if row:
+                return row[0]
+            raise
 
     def insert_or_get_song_edition(
         self,
@@ -436,43 +571,55 @@ class Database:
         """Insert or get song edition. Returns edition_id."""
         cursor = self._conn.cursor()
 
-        # Try to get existing - handle NULL comparisons explicitly
-        cursor.execute(
-            """
+        # Try to get existing - handle NULL comparisons explicitly.
+        select_sql = """
             SELECT id FROM song_editions
             WHERE song_id = ?
             AND (publisher = ? OR (publisher IS NULL AND ? IS NULL))
             AND (words_by = ? OR (words_by IS NULL AND ? IS NULL))
             AND (music_by = ? OR (music_by IS NULL AND ? IS NULL))
             AND (arranger = ? OR (arranger IS NULL AND ? IS NULL))
-            """,
-            (
-                song_id,
-                publisher,
-                publisher,
-                words_by,
-                words_by,
-                music_by,
-                music_by,
-                arranger,
-                arranger,
-            ),
+            """
+        select_params = (
+            song_id,
+            publisher,
+            publisher,
+            words_by,
+            words_by,
+            music_by,
+            music_by,
+            arranger,
+            arranger,
         )
+        cursor.execute(select_sql, select_params)
         row = cursor.fetchone()
         if row:
             return row[0]
 
-        # Insert new
-        cursor.execute(
-            """
-            INSERT INTO song_editions
-            (song_id, publisher, words_by, music_by, arranger, copyright_notice)
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (song_id, publisher, words_by, music_by, arranger, copyright_notice),
-        )
-        self._maybe_commit()
-        return cursor.lastrowid
+        # Insert new — retry-safe under concurrent writers when the identity
+        # columns are non-NULL (#400).  NOTE: when publisher/words_by/music_by/
+        # arranger are NULL, SQLite treats each NULL as distinct in the UNIQUE
+        # index, so no IntegrityError fires and concurrent duplicates are still
+        # possible — that NULL-distinct weakness is tracked in #420.
+        try:
+            cursor.execute(
+                """
+                INSERT INTO song_editions
+                (song_id, publisher, words_by, music_by, arranger, copyright_notice)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (song_id, publisher, words_by, music_by, arranger, copyright_notice),
+            )
+            self._maybe_commit()
+            return cursor.lastrowid
+        except sqlite3.IntegrityError:
+            if not self._in_transaction:
+                self._conn.rollback()
+            cursor.execute(select_sql, select_params)
+            row = cursor.fetchone()
+            if row:
+                return row[0]
+            raise
 
     # --- Services ---
 
@@ -624,29 +771,42 @@ class Database:
         cursor = self._conn.cursor()
 
         # Try to get existing - handle NULL comparisons explicitly
-        cursor.execute(
-            """
+        select_sql = """
             SELECT id FROM copy_events
             WHERE service_id = ? AND song_id = ? AND reproduction_type = ?
             AND (song_edition_id = ? OR (song_edition_id IS NULL AND ? IS NULL))
-            """,
-            (service_id, song_id, reproduction_type, song_edition_id, song_edition_id),
+            """
+        select_params = (
+            service_id, song_id, reproduction_type, song_edition_id, song_edition_id,
         )
+        cursor.execute(select_sql, select_params)
         row = cursor.fetchone()
         if row:
             return row[0]
 
-        # Insert new
-        cursor.execute(
-            """
-            INSERT INTO copy_events
-            (service_id, song_id, song_edition_id, reproduction_type, count, reportable)
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (service_id, song_id, song_edition_id, reproduction_type, count, int(reportable)),
-        )
-        self._maybe_commit()
-        return cursor.lastrowid
+        # Insert new — retry-safe under concurrent writers when song_edition_id
+        # is non-NULL (#400).  When song_edition_id is NULL, SQLite's UNIQUE index
+        # treats each NULL as distinct, so no IntegrityError fires and concurrent
+        # duplicates remain possible — tracked in #420.
+        try:
+            cursor.execute(
+                """
+                INSERT INTO copy_events
+                (service_id, song_id, song_edition_id, reproduction_type, count, reportable)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (service_id, song_id, song_edition_id, reproduction_type, count, int(reportable)),
+            )
+            self._maybe_commit()
+            return cursor.lastrowid
+        except sqlite3.IntegrityError:
+            if not self._in_transaction:
+                self._conn.rollback()
+            cursor.execute(select_sql, select_params)
+            row = cursor.fetchone()
+            if row:
+                return row[0]
+            raise
 
     # --- Queries ---
 
@@ -724,6 +884,52 @@ class Database:
         while row is not None:
             yield dict(row)
             row = cursor.fetchone()
+
+    # --- Service exclusions (missing-services report) ---
+
+    def add_exclusion(
+        self, service_date: str, service_slot: str, reason: str | None = None
+    ) -> None:
+        """Mark a (date, slot) as intentionally absent; upsert on conflict (#480).
+
+        The date is normalized to ISO ``YYYY-MM-DD`` so it lines up with stored
+        ``services.service_date`` values regardless of the caller's separators.
+        """
+        normalized = normalize_service_date(service_date)
+        now = datetime.now(timezone.utc).isoformat()
+        self._conn.execute(
+            """
+            INSERT INTO service_exclusions (service_date, service_slot, reason, excluded_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(service_date, service_slot)
+            DO UPDATE SET reason = excluded.reason, excluded_at = excluded.excluded_at
+            """,
+            (normalized, service_slot, reason, now),
+        )
+        self._maybe_commit()
+
+    def remove_exclusion(self, service_date: str, service_slot: str) -> None:
+        """Remove an intentional-exclusion marker for a (date, slot) (#480)."""
+        normalized = normalize_service_date(service_date)
+        self._conn.execute(
+            "DELETE FROM service_exclusions WHERE service_date = ? AND service_slot = ?",
+            (normalized, service_slot),
+        )
+        self._maybe_commit()
+
+    def query_exclusions(self, start_date: str, end_date: str) -> list[dict]:
+        """Return intentional-exclusion rows within the inclusive date range."""
+        cursor = self._conn.cursor()
+        cursor.execute(
+            """
+            SELECT id, service_date, service_slot, reason, excluded_at
+            FROM service_exclusions
+            WHERE service_date >= ? AND service_date <= ?
+            ORDER BY service_date, service_slot
+            """,
+            (start_date, end_date),
+        )
+        return [dict(row) for row in cursor.fetchall()]
 
     def query_songs_missing_credits(self) -> list[dict]:
         """
@@ -942,6 +1148,12 @@ class Database:
         status: str | None = None,
         songs_imported: int | None = None,
         error_message: str | None = None,
+        service_date: str | None = None,
+        service_name: str | None = None,
+        song_leader: str | None = None,
+        preacher: str | None = None,
+        sermon_title: str | None = None,
+        songs_json: str | None = None,
         **_extra_kwargs: Any,
     ) -> None:
         """Update mutable fields on an import job record.
@@ -970,6 +1182,24 @@ class Database:
         if error_message is not None:
             sets.append("error_message = ?")
             params.append(error_message)
+        if service_date is not None:
+            sets.append("service_date = ?")
+            params.append(service_date)
+        if service_name is not None:
+            sets.append("service_name = ?")
+            params.append(service_name)
+        if song_leader is not None:
+            sets.append("song_leader = ?")
+            params.append(song_leader)
+        if preacher is not None:
+            sets.append("preacher = ?")
+            params.append(preacher)
+        if sermon_title is not None:
+            sets.append("sermon_title = ?")
+            params.append(sermon_title)
+        if songs_json is not None:
+            sets.append("songs_json = ?")
+            params.append(songs_json)
         if not sets:
             return
         # Build the SET clause from whitelisted column names only.
@@ -1072,27 +1302,31 @@ class Database:
             LEFT JOIN service_songs ss ON ss.song_id = s.id
         """
         offset = (page - 1) * per_page
-        if search:
-            like = f"%{_escape_like(search)}%"
-            where = """
-                WHERE (LOWER(s.display_title) LIKE LOWER(?) ESCAPE '\\'
-                   OR LOWER(COALESCE(se.words_by, '')) LIKE LOWER(?) ESCAPE '\\'
-                   OR LOWER(COALESCE(se.music_by, '')) LIKE LOWER(?) ESCAPE '\\')
-            """
-            cursor.execute(count_base + where, (like, like, like))
-            total: int = cursor.fetchone()[0]
-            cursor.execute(
-                base + where + "GROUP BY s.id ORDER BY " + order + " LIMIT ? OFFSET ?",
-                (like, like, like, per_page, offset),
-            )
-        else:
-            cursor.execute(count_base)
-            total = cursor.fetchone()[0]
-            cursor.execute(
-                base + "GROUP BY s.id ORDER BY " + order + " LIMIT ? OFFSET ?",
-                (per_page, offset),
-            )
-        return [dict(row) for row in cursor.fetchall()], total
+        # COUNT and SELECT share one snapshot so the total can't disagree with
+        # the rows when a concurrent import commits between them (#415).
+        with self._read_snapshot():
+            if search:
+                like = f"%{_escape_like(search)}%"
+                where = """
+                    WHERE (LOWER(s.display_title) LIKE LOWER(?) ESCAPE '\\'
+                       OR LOWER(COALESCE(se.words_by, '')) LIKE LOWER(?) ESCAPE '\\'
+                       OR LOWER(COALESCE(se.music_by, '')) LIKE LOWER(?) ESCAPE '\\')
+                """
+                cursor.execute(count_base + where, (like, like, like))
+                total: int = cursor.fetchone()[0]
+                cursor.execute(
+                    base + where + "GROUP BY s.id ORDER BY " + order + " LIMIT ? OFFSET ?",
+                    (like, like, like, per_page, offset),
+                )
+            else:
+                cursor.execute(count_base)
+                total = cursor.fetchone()[0]
+                cursor.execute(
+                    base + "GROUP BY s.id ORDER BY " + order + " LIMIT ? OFFSET ?",
+                    (per_page, offset),
+                )
+            rows = [dict(row) for row in cursor.fetchall()]
+        return rows, total
 
     def query_all_services_paginated(
         self,
@@ -1134,24 +1368,27 @@ class Database:
         order = f"{sort} {_safe_sort_dir(sort_dir)}, sv.service_name"
         offset = (page - 1) * per_page
         cursor = self._conn.cursor()
-        cursor.execute(
-            f"SELECT COUNT(DISTINCT sv.id) FROM services sv {where_sql}",
-            params,
-        )
-        total: int = cursor.fetchone()[0]
-        cursor.execute(
-            f"""
-            SELECT sv.*, COUNT(DISTINCT ss.song_id) AS song_count
-            FROM services sv
-            LEFT JOIN service_songs ss ON ss.service_id = sv.id
-            {where_sql}
-            GROUP BY sv.id
-            ORDER BY {order}
-            LIMIT ? OFFSET ?
-            """,
-            params + [per_page, offset],
-        )
-        return [dict(row) for row in cursor.fetchall()], total
+        # COUNT and SELECT share one snapshot for consistent pagination (#415).
+        with self._read_snapshot():
+            cursor.execute(
+                f"SELECT COUNT(DISTINCT sv.id) FROM services sv {where_sql}",
+                params,
+            )
+            total: int = cursor.fetchone()[0]
+            cursor.execute(
+                f"""
+                SELECT sv.*, COUNT(DISTINCT ss.song_id) AS song_count
+                FROM services sv
+                LEFT JOIN service_songs ss ON ss.service_id = sv.id
+                {where_sql}
+                GROUP BY sv.id
+                ORDER BY {order}
+                LIMIT ? OFFSET ?
+                """,
+                params + [per_page, offset],
+            )
+            rows = [dict(row) for row in cursor.fetchall()]
+        return rows, total
 
     # --- Cleanup queries (#266) ---
 
@@ -1254,7 +1491,7 @@ class Database:
         to avoid violating ``UNIQUE(service_date, service_name)``.  When
         *dry_run* is True nothing is written.
         """
-        from worship_catalog.pptx_reader import normalize_service_date
+        from worship_catalog.normalize import normalize_service_date
 
         cursor = self._conn.cursor()
         cursor.execute("SELECT id, service_date, service_name FROM services")

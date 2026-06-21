@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import io
 import os
+import re
 from pathlib import Path
 
 import pytest
@@ -34,6 +35,50 @@ def client(db_with_songs, tmp_path, monkeypatch):
     import worship_catalog.web.app as app_module
     reload(app_module)
     return CsrfAwareClient(TestClient(app_module.app))
+
+
+_STATIC_DIR = Path(__file__).parent.parent / "src" / "worship_catalog" / "web" / "static"
+
+
+class TestUploadJsXssSafety:
+    """upload.js must not render server-provided strings via innerHTML (#401).
+
+    job.error_message and err.message originate from the server (DB-stored
+    exception text and JSON `detail`). Concatenating them into innerHTML is a
+    DOM-XSS sink that CSP `script-src 'self'` does not fully close (e.g.
+    `<img onerror=...>`). They must be rendered with textContent.
+    """
+
+    def _upload_js(self) -> str:
+        return (_STATIC_DIR / "upload.js").read_text()
+
+    @staticmethod
+    def _strip_string_literals(js: str) -> str:
+        """Blank out the CONTENTS of string literals so semicolons inside CSS
+        (e.g. 'color:#c00;') don't masquerade as statement terminators."""
+        import re
+
+        js = re.sub(r"'(?:[^'\\]|\\.)*'", "''", js)
+        js = re.sub(r'"(?:[^"\\]|\\.)*"', '""', js)
+        return re.sub(r"\s+", " ", js)
+
+    def test_error_message_not_assigned_via_innerhtml(self) -> None:
+        import re
+
+        collapsed = self._strip_string_literals(self._upload_js())
+        for sink in ("error_message", "err.message"):
+            # After stripping literals, `[^;]*` reliably spans one statement.
+            pattern = re.compile(r"innerHTML\s*=\s*[^;]*" + re.escape(sink))
+            assert not pattern.search(collapsed), (
+                f"upload.js assigns {sink!r} into innerHTML — DOM-XSS risk. "
+                "Render server-provided strings with textContent instead."
+            )
+
+    def test_server_strings_use_textcontent(self) -> None:
+        js = self._upload_js()
+        assert "textContent" in js, (
+            "upload.js should use textContent to render dynamic server values safely"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -363,6 +408,25 @@ class TestCsrfSecretStartup:
         resp = client.get("/health")
         assert resp.status_code == 200
 
+    def test_app_refuses_to_start_without_csrf_secret_in_production(self, tmp_path, monkeypatch):
+        """Outside TESTING mode, a missing CSRF_SECRET must hard-fail at startup so a
+        production deploy can't silently fall back to an ephemeral secret (#406)."""
+        monkeypatch.delenv("CSRF_SECRET", raising=False)
+        monkeypatch.delenv("TESTING", raising=False)
+        monkeypatch.setenv("DB_PATH", str(tmp_path / "csrf_prod.db"))
+        monkeypatch.setenv("INBOX_DIR", str(tmp_path / "inbox_prod"))
+        (tmp_path / "inbox_prod").mkdir()
+        from importlib import reload
+
+        import worship_catalog.web.app as app_module
+        try:
+            with pytest.raises(RuntimeError, match="CSRF_SECRET"):
+                reload(app_module)
+        finally:
+            # Leave a healthy module for the rest of the session.
+            monkeypatch.setenv("TESTING", "1")
+            reload(app_module)
+
     def test_csrf_token_persists_across_requests(self, tmp_path, monkeypatch):
         """CSRF token obtained in one request must be valid in the next."""
         monkeypatch.setenv("CSRF_SECRET", "b" * 64)
@@ -398,6 +462,71 @@ class TestCsrfSecretStartup:
             f"CSRF token was rejected on second request (status={resp2.status_code}). "
             "Token must remain valid across requests when CSRF_SECRET is fixed."
         )
+
+
+# ---------------------------------------------------------------------------
+# Issue #404 — client IP resolution must not trust spoofable X-Forwarded-For
+# ---------------------------------------------------------------------------
+
+
+class _FakeClient:
+    def __init__(self, host: str) -> None:
+        self.host = host
+
+
+class _FakeRequest:
+    """Minimal stand-in exposing the .headers.get() and .client.host that
+    _get_client_ip relies on (headers are matched case-insensitively)."""
+
+    def __init__(self, headers: dict[str, str], client_host: str = "10.0.0.9") -> None:
+        self.headers = {k.lower(): v for k, v in headers.items()}
+        self.client = _FakeClient(client_host)
+
+
+class TestClientIpResolution:
+    """_get_client_ip must prefer Cloudflare's unspoofable CF-Connecting-IP and
+    never trust the client-controlled leftmost X-Forwarded-For entry (#404)."""
+
+    def _app(self):
+        from importlib import reload
+
+        import worship_catalog.web.app as app_module
+        reload(app_module)
+        return app_module
+
+    def test_cf_connecting_ip_preferred_over_xff(self, monkeypatch) -> None:
+        app_module = self._app()
+        monkeypatch.setattr(app_module, "_TRUST_PROXY", True)
+        req = _FakeRequest({
+            "CF-Connecting-IP": "203.0.113.7",
+            "X-Forwarded-For": "1.2.3.4",  # attacker-supplied leftmost
+        })
+        assert app_module._get_client_ip(req) == "203.0.113.7"
+
+    def test_spoofed_leftmost_xff_ignored(self, monkeypatch) -> None:
+        """Without CF header, the leftmost (client-set) XFF entry must NOT be used;
+        the proxy-appended rightmost entry is the trustworthy one."""
+        app_module = self._app()
+        monkeypatch.setattr(app_module, "_TRUST_PROXY", True)
+        req = _FakeRequest({"X-Forwarded-For": "1.2.3.4, 198.51.100.2"})
+        ip = app_module._get_client_ip(req)
+        assert ip != "1.2.3.4", "Leftmost X-Forwarded-For is client-controlled and spoofable"
+        assert ip == "198.51.100.2"
+
+    def test_proxy_disabled_uses_socket_peer(self, monkeypatch) -> None:
+        app_module = self._app()
+        monkeypatch.setattr(app_module, "_TRUST_PROXY", False)
+        req = _FakeRequest(
+            {"CF-Connecting-IP": "203.0.113.7", "X-Forwarded-For": "1.2.3.4"},
+            client_host="10.0.0.9",
+        )
+        assert app_module._get_client_ip(req) == "10.0.0.9"
+
+    def test_no_proxy_headers_falls_back_to_peer(self, monkeypatch) -> None:
+        app_module = self._app()
+        monkeypatch.setattr(app_module, "_TRUST_PROXY", True)
+        req = _FakeRequest({}, client_host="172.16.0.5")
+        assert app_module._get_client_ip(req) == "172.16.0.5"
 
 
 # ---------------------------------------------------------------------------
@@ -874,6 +1003,47 @@ class TestSecurityHeaders:
         assert "Content-Security-Policy" in resp.headers
 
 
+class TestHstsHeader:
+    """Strict-Transport-Security must be emitted when HTTPS_ONLY is enabled (#405).
+
+    HSTS is gated on HTTPS_ONLY so that local/CI deployments served over plain
+    HTTP do not send an HSTS policy that would lock browsers into HTTPS.
+    """
+
+    def _client(self, tmp_path, monkeypatch, https_only):
+        monkeypatch.setenv("DB_PATH", str(tmp_path / "hsts.db"))
+        inbox = tmp_path / "hsts_inbox"
+        inbox.mkdir(exist_ok=True)
+        monkeypatch.setenv("INBOX_DIR", str(inbox))
+        if https_only is None:
+            monkeypatch.delenv("HTTPS_ONLY", raising=False)
+        else:
+            monkeypatch.setenv("HTTPS_ONLY", https_only)
+        from importlib import reload
+
+        import worship_catalog.web.app as app_module
+        reload(app_module)
+        return TestClient(app_module.app)
+
+    def test_hsts_present_when_https_only_enabled(self, tmp_path, monkeypatch):
+        import re
+
+        client = self._client(tmp_path, monkeypatch, "1")
+        resp = client.get("/health")
+        hsts = resp.headers.get("Strict-Transport-Security", "")
+        assert hsts, "HSTS header missing when HTTPS_ONLY=1"
+        m = re.search(r"max-age=(\d+)", hsts)
+        assert m and int(m.group(1)) >= 31536000, f"HSTS max-age too low: {hsts!r}"
+        assert "includeSubDomains" in hsts
+
+    def test_hsts_absent_by_default(self, tmp_path, monkeypatch):
+        client = self._client(tmp_path, monkeypatch, None)
+        resp = client.get("/health")
+        assert "Strict-Transport-Security" not in resp.headers, (
+            "HSTS must not be sent unless HTTPS_ONLY is enabled (would break HTTP dev)"
+        )
+
+
 # ---------------------------------------------------------------------------
 # #388 Phase 1: simple password gate on the upload page
 # ---------------------------------------------------------------------------
@@ -922,3 +1092,166 @@ class TestUploadAuth:
     def test_upload_open_when_password_unset(self, client):
         # The default fixture sets no UPLOAD_PASSWORD → upload stays open.
         assert client.get("/upload").status_code == 200
+
+    # /jobs is part of the same write/admin workflow and leaks uploaded
+    # filenames + raw error messages — it must be gated like /upload (#451).
+    def test_jobs_list_requires_auth_when_password_set(self, auth_client):
+        assert auth_client.get("/jobs").status_code == 401
+
+    def test_job_detail_requires_auth_when_password_set(self, auth_client):
+        assert auth_client.get("/jobs/anything").status_code == 401
+
+    def test_jobs_list_succeeds_with_credentials(self, auth_client):
+        assert auth_client.get("/jobs", auth=("highland", "s3cret")).status_code == 200
+
+    def test_jobs_open_when_password_unset(self, client):
+        # Backwards-compatible: scripted consumers keep working when no password.
+        assert client.get("/jobs").status_code == 200
+
+
+class TestReportRateLimiting:
+    """Public report endpoints must be rate-limited to prevent unauthenticated
+    CPU/memory exhaustion (esp. /reports/stats/xlsx) on the public site (#450)."""
+
+    def test_report_endpoint_rate_limited_after_burst(self, client):
+        import worship_catalog.web.app as m
+        m._report_limiter._limit_override = 3  # shrink for a fast, deterministic test
+        last = None
+        for _ in range(5):
+            last = client.post(
+                "/reports/stats/csv",
+                data={"start_date": "2026-01-01", "end_date": "2026-12-31"},
+            )
+        assert last.status_code == 429, "report endpoints must 429 a burst from one client"
+        assert last.headers.get("retry-after"), "429 should include Retry-After"
+
+    def test_first_report_request_succeeds(self, client):
+        import worship_catalog.web.app as m
+        m._report_limiter._limit_override = 10
+        resp = client.post(
+            "/reports/stats/csv",
+            data={"start_date": "2026-01-01", "end_date": "2026-12-31"},
+        )
+        assert resp.status_code == 200
+
+    def test_xlsx_report_is_rate_limited(self, client):
+        import worship_catalog.web.app as m
+        m._report_limiter._limit_override = 2
+        last = None
+        for _ in range(4):
+            last = client.post(
+                "/reports/stats/xlsx",
+                data={"start_date": "2026-01-01", "end_date": "2026-12-31"},
+            )
+        assert last.status_code == 429
+
+
+# ---------------------------------------------------------------------------
+# Self-healing CSRF cookie — stale token never refreshed (web upload failure)
+# ---------------------------------------------------------------------------
+
+# A real-world stale cookie: a structurally valid starlette-csrf token signed
+# with a *previous* CSRF_SECRET. After a secret rotation/redeploy this fails
+# signature verification against the live secret (raises BadSignature).
+from itsdangerous.url_safe import URLSafeSerializer  # noqa: E402
+
+_STALE_OLD_SECRET_TOKEN = URLSafeSerializer("an-old-rotated-secret", "csrftoken").dumps(
+    "stale-token-payload-from-before-the-secret-rotation"
+)
+# A purely malformed cookie value (not even a valid token structure -> BadData).
+_GARBAGE_COOKIE = "totally-not-a-valid-token"
+_PPTX_MIME = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+
+
+def _csrftoken_from_set_cookie(resp) -> str:
+    """Extract the csrftoken value from a response's Set-Cookie header, or ''."""
+    m = re.search(r"csrftoken=([^;]+)", resp.headers.get("set-cookie", ""))
+    return m.group(1) if m else ""
+
+
+class TestSelfHealingCsrfCookie:
+    """A stale ``csrftoken`` cookie (e.g. signed with a previous CSRF_SECRET) must
+    be automatically refreshed.
+
+    starlette-csrf only issues a fresh cookie when the request carries *none*, so
+    a browser replaying a stale cookie is otherwise stuck at 403 on every unsafe
+    request forever — the cause of "Upload failed: Unexpected token 'C', "CSRF
+    token"... is not valid JSON" reported from the web upload page.
+    """
+
+    @pytest.mark.parametrize("stale", [_STALE_OLD_SECRET_TOKEN, _GARBAGE_COOKIE])
+    def test_get_with_stale_cookie_issues_fresh_cookie(self, raw_client, stale):
+        raw_client.cookies.clear()
+        resp = raw_client.get("/songs", headers={"Cookie": f"csrftoken={stale}"})
+        fresh = _csrftoken_from_set_cookie(resp)
+        assert fresh, "A stale csrftoken cookie must be replaced with a fresh Set-Cookie"
+        assert fresh != stale, "The reissued token must differ from the stale one"
+
+    def test_get_with_valid_cookie_is_not_rechurned(self, raw_client):
+        raw_client.cookies.clear()
+        token = raw_client.get("/songs").cookies.get("csrftoken", "")
+        assert token, "GET must establish a valid csrftoken cookie"
+        raw_client.cookies.clear()
+        resp = raw_client.get("/songs", headers={"Cookie": f"csrftoken={token}"})
+        assert "set-cookie" not in resp.headers, (
+            "A valid csrftoken cookie must not be needlessly rotated"
+        )
+
+    def test_post_with_stale_cookie_is_403_but_reissues_cookie(self, raw_client):
+        raw_client.cookies.clear()
+        resp = raw_client.post(
+            "/upload",
+            headers={
+                "Cookie": f"csrftoken={_STALE_OLD_SECRET_TOKEN}",
+                "X-CSRFToken": _STALE_OLD_SECRET_TOKEN,
+            },
+            files={"file": ("t.pptx", io.BytesIO(b"PK\x03\x04x"), _PPTX_MIME)},
+        )
+        # The stale request itself cannot be trusted -> still rejected.
+        assert resp.status_code == 403
+        # ...but the 403 must hand back a fresh token so an auto-retry can succeed.
+        fresh = _csrftoken_from_set_cookie(resp)
+        assert fresh and fresh != _STALE_OLD_SECRET_TOKEN, (
+            "A 403 from a stale cookie must still issue a fresh csrftoken"
+        )
+
+    def test_full_recovery_stale_then_retry_succeeds(self, raw_client):
+        raw_client.cookies.clear()
+        first = raw_client.post(
+            "/upload",
+            headers={
+                "Cookie": f"csrftoken={_STALE_OLD_SECRET_TOKEN}",
+                "X-CSRFToken": _STALE_OLD_SECRET_TOKEN,
+            },
+            files={"file": ("t.pptx", io.BytesIO(b"PK\x03\x04x"), _PPTX_MIME)},
+        )
+        assert first.status_code == 403
+        fresh = _csrftoken_from_set_cookie(first)
+        assert fresh, "Server must issue a fresh csrftoken on the 403"
+        # Retry the double-submit with the freshly issued token.
+        raw_client.cookies.clear()
+        retry = raw_client.post(
+            "/upload",
+            headers={"Cookie": f"csrftoken={fresh}", "X-CSRFToken": fresh},
+            files={"file": ("t.pptx", io.BytesIO(b"PK\x03\x04x"), _PPTX_MIME)},
+        )
+        assert retry.status_code != 403, (
+            "After self-heal, a retry with the fresh token must pass CSRF"
+        )
+
+
+class TestUploadJsErrorHandling:
+    """upload.js must not crash on a non-JSON error response (the literal symptom
+    users saw: 'Upload failed: Unexpected token C ... is not valid JSON')."""
+
+    def test_upload_js_does_not_blindly_parse_error_body_as_json(self, client):
+        resp = client.get("/static/upload.js")
+        assert resp.status_code == 200
+        js = resp.text
+        # On a non-OK response the handler must read text and/or guard JSON parsing,
+        # not call resp.json() unconditionally on an error body.
+        assert "resp.text(" in js or "catch" in js, (
+            "upload.js must tolerate non-JSON error responses"
+        )
+        # On a 403 it must recover (auto-retry once) rather than surface a raw parse error.
+        assert "403" in js, "upload.js must special-case the CSRF 403 for recovery"

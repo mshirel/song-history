@@ -1,0 +1,19 @@
+{# Inline CCLI report preview (#411): summarise what the CSV download will
+   contain so the admin can confirm the date range before exporting. #}
+<div class="card" style="margin-top:1rem;background:#f1f3f5;" aria-live="polite" aria-atomic="true">
+  {% if event_count == 0 %}
+  <p style="color:#856404;margin:0;">
+    <strong>0</strong> reproduction events for {{ start_date }} → {{ end_date }} —
+    no songs were reproduced in this range. Adjust the dates before downloading.
+  </p>
+  {% else %}
+  <p style="margin:0 0 0.25rem;">
+    <strong>{{ event_count }}</strong> reproduction event{{ "s" if event_count != 1 else "" }}
+    across <strong>{{ unique_songs }}</strong> song{{ "s" if unique_songs != 1 else "" }}
+    for {{ start_date }} → {{ end_date }}.
+  </p>
+  <p style="margin:0;font-size:0.85rem;color:#495057;">
+    Use the <strong>Download CSV</strong> button above to export the full report.
+  </p>
+  {% endif %}
+</div>

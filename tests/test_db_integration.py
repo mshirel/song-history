@@ -2,6 +2,7 @@
 
 import logging
 import sqlite3
+import threading
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -1342,6 +1343,43 @@ class TestUpdateImportJobSQLSafety:
             db.update_import_job(job_id, **{"'; DROP TABLE import_jobs; --": "evil"})  # type: ignore[arg-type]
         db.close()
 
+    def test_update_with_service_metadata_persists(self, temp_db: Database) -> None:
+        import json
+
+        job_id = "meta-job-001"
+        temp_db.create_import_job(job_id, filename="test.pptx")
+        temp_db.update_import_job(
+            job_id,
+            status="complete",
+            songs_imported=3,
+            service_date="2026-05-25",
+            service_name="AM Worship",
+            song_leader="Jane Smith",
+            preacher="John Doe",
+            sermon_title="Grace Abounding",
+            songs_json=json.dumps(["Amazing Grace", "How Great Thou Art", "Holy Holy Holy"]),
+        )
+        row = temp_db.get_import_job(job_id)
+        temp_db.close()
+        assert row is not None
+        assert row["service_date"] == "2026-05-25"
+        assert row["service_name"] == "AM Worship"
+        assert row["song_leader"] == "Jane Smith"
+        assert row["preacher"] == "John Doe"
+        assert row["sermon_title"] == "Grace Abounding"
+        songs = json.loads(row["songs_json"])
+        assert songs == ["Amazing Grace", "How Great Thou Art", "Holy Holy Holy"]
+
+    def test_new_metadata_fields_present_as_none_when_not_set(self, temp_db: Database) -> None:
+        job_id = "meta-job-002"
+        temp_db.create_import_job(job_id, filename="test.pptx")
+        row = temp_db.get_import_job(job_id)
+        temp_db.close()
+        assert row is not None
+        for field in ("service_date", "service_name", "song_leader", "preacher", "sermon_title", "songs_json"):
+            assert field in row, f"Field {field!r} missing from import_job row"
+            assert row[field] is None, f"Field {field!r} should default to None"
+
 
 # ---------------------------------------------------------------------------
 # Issue #98 — all timestamps must be UTC-aware ISO strings.
@@ -2314,10 +2352,13 @@ class TestDatabaseIndexes:
                 break
         assert has_date_index, "Missing index on services.service_date"
 
-    def test_schema_version_is_3(self, temp_db):
+    def test_schema_version_matches_current(self, temp_db):
+        from worship_catalog.db import _SCHEMA_VERSION
+
         cursor = temp_db.cursor()
         cursor.execute("PRAGMA user_version")
-        assert cursor.fetchone()[0] == 3
+        assert cursor.fetchone()[0] == _SCHEMA_VERSION
+        assert _SCHEMA_VERSION == 6  # bumped for service_exclusions table (#480)
 
 
 @pytest.mark.integration
@@ -2816,3 +2857,334 @@ class TestNormalizeServiceDates:
         # Applying must not raise and must not change the colliding row.
         temp_db.normalize_service_dates()
         assert temp_db.query_service_by_id(b)["service_date"] == "2026.05.10"
+
+
+@pytest.mark.integration
+class TestConcurrentInsertOrGet:
+    """insert_or_get_* must be safe under concurrent writers (#400).
+
+    The web app runs background imports in a ThreadPoolExecutor (up to 4
+    workers), each with its own Database/connection on the same file. Two
+    threads importing files that share a song can both SELECT (find nothing)
+    then both INSERT — the second INSERT hits the UNIQUE constraint. The
+    methods must absorb that IntegrityError and return the existing row.
+
+    A per-connection busy_timeout lets SQLite wait out write-lock contention,
+    so the only failure these tests surface is the UNIQUE-constraint TOCTOU.
+    """
+
+    _THREADS = 4
+    _ITERATIONS = 25
+
+    @staticmethod
+    def _connect(db_path):
+        db = Database(db_path)
+        db.connect()
+        db.conn.execute("PRAGMA busy_timeout=5000")
+        return db
+
+    def test_concurrent_insert_or_get_song_no_error(self, tmp_path):
+        db_path = tmp_path / "race_song.db"
+        init = self._connect(db_path)
+        init.init_schema()
+        init.close()
+
+        errors: list[Exception] = []
+        barrier = threading.Barrier(self._THREADS)
+
+        def worker() -> None:
+            db = self._connect(db_path)
+            try:
+                barrier.wait()
+                for _ in range(self._ITERATIONS):
+                    db.insert_or_get_song("amazing grace", "Amazing Grace")
+            except Exception as exc:  # noqa: BLE001
+                errors.append(exc)
+            finally:
+                db.close()
+
+        threads = [threading.Thread(target=worker) for _ in range(self._THREADS)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert not errors, f"Concurrent insert_or_get_song raised: {errors!r}"
+
+        # Exactly one canonical row must exist despite the stampede.
+        check = self._connect(db_path)
+        try:
+            cur = check.conn.cursor()
+            cur.execute("SELECT COUNT(*) FROM songs WHERE canonical_title = ?", ("amazing grace",))
+            assert cur.fetchone()[0] == 1
+        finally:
+            check.close()
+
+    def test_concurrent_insert_or_get_song_edition_no_error(self, tmp_path):
+        db_path = tmp_path / "race_edition.db"
+        init = self._connect(db_path)
+        init.init_schema()
+        song_id = init.insert_or_get_song("how great thou art", "How Great Thou Art")
+        init.close()
+
+        errors: list[Exception] = []
+        barrier = threading.Barrier(self._THREADS)
+
+        def worker() -> None:
+            db = self._connect(db_path)
+            try:
+                barrier.wait()
+                for _ in range(self._ITERATIONS):
+                    db.insert_or_get_song_edition(song_id, words_by="Stuart K. Hine")
+            except Exception as exc:  # noqa: BLE001
+                errors.append(exc)
+            finally:
+                db.close()
+
+        threads = [threading.Thread(target=worker) for _ in range(self._THREADS)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert not errors, f"Concurrent insert_or_get_song_edition raised: {errors!r}"
+
+        check = self._connect(db_path)
+        try:
+            cur = check.conn.cursor()
+            cur.execute(
+                "SELECT COUNT(*) FROM song_editions WHERE song_id = ? AND words_by = ?",
+                (song_id, "Stuart K. Hine"),
+            )
+            assert cur.fetchone()[0] == 1
+        finally:
+            check.close()
+
+    def test_concurrent_insert_or_get_copy_event_no_error(self, tmp_path):
+        db_path = tmp_path / "race_copy.db"
+        init = self._connect(db_path)
+        init.init_schema()
+        song_id = init.insert_or_get_song("blessed assurance", "Blessed Assurance")
+        service_id = init.insert_or_update_service(
+            "2026-02-15", "AM Worship", "f.pptx", "hash1"
+        )
+        init.close()
+
+        errors: list[Exception] = []
+        barrier = threading.Barrier(self._THREADS)
+
+        def worker() -> None:
+            db = self._connect(db_path)
+            try:
+                barrier.wait()
+                for _ in range(self._ITERATIONS):
+                    db.insert_or_get_copy_event(service_id, song_id, "projection")
+            except Exception as exc:  # noqa: BLE001
+                errors.append(exc)
+            finally:
+                db.close()
+
+        threads = [threading.Thread(target=worker) for _ in range(self._THREADS)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert not errors, f"Concurrent insert_or_get_copy_event raised: {errors!r}"
+
+        check = self._connect(db_path)
+        try:
+            cur = check.conn.cursor()
+            cur.execute(
+                "SELECT COUNT(*) FROM copy_events WHERE service_id = ? AND song_id = ? "
+                "AND reproduction_type = ?",
+                (service_id, song_id, "projection"),
+            )
+            assert cur.fetchone()[0] == 1
+        finally:
+            check.close()
+
+
+@pytest.mark.integration
+class TestPaginationSnapshotConsistency:
+    """COUNT and SELECT in paginated queries must share one snapshot (#415)."""
+
+    def test_song_pagination_total_matches_rows_under_concurrent_insert(self, tmp_path):
+        db_path = tmp_path / "snap_songs.db"
+        db = Database(db_path)
+        db.connect()
+        db.init_schema()
+        for i in range(10):
+            db.insert_or_get_song(f"song{i:02d}", f"Song {i:02d}")
+
+        # A separate connection inserts a new song right after the COUNT query
+        # runs inside the method, simulating a concurrent importer between the
+        # COUNT and the SELECT.
+        writer = Database(db_path)
+        writer.connect()
+        writer.conn.execute("PRAGMA busy_timeout=5000")
+        state = {"fired": False}
+
+        class _HookCursor:
+            def __init__(self, inner):
+                self._inner = inner
+
+            def execute(self, sql, *args):
+                result = self._inner.execute(sql, *args)
+                if "COUNT(DISTINCT s.id)" in sql and not state["fired"]:
+                    state["fired"] = True
+                    writer.insert_or_get_song("song99", "Song 99")
+                return result
+
+            def __getattr__(self, name):
+                return getattr(self._inner, name)
+
+        class _ConnProxy:
+            """Wrap the connection so cursors are hooked; sqlite3.Connection
+            attributes are read-only, so .cursor can't be patched directly."""
+
+            def __init__(self, inner):
+                self._inner = inner
+
+            def cursor(self):
+                return _HookCursor(self._inner.cursor())
+
+            def __getattr__(self, name):
+                return getattr(self._inner, name)
+
+        real_conn = db.conn
+        db.conn = _ConnProxy(real_conn)
+        try:
+            rows, total = db.query_songs_paginated(page=1, per_page=50)
+        finally:
+            db.conn = real_conn
+            writer.close()
+
+        assert state["fired"], "Hook did not fire — test did not exercise the race"
+        assert len(rows) == total, (
+            f"Pagination inconsistent: {len(rows)} rows but total={total}"
+        )
+        # The concurrent insert must be invisible to this snapshot.
+        assert total == 10, f"total should reflect the pre-insert snapshot, got {total}"
+        db.close()
+
+    def test_song_pagination_page_boundaries(self, tmp_path):
+        """Refactor must not break basic pagination math."""
+        db_path = tmp_path / "snap_pages.db"
+        db = Database(db_path)
+        db.connect()
+        db.init_schema()
+        for i in range(100):
+            db.insert_or_get_song(f"song{i:03d}", f"Song {i:03d}")
+        rows, total = db.query_songs_paginated(page=2, per_page=10)
+        assert total == 100
+        assert len(rows) == 10
+        db.close()
+
+
+@pytest.mark.integration
+class TestMigrationV4NullSafeUnique:
+    """Migration v4 adds NULL-safe unique indexes + de-dupes existing rows (#420)."""
+
+    def test_v4_creates_null_safe_indexes(self, tmp_path):
+        db = Database(tmp_path / "v4idx.db")
+        db.connect()
+        db.init_schema()
+        cur = db.conn.cursor()
+        cur.execute(
+            "SELECT name FROM sqlite_master WHERE type='index' AND name IN "
+            "('idx_song_editions_identity', 'idx_copy_events_identity')"
+        )
+        names = {r[0] for r in cur.fetchall()}
+        assert names == {"idx_song_editions_identity", "idx_copy_events_identity"}
+        db.close()
+
+    def test_v4_dedupes_existing_null_duplicates(self, tmp_path):
+        db = Database(tmp_path / "v4dedup.db")
+        db.connect()
+        db.init_schema()
+        cur = db.conn.cursor()
+        # Simulate a pre-v4 DB: drop the NULL-safe indexes + unmark migration 4,
+        # so we can insert the duplicate NULL rows the constraint now forbids.
+        cur.execute("DROP INDEX IF EXISTS idx_song_editions_identity")
+        cur.execute("DROP INDEX IF EXISTS idx_copy_events_identity")
+        cur.execute("DELETE FROM schema_migrations WHERE version = 4")
+        song_id = db.insert_or_get_song("dup song", "Dup Song")
+        svc = db.insert_or_update_service("2026-02-15", "AM Worship", "f.pptx", "h1")
+        cur.execute("INSERT INTO song_editions (song_id, words_by) VALUES (?, NULL)", (song_id,))
+        cur.execute("INSERT INTO song_editions (song_id, words_by) VALUES (?, NULL)", (song_id,))
+        cur.execute(
+            "INSERT INTO copy_events (service_id, song_id, reproduction_type) VALUES (?,?,?)",
+            (svc, song_id, "projection"),
+        )
+        cur.execute(
+            "INSERT INTO copy_events (service_id, song_id, reproduction_type) VALUES (?,?,?)",
+            (svc, song_id, "projection"),
+        )
+        db.conn.commit()
+
+        # Re-run migrations → v4 de-dupes and recreates the indexes.
+        db._apply_migrations()
+        db.conn.commit()
+
+        cur.execute("SELECT COUNT(*) FROM song_editions WHERE song_id = ?", (song_id,))
+        assert cur.fetchone()[0] == 1, "duplicate NULL-credit editions must be collapsed"
+        cur.execute(
+            "SELECT COUNT(*) FROM copy_events WHERE service_id=? AND song_id=? "
+            "AND reproduction_type='projection'",
+            (svc, song_id),
+        )
+        assert cur.fetchone()[0] == 1, "duplicate NULL-edition copy_events must be collapsed"
+        db.close()
+
+
+@pytest.mark.integration
+class TestServiceExclusions:
+    """Tests for the service_exclusions table and CRUD helpers (#480)."""
+
+    @pytest.fixture
+    def temp_db(self):
+        with TemporaryDirectory() as tmpdir:
+            db = Database(Path(tmpdir) / "test.db")
+            db.connect()
+            db.init_schema()
+            yield db
+            db.close()
+
+    def test_exclusions_table_created(self, temp_db):
+        cursor = temp_db.conn.cursor()
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        tables = [row[0] for row in cursor.fetchall()]
+        assert "service_exclusions" in tables
+
+    def test_add_and_query_exclusion(self, temp_db):
+        temp_db.add_exclusion("2026-06-14", "evening", reason="Fellowship meal")
+        rows = temp_db.query_exclusions("2026-06-01", "2026-06-30")
+        assert len(rows) == 1
+        assert rows[0]["service_date"] == "2026-06-14"
+        assert rows[0]["service_slot"] == "evening"
+        assert rows[0]["reason"] == "Fellowship meal"
+        assert rows[0]["excluded_at"]  # timestamp recorded
+
+    def test_add_exclusion_normalizes_date(self, temp_db):
+        temp_db.add_exclusion("2026.6.14", "morning")
+        rows = temp_db.query_exclusions("2026-06-01", "2026-06-30")
+        assert rows[0]["service_date"] == "2026-06-14"
+
+    def test_add_exclusion_upserts_on_conflict(self, temp_db):
+        temp_db.add_exclusion("2026-06-14", "evening", reason="first")
+        temp_db.add_exclusion("2026-06-14", "evening", reason="second")
+        rows = temp_db.query_exclusions("2026-06-01", "2026-06-30")
+        assert len(rows) == 1  # UNIQUE(date, slot) — updated, not duplicated
+        assert rows[0]["reason"] == "second"
+
+    def test_remove_exclusion(self, temp_db):
+        temp_db.add_exclusion("2026-06-14", "evening", reason="x")
+        temp_db.remove_exclusion("2026-06-14", "evening")
+        assert temp_db.query_exclusions("2026-06-01", "2026-06-30") == []
+
+    def test_query_exclusions_respects_range(self, temp_db):
+        temp_db.add_exclusion("2026-03-01", "morning")
+        temp_db.add_exclusion("2026-09-06", "evening")
+        rows = temp_db.query_exclusions("2026-06-01", "2026-06-30")
+        assert rows == []

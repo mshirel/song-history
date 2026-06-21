@@ -8,6 +8,8 @@
           aria-controls="panel-stats" aria-selected="true">Song Statistics</button>
   <button type="button" class="tab" role="tab" id="tab-ccli"
           aria-controls="panel-ccli" aria-selected="false" tabindex="-1">CCLI Compliance</button>
+  <button type="button" class="tab" role="tab" id="tab-missing"
+          aria-controls="panel-missing" aria-selected="false" tabindex="-1">Missing Services</button>
 </div>
 
 <!-- Song Statistics (default tab) -->
@@ -68,8 +70,47 @@
           <input type="date" id="ccli-to" name="end_date" required>
         </div>
       </div>
-      <button type="submit">Download CSV</button>
+      <div style="display:flex;align-items:center;gap:0.75rem;flex-wrap:wrap;">
+        <button type="submit">Download CSV</button>
+        {# Preview the count inline before downloading so an empty range is
+           obvious without opening the CSV (#411). hx-headers (CSRF) is set
+           globally by reports.js. #}
+        <button type="button" class="btn"
+                style="background:#495057;"
+                hx-post="/reports/ccli/preview"
+                hx-include="#ccli-form"
+                hx-target="#ccli-result"
+                hx-indicator="#ccli-spinner">Preview</button>
+        <span id="ccli-spinner" class="htmx-indicator" style="color:#6c757d;font-size:0.85rem;">loading…</span>
+      </div>
     </form>
+    <div id="ccli-result" style="margin-top:0.5rem;"></div>
+  </div>
+</section>
+
+<!-- Missing Services (tertiary tab) -->
+<section role="tabpanel" id="panel-missing" aria-labelledby="tab-missing" tabindex="0" hidden>
+  <div class="card">
+    <h2>Missing Services <small style="font-weight:400;color:#6c757d;font-size:0.85rem">(view in browser)</small></h2>
+    <p style="font-size:0.85rem;color:#495057;margin-bottom:0.75rem;">
+      Sundays normally have a morning and an evening service. This lists slots with no
+      service in the catalog over the selected time frame; mark intentional gaps as excluded.
+    </p>
+    <form id="missing-form" style="margin-bottom:0.75rem;">
+      <label for="missing-window" style="font-size:0.8rem;font-weight:600;color:#495057;margin-right:0.5rem;">Time frame</label>
+      <select id="missing-window" name="days"
+              hx-get="/reports/missing-services"
+              hx-trigger="load, change"
+              hx-target="#missing-result"
+              hx-swap="innerHTML"
+              hx-indicator="#missing-spinner">
+        {% for value, label in window_options.items() %}
+        <option value="{{ value }}"{% if value == default_window %} selected{% endif %}>{{ label }}</option>
+        {% endfor %}
+      </select>
+      <span id="missing-spinner" class="htmx-indicator" style="color:#6c757d;font-size:0.85rem;">loading…</span>
+    </form>
+    <div id="missing-result" style="margin-top:0.5rem;" aria-live="polite"></div>
   </div>
 </section>
 <script src="/static/reports.js"></script>

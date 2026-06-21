@@ -9,6 +9,11 @@ from typing import Any
 
 from pptx import Presentation
 
+# normalize_service_date moved to normalize.py so the data layer can use it
+# without importing this PPTX-parsing module (#399); re-imported here because
+# this module still uses it and tests reference pptx_reader.normalize_service_date.
+from worship_catalog.normalize import normalize_service_date
+
 logger = logging.getLogger(__name__)
 
 _HASH_CHUNK_SIZE: int = 4096
@@ -155,30 +160,6 @@ def parse_all_slides(prs: Presentation) -> list[Slide]:  # type: ignore[valid-ty
         slides.append(parse_slide(slide, i))
     return slides
 
-
-# Date components separated by any mix of '.', '-', '/'. Used to canonicalize
-# service dates to ISO YYYY-MM-DD (#387).
-_DATE_PARTS_RE = re.compile(r"^(\d{4})[.\-/](\d{1,2})[.\-/](\d{1,2})$")
-
-
-def normalize_service_date(raw: str | None) -> str | None:
-    """Canonicalize a service date string to ISO ``YYYY-MM-DD``.
-
-    Accepts any mix of ``.``, ``-`` and ``/`` separators and single-digit
-    month/day (e.g. ``2026.5.10`` → ``2026-05-10``). Returns None for empty
-    input, and the stripped original for anything that isn't a recognizable
-    year-month-day triple (so we never silently drop an unexpected value).
-    """
-    if raw is None:
-        return None
-    stripped = raw.strip()
-    if not stripped:
-        return None
-    match = _DATE_PARTS_RE.match(stripped)
-    if not match:
-        return stripped
-    year, month, day = match.groups()
-    return f"{year}-{int(month):02d}-{int(day):02d}"
 
 
 # Metadata field keys (lowercased) → ServiceMetadata attribute name.
