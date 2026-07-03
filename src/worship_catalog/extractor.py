@@ -38,6 +38,14 @@ _MAX_EXTRACT_SECONDS: int = 120
 # Consecutive slides with no text after which the current song group is closed
 _NO_TEXT_STREAK_THRESHOLD: int = 5
 
+# Maximum length (in slides) of an interior chorus/refrain span that may be folded
+# back into the song it interrupts. Paperless Hymnal chorus slides lead with a
+# repeated lyric line ("He arose! He arose!") that can out-score the real song
+# title, so grouping splits them into a spurious one-slide group sandwiched between
+# two halves of the SAME song. Only spans this short qualify as bracketed refrains
+# (#471) — keeps genuine back-to-back distinct songs untouched.
+_MAX_BRACKETED_REFRAIN_SLIDES: int = 1
+
 # SFP (Songs For Praise) catalog numbers — Paperless Hymnal reference IDs, not song titles (#264)
 _SFP_CATALOG_RE = re.compile(r"^SFP\s+\d{3,4}$", re.IGNORECASE)
 
@@ -480,7 +488,87 @@ def _group_song_slides(slides: list[Slide]) -> list[tuple[str, list[Slide]]]:
     if current_group and current_canonical:
         groups.append((current_canonical, current_group))
 
-    return groups
+    return _merge_bracketed_refrains(groups)
+
+
+def _slides_reference_song(slides: list[Slide], canonical: str) -> bool:
+    """Return True if any slide carries a SECTION line naming the song *canonical* (#471).
+
+    Paperless Hymnal verse/chorus slides carry a section line that spells out the
+    parent song title ("c – Low in the Grave He Lay", "2 – Low in the Grave He
+    Lay"). Stripping that section prefix and canonicalizing yields the song's
+    canonical title — positive evidence these slides are a verse/refrain OF
+    *canonical*, as opposed to a distinct song that merely sits between two
+    performances of it.
+
+    Only a line from which an actual section prefix was removed counts as
+    evidence. A bare LYRIC line that happens to equal the title (e.g. song B
+    quotes or segues into A) is NOT evidence — otherwise a genuinely distinct
+    interior song would be wrongly folded away (silent data loss). We detect a
+    removed prefix by comparing against the whitespace-collapsed line, so a
+    double-spaced lyric ("He arose!  He arose!") — which ``strip_title_prefix``
+    also whitespace-normalizes — is not mistaken for a prefixed section line.
+    """
+    for slide in slides:
+        for line in slide.text.text_lines:
+            collapsed = " ".join(line.split())
+            stripped = strip_title_prefix(line)
+            if stripped == collapsed:
+                # No section prefix was removed — a bare line, not evidence.
+                continue
+            if stripped and canonicalize_title(stripped) == canonical:
+                return True
+    return False
+
+
+def _merge_bracketed_refrains(
+    groups: list[tuple[str, list[Slide]]],
+) -> list[tuple[str, list[Slide]]]:
+    """Fold bracketed chorus/refrain spans back into the song they interrupt (#471).
+
+    A Paperless Hymnal chorus slide repeats a lyric lead-line ("He arose! He
+    arose!") that can out-score the real song title during candidate selection, so
+    the grouping pass splits it into its own short group sandwiched between two
+    groups of the SAME song (verse -> chorus -> verse). Such a span is a refrain,
+    not a distinct song: merge it — and the returning group — back into the prior
+    group.
+
+    Conservative by design. A span is folded ONLY when all of these hold, so a
+    genuinely distinct interior song (an A–B–A "reprise" where B is its own song)
+    is never dropped or silently swallowed:
+
+    * it is at most ``_MAX_BRACKETED_REFRAIN_SLIDES`` slide(s) long;
+    * the immediately-following group returns to the exact canonical title of the
+      immediately-preceding group (the flanks are the same song); AND
+    * the span carries a section line that names that same song
+      (``_slides_reference_song``) — positive evidence it is a verse/refrain of it,
+      not an unrelated song. Without that evidence the groups are left untouched.
+    """
+    merged: list[tuple[str, list[Slide]]] = []
+    i = 0
+    while i < len(groups):
+        canonical, slides = groups[i]
+        prior_canonical = merged[-1][0] if merged else None
+        if (
+            prior_canonical is not None
+            and i + 1 < len(groups)
+            and canonical != prior_canonical
+            and groups[i + 1][0] == prior_canonical
+            and len(slides) <= _MAX_BRACKETED_REFRAIN_SLIDES
+            and _slides_reference_song(slides, prior_canonical)
+        ):
+            prior_slides = merged[-1][1]
+            merged[-1] = (prior_canonical, prior_slides + slides + groups[i + 1][1])
+            _log.debug(
+                "Folded bracketed refrain %r back into song %r (#471)",
+                canonical,
+                prior_canonical,
+            )
+            i += 2
+            continue
+        merged.append((canonical, slides))
+        i += 1
+    return merged
 
 
 def _is_song_title_slide(slide: Slide) -> bool:
