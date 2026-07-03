@@ -141,6 +141,36 @@ class TestReportFormsE2E:
             "Stats result did not render service count"
         )
 
+    def test_stats_inverted_date_range_shows_error(self, browser_page: Any) -> None:
+        """#496: an inverted date range (From after To) must surface an error in
+        the stats result region — not silently do nothing when the button is
+        clicked. A 422 is only swapped/handled once the responseError path exists."""
+        browser_page.goto(f"{BASE_URL}/reports")
+        browser_page.wait_for_load_state("networkidle")
+        browser_page.fill("#stats-from", "2026-12-31")
+        browser_page.fill("#stats-to", "2026-01-01")  # From after To
+        browser_page.click('form[hx-post="/reports/stats"] button[type="submit"]')
+        browser_page.wait_for_timeout(1000)
+        result = (browser_page.text_content("#stats-result") or "").lower()
+        assert result.strip(), "Stats form gave no feedback on an inverted date range"
+        assert "date" in result or "range" in result or "after" in result
+
+    def test_ccli_preview_inverted_date_range_shows_error(self, browser_page: Any) -> None:
+        """#496: the CCLI Preview button with an inverted date range must surface
+        an error in the ccli result region rather than silently doing nothing."""
+        browser_page.goto(f"{BASE_URL}/reports")
+        browser_page.wait_for_load_state("networkidle")
+        # CCLI is the secondary tab — open it before interacting (#390).
+        browser_page.click("#tab-ccli")
+        browser_page.wait_for_selector("#ccli-from", state="visible")
+        browser_page.fill("#ccli-from", "2026-12-31")
+        browser_page.fill("#ccli-to", "2026-01-01")  # From after To
+        browser_page.click('button[hx-post="/reports/ccli/preview"]')
+        browser_page.wait_for_timeout(1000)
+        result = (browser_page.text_content("#ccli-result") or "").lower()
+        assert result.strip(), "CCLI Preview gave no feedback on an inverted date range"
+        assert "date" in result or "range" in result or "after" in result
+
     def test_stats_csv_download_from_results(self, browser_page: Any) -> None:
         """After generating stats, the CSV download button must work."""
         browser_page.goto(f"{BASE_URL}/reports")

@@ -1156,6 +1156,45 @@ class TestDateValidation:
         )
         assert response.status_code == 422
 
+    def test_stats_inverted_range_htmx_returns_error_fragment(self, client):
+        """An HTMX stats request with an inverted range returns a 422 whose body
+        is a small HTML fragment (not the full error page) carrying an actionable
+        date message, so the JS can drop it into #stats-result (#496)."""
+        response = client.post(
+            "/reports/stats",
+            data={"start_date": "2026-12-31", "end_date": "2026-01-01"},
+            headers={"HX-Request": "true"},
+        )
+        assert response.status_code == 422
+        body = response.text.lower()
+        # A fragment, not the whole 500/base page.
+        assert "<html" not in body and "<!doctype" not in body
+        # Actionable message referencing the date problem.
+        assert "date" in body or "range" in body or "after" in body
+
+    def test_ccli_preview_inverted_range_htmx_returns_error_fragment(self, client):
+        """An HTMX CCLI preview with an inverted range returns a 422 HTML fragment
+        with an actionable message for #ccli-result (#496)."""
+        response = client.post(
+            "/reports/ccli/preview",
+            data={"start_date": "2026-12-31", "end_date": "2026-01-01"},
+            headers={"HX-Request": "true"},
+        )
+        assert response.status_code == 422
+        body = response.text.lower()
+        assert "<html" not in body and "<!doctype" not in body
+        assert "date" in body or "range" in body or "after" in body
+
+    def test_stats_invalid_date_non_htmx_still_full_page(self, client):
+        """A non-HTMX request keeps the existing full-page error behaviour so the
+        fragment path is scoped to HTMX callers (#496)."""
+        response = client.post(
+            "/reports/stats",
+            data={"start_date": "2026-12-31", "end_date": "2026-01-01"},
+        )
+        assert response.status_code == 422
+        assert "<html" in response.text.lower()
+
 
 class TestCSRFProtection:
     """Tests for CSRF protection on POST report endpoints — issue #39."""
