@@ -25,8 +25,8 @@ Raspberry Pi (pi-songs, DMZ VLAN 249, UPS-backed):
   ├── cloudflared        → outbound tunnel to Cloudflare edge (no inbound ports)
   ├── traefik :80/:443   → LAN alias (pi-songs.tanx95.us) + Let's Encrypt DNS-01
   ├── song-history :8000 → app; host port firewalled to the Prometheus scraper
-  ├── watcher            → import loop (same image, healthcheck disabled)
-  └── promtail           → ships container logs to homelab Loki
+  ├── watcher            → import loop (same image; heartbeat healthcheck, #514)
+  └── promtail           → ships container logs to homelab Loki (non-root, #514)
 
 UniFi DNS: pi-songs.tanx95.us → 10.20.249.10 (LAN alias)
 Cloudflare: songs.highland-coc.com → tunnel; highland-coc.com zone for DNS-01
@@ -53,6 +53,21 @@ Because the host serves a public tunnel, lock it down. Codified in the repo:
   must sort before `50-cloud-init.conf`); `PasswordAuthentication no` (#452).
 - **Token rotation** — if `.env` was ever world-readable, rotate the Cloudflare
   API token and tunnel token in the Cloudflare dashboard (#446).
+- **promtail runs non-root** (`user: "10001:0"`, #514) — least privilege on the
+  public host. It reads container logs as gid 0 (root group) instead of root, so
+  the host needs two one-time prep steps:
+  1. Docker json logs must stay group-readable. The daemon default is `0640
+     root:root` (group can read). If a hardened `daemon.json` sets `0600`, grant
+     an ACL: `sudo setfacl -R -m g:0:rX -d -m g:0:rX /var/lib/docker/containers`.
+  2. promtail writes `positions.yaml` into the mounted positions dir, so make it
+     writable by the uid/gid: `sudo chown -R 10001:0 /opt/song-history/promtail
+     && sudo chmod -R g+rwX /opt/song-history/promtail`.
+  If promtail logs `permission denied` on the log path or positions file, one of
+  these steps was missed.
+- **App image is digest-pinned** (`ghcr.io/mshirel/song-history:sha-…@sha256:…`,
+  #512) — `docker compose pull` no longer swaps app code from mutable `:latest`.
+  Bump it via a reviewed Dependabot PR (#502) or by re-pinning the `sha-<commit>`
+  tag + digest CI publishes; `song-history` and `watcher` must stay in lockstep.
 
 ---
 

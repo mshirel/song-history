@@ -181,6 +181,65 @@ class TestSmokeTestCsrf:
 
 
 @pytest.mark.skipif(not CI_PATH.exists(), reason="CI config not present")
+class TestSmokeTestRealRoute:
+    """The publish smoke test must exercise a real rendered route and a report
+    route, not just /health (#515). /health returns a static OK without touching
+    templates, the DB query paths, or a router, so a broken Jinja template or an
+    unregistered router would boot healthy and pass — the very failures the
+    smoke test on the real artifact should catch before the multi-platform push."""
+
+    def _smoke_run_block(self) -> str:
+        workflow = yaml.safe_load(CI_PATH.read_text())
+        for job in workflow["jobs"].values():
+            for step in job.get("steps", []):
+                if step.get("name", "").lower().startswith("smoke test"):
+                    return step.get("run", "")
+        raise AssertionError("Smoke test step not found in ci.yml")
+
+    def test_smoke_test_hits_more_than_health(self) -> None:
+        run_block = self._smoke_run_block()
+        # It must still probe /health for readiness, but must not stop there.
+        assert "/health" in run_block, "Smoke test should still probe /health"
+        assert "/songs" in run_block, (
+            "Smoke test must hit the /songs rendered route so a broken template "
+            "or router regression fails before the multi-platform push (#515)."
+        )
+
+    def test_smoke_test_asserts_rendered_songs_page(self) -> None:
+        run_block = self._smoke_run_block()
+        # Assert the songs route is checked for real rendered markup (not just a
+        # 200). The smoke DB is empty, so we match the page heading rather than
+        # a <table>, but either proves the template rendered.
+        assert "curl -sf" in run_block and "/songs" in run_block, (
+            "Smoke test must fetch /songs and grep its rendered HTML."
+        )
+        assert "grep" in run_block, (
+            "Smoke test must grep the /songs response for rendered markup, "
+            "not just check the HTTP status."
+        )
+
+    def test_smoke_test_hits_a_report_route(self) -> None:
+        run_block = self._smoke_run_block()
+        assert "/reports" in run_block, (
+            "Smoke test must exercise a report route (GET /reports render or a "
+            "CSRF-protected POST /reports/ccli) so a router regression is caught "
+            "before the push (#515)."
+        )
+
+    def test_smoke_test_ccli_post_accepts_csrf_status(self) -> None:
+        run_block = self._smoke_run_block()
+        assert "/reports/ccli" in run_block, (
+            "Smoke test must POST to /reports/ccli to prove the report router + "
+            "CSRF middleware are wired."
+        )
+        # A CSRF-protected POST returns 403; 200 is tolerated if CSRF is relaxed.
+        assert "403" in run_block, (
+            "Smoke test must accept the 403 that a CSRF-protected POST returns — "
+            "that status still proves the router + middleware are registered."
+        )
+
+
+@pytest.mark.skipif(not CI_PATH.exists(), reason="CI config not present")
 class TestCveSkipReviewNote:
     """Every pip-audit CVE ignore must carry a re-evaluation note so suppressed
     vulnerabilities don't become a permanent ratchet (#408)."""
