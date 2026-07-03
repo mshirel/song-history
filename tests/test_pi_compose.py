@@ -1,11 +1,17 @@
 """Tests for the Pi deployment compose file (deploy/pi/docker-compose.yml)."""
 
+import re
 from pathlib import Path
 
 import pytest
 import yaml
 
 COMPOSE_PATH = Path("deploy/pi/docker-compose.yml")
+
+# Services that run the first-party application image (ghcr.io/mshirel/song-history).
+APP_SERVICES = ("song-history", "watcher")
+# Matches a version-pinned tag such as ":v1.2.0".
+_SEMVER_TAG = re.compile(r":v\d+\.\d+\.\d+")
 
 
 @pytest.mark.skipif(not COMPOSE_PATH.exists(), reason="Pi compose file not present")
@@ -23,6 +29,58 @@ class TestImagePinning:
 
 
 @pytest.mark.skipif(not COMPOSE_PATH.exists(), reason="Pi compose file not present")
+class TestAppImagePinning:
+    """The first-party app image must be immutably pinned, not mutable ':latest'
+    (#512). ``docker compose pull`` on a bare ':latest' silently swaps the running
+    application code with no digest record and no deterministic rollback target."""
+
+    def test_app_services_use_the_app_image(self) -> None:
+        """Guard the assumption behind the other tests: both services run the app
+        image (so the pinning assertion below actually covers the app)."""
+        services = yaml.safe_load(COMPOSE_PATH.read_text())["services"]
+        for name in APP_SERVICES:
+            assert services[name]["image"].startswith("ghcr.io/mshirel/song-history"), (
+                f"{name} is expected to run the first-party app image"
+            )
+
+    def test_app_image_not_bare_latest(self) -> None:
+        for name in APP_SERVICES:
+            image = yaml.safe_load(COMPOSE_PATH.read_text())["services"][name]["image"]
+            assert image != "ghcr.io/mshirel/song-history:latest", (
+                f"{name} must not deploy the mutable ':latest' tag (got {image!r})"
+            )
+
+    def test_app_image_is_digest_or_version_pinned(self) -> None:
+        """Mirror of the issue's regression test: every reference to the app image
+        anywhere in the compose file must carry a digest or an ``:vX.Y.Z`` tag."""
+        text = COMPOSE_PATH.read_text()
+        refs = re.findall(r"ghcr\.io/mshirel/song-history[:@][^\s\"']+", text)
+        assert refs, "expected at least one app-image reference in the compose file"
+        for ref in refs:
+            assert "@sha256:" in ref or _SEMVER_TAG.search(ref), (
+                f"app image must be digest- or version-pinned, got {ref!r}"
+            )
+
+
+@pytest.mark.skipif(not COMPOSE_PATH.exists(), reason="Pi compose file not present")
+class TestPromtailNotRoot:
+    """promtail must not run as root (#514). It reads all container logs; root is
+    unnecessary once the log dir is group-readable / ACL'd, and least-privilege
+    matters on this internet-exposed host."""
+
+    def test_promtail_runs_non_root(self) -> None:
+        services = yaml.safe_load(COMPOSE_PATH.read_text())["services"]
+        promtail = next(v for k, v in services.items() if "promtail" in k)
+        user = promtail.get("user")
+        assert user not in (None, "root", "0", 0), (
+            f"promtail must run as an explicit non-root uid (got {user!r})"
+        )
+        # The uid portion (before any ':gid') must not be 0/root.
+        uid = str(user).split(":", 1)[0]
+        assert uid not in ("0", "root"), f"promtail uid must be non-root (got {user!r})"
+
+
+@pytest.mark.skipif(not COMPOSE_PATH.exists(), reason="Pi compose file not present")
 class TestTrustedProxy:
     """Behind the Cloudflare tunnel the app must trust CF-Connecting-IP so the
     rate limiter (and /metrics IP checks) identify real clients, not the tunnel
@@ -37,21 +95,36 @@ class TestTrustedProxy:
 
 
 class TestWatcherHealthcheck:
-    """The watcher reuses the app image, which ships a HEALTHCHECK probing
-    http://localhost:8000/health (#402). The watcher runs an import loop and does
-    NOT serve HTTP, so it must disable the inherited healthcheck — otherwise Docker
-    marks the watcher 'unhealthy' and triggers false monitoring alerts."""
+    """The watcher reuses the app image, whose inherited HEALTHCHECK probes
+    http://localhost:8000/health (#402) — wrong for the watcher, which serves no
+    HTTP. Rather than disable liveness entirely (#402), the watcher now defines its
+    own lightweight heartbeat-based healthcheck so a wedged import loop is caught by
+    monitoring; ``restart: unless-stopped`` only catches a full process exit, not a
+    hang (#514)."""
 
     def _services(self) -> dict:
         return yaml.safe_load(COMPOSE_PATH.read_text())["services"]
 
-    def test_watcher_disables_inherited_healthcheck(self) -> None:
+    def test_watcher_has_an_active_healthcheck(self) -> None:
         watcher = self._services()["watcher"]
         hc = watcher.get("healthcheck")
-        assert hc is not None and hc.get("disable") is True, (
-            "watcher must set 'healthcheck: {disable: true}' — it reuses the app "
-            "image's HEALTHCHECK (probing :8000) but serves no HTTP, so it would "
-            "otherwise be marked unhealthy (#402)."
+        assert hc is not None, "watcher must define a healthcheck (#514)"
+        assert hc.get("disable") is not True, (
+            "watcher healthcheck must not be disabled — a hung import loop would go "
+            "undetected (#514)."
+        )
+        assert hc.get("test"), (
+            "watcher healthcheck must define a 'test' command (#514)."
+        )
+
+    def test_watcher_does_not_inherit_http_probe(self) -> None:
+        """The watcher serves no HTTP, so its healthcheck must not be the app
+        image's :8000 probe — it should test the import-loop heartbeat instead."""
+        watcher = self._services()["watcher"]
+        test = watcher.get("healthcheck", {}).get("test")
+        test_str = " ".join(test) if isinstance(test, list) else str(test)
+        assert "8000" not in test_str, (
+            "watcher healthcheck must not probe :8000 — it serves no HTTP (#514)."
         )
 
     def test_song_history_keeps_its_healthcheck(self) -> None:
