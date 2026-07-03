@@ -1,0 +1,31 @@
+{
+  "filename": "chorus_repeat_service.pptx",
+  "service_date": "2026-04-05",
+  "service_name": "Morning Worship",
+  "song_leader": "Wesley McGehee",
+  "preacher": "David Morris",
+  "sermon_title": "The Empty Tomb",
+  "songs": [
+    {
+      "ordinal": 1,
+      "canonical_title": "low in the grave he lay",
+      "display_title": "Low in the Grave He Lay",
+      "publisher": "Paperless Hymnal",
+      "words_by": "Robert Lowry",
+      "music_by": "Robert Lowry",
+      "arranger": null,
+      "slide_count": 3
+    },
+    {
+      "ordinal": 2,
+      "canonical_title": "i know that my redeemer lives",
+      "display_title": "I Know That My Redeemer Lives",
+      "publisher": "Paperless Hymnal",
+      "words_by": "Fred A. Fillmore",
+      "music_by": "Fred A. Fillmore",
+      "arranger": null,
+      "slide_count": 2
+    }
+  ],
+  "anomalies": []
+}

@@ -38,6 +38,14 @@ _MAX_EXTRACT_SECONDS: int = 120
 # Consecutive slides with no text after which the current song group is closed
 _NO_TEXT_STREAK_THRESHOLD: int = 5
 
+# Maximum length (in slides) of an interior chorus/refrain span that may be folded
+# back into the song it interrupts. Paperless Hymnal chorus slides lead with a
+# repeated lyric line ("He arose! He arose!") that can out-score the real song
+# title, so grouping splits them into a spurious one-slide group sandwiched between
+# two halves of the SAME song. Only spans this short qualify as bracketed refrains
+# (#471) — keeps genuine back-to-back distinct songs untouched.
+_MAX_BRACKETED_REFRAIN_SLIDES: int = 1
+
 # SFP (Songs For Praise) catalog numbers — Paperless Hymnal reference IDs, not song titles (#264)
 _SFP_CATALOG_RE = re.compile(r"^SFP\s+\d{3,4}$", re.IGNORECASE)
 
@@ -480,7 +488,49 @@ def _group_song_slides(slides: list[Slide]) -> list[tuple[str, list[Slide]]]:
     if current_group and current_canonical:
         groups.append((current_canonical, current_group))
 
-    return groups
+    return _merge_bracketed_refrains(groups)
+
+
+def _merge_bracketed_refrains(
+    groups: list[tuple[str, list[Slide]]],
+) -> list[tuple[str, list[Slide]]]:
+    """Fold bracketed chorus/refrain spans back into the song they interrupt (#471).
+
+    A Paperless Hymnal chorus slide repeats a lyric lead-line ("He arose! He
+    arose!") that can out-score the real song title during candidate selection, so
+    the grouping pass splits it into its own short group sandwiched between two
+    groups of the SAME song (verse -> chorus -> verse). Such a span is a refrain,
+    not a distinct song: merge it — and the returning group — back into the prior
+    group.
+
+    Conservative by design: only a span of at most
+    ``_MAX_BRACKETED_REFRAIN_SLIDES`` slide(s) whose immediately-following group
+    returns to the exact canonical title of the immediately-preceding group is
+    merged, so genuine back-to-back distinct songs are untouched.
+    """
+    merged: list[tuple[str, list[Slide]]] = []
+    i = 0
+    while i < len(groups):
+        canonical, slides = groups[i]
+        if (
+            merged
+            and i + 1 < len(groups)
+            and canonical != merged[-1][0]
+            and groups[i + 1][0] == merged[-1][0]
+            and len(slides) <= _MAX_BRACKETED_REFRAIN_SLIDES
+        ):
+            prior_canonical, prior_slides = merged[-1]
+            merged[-1] = (prior_canonical, prior_slides + slides + groups[i + 1][1])
+            _log.debug(
+                "Folded bracketed refrain %r back into song %r (#471)",
+                canonical,
+                prior_canonical,
+            )
+            i += 2
+            continue
+        merged.append((canonical, slides))
+        i += 1
+    return merged
 
 
 def _is_song_title_slide(slide: Slide) -> bool:

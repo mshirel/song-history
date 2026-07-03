@@ -178,6 +178,52 @@ class TestGroupSongSlides:
         assert groups == []
 
 
+class TestChorusNotSplitIntoPhantomSong:
+    """A chorus/refrain slide bracketed by the same song must not become its own
+    song. Regression for the Wesley 2026-04-05 import (#471)."""
+
+    def _verse_chorus_verse(self):
+        # Every Paperless Hymnal slide carries the publisher marker, so each one
+        # passes _is_song_title_slide(); the chorus lead-line must NOT win a group.
+        return [
+            make_slide(index=0, lines=["Low in the Grave He Lay",
+                                       "Low in the grave He lay, Jesus my Savior",
+                                       "PaperlessHymnal.com"]),
+            make_slide(index=1, lines=["He arose! He arose!",
+                                       "Up from the grave He arose",
+                                       "PaperlessHymnal.com"]),
+            make_slide(index=2, lines=["Low in the Grave He Lay",
+                                       "Vainly they watch His bed",
+                                       "PaperlessHymnal.com"]),
+        ]
+
+    def test_chorus_does_not_start_a_new_song(self):
+        groups = _group_song_slides(self._verse_chorus_verse())
+        titles = [canonical for canonical, _ in groups]
+        assert "he arose! he arose" not in titles, (
+            "Chorus refrain leaked out as its own song"
+        )
+
+    def test_verse_chorus_verse_is_one_group(self):
+        groups = _group_song_slides(self._verse_chorus_verse())
+        assert [c for c, _ in groups] == ["low in the grave he lay"]
+        assert len(groups[0][1]) == 3, "All three slides should fold into one song"
+
+    def test_distinct_back_to_back_songs_not_merged(self):
+        """Guard against over-merging: two different songs in a row stay separate."""
+        slides = [
+            make_slide(index=0, lines=["Amazing Grace", "PaperlessHymnal.com"]),
+            make_slide(index=1, lines=["How Great Thou Art", "PaperlessHymnal.com"]),
+            make_slide(index=2, lines=["Blessed Assurance", "PaperlessHymnal.com"]),
+        ]
+        groups = _group_song_slides(slides)
+        assert [c for c, _ in groups] == [
+            "amazing grace",
+            "how great thou art",
+            "blessed assurance",
+        ]
+
+
 class TestCreateSongOccurrence:
     def test_returns_song_occurrence_with_correct_ordinal(self):
         slides = [make_slide(0, ["Amazing Grace", "PaperlessHymnal.com"])]
