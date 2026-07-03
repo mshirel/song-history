@@ -184,15 +184,19 @@ class TestChorusNotSplitIntoPhantomSong:
 
     def _verse_chorus_verse(self):
         # Every Paperless Hymnal slide carries the publisher marker, so each one
-        # passes _is_song_title_slide(); the chorus lead-line must NOT win a group.
+        # passes _is_song_title_slide(); the chorus lead-line ("He arose! He
+        # arose!") must NOT win a group. As on real decks, the chorus slide also
+        # carries a "c – Title" section line naming its parent song — the positive
+        # evidence the fold relies on to distinguish a refrain from a distinct song.
         return [
-            make_slide(index=0, lines=["Low in the Grave He Lay",
+            make_slide(index=0, lines=["1 – Low in the Grave He Lay",
                                        "Low in the grave He lay, Jesus my Savior",
                                        "PaperlessHymnal.com"]),
             make_slide(index=1, lines=["He arose! He arose!",
                                        "Up from the grave He arose",
+                                       "c – Low in the Grave He Lay",
                                        "PaperlessHymnal.com"]),
-            make_slide(index=2, lines=["Low in the Grave He Lay",
+            make_slide(index=2, lines=["2 – Low in the Grave He Lay",
                                        "Vainly they watch His bed",
                                        "PaperlessHymnal.com"]),
         ]
@@ -209,18 +213,42 @@ class TestChorusNotSplitIntoPhantomSong:
         assert [c for c, _ in groups] == ["low in the grave he lay"]
         assert len(groups[0][1]) == 3, "All three slides should fold into one song"
 
-    def test_distinct_back_to_back_songs_not_merged(self):
-        """Guard against over-merging: two different songs in a row stay separate."""
+    def test_distinct_interior_song_in_a_b_a_is_kept(self):
+        """A distinct 1-slide song B bracketed by the same song A (an A–B–A
+        reprise) must NOT be folded away — B carries no section line naming A, so
+        there is no refrain evidence. Regression guard against silent data loss:
+        B must survive AND the two A performances stay as separate occurrences
+        (the 'same song sung multiple times' feature, tests/test_cli.py)."""
         slides = [
             make_slide(index=0, lines=["Amazing Grace", "PaperlessHymnal.com"]),
-            make_slide(index=1, lines=["How Great Thou Art", "PaperlessHymnal.com"]),
-            make_slide(index=2, lines=["Blessed Assurance", "PaperlessHymnal.com"]),
+            make_slide(index=1, lines=["Doxology",
+                                       "Praise God from whom all blessings flow",
+                                       "PaperlessHymnal.com"]),
+            make_slide(index=2, lines=["Amazing Grace", "PaperlessHymnal.com"]),
+        ]
+        groups = _group_song_slides(slides)
+        canonicals = [c for c, _ in groups]
+        assert canonicals == ["amazing grace", "doxology", "amazing grace"], (
+            "Distinct interior song was dropped or flanking songs were over-merged"
+        )
+        assert all(len(s) == 1 for _, s in groups)
+
+    def test_bracketed_span_without_refrain_evidence_is_not_folded(self):
+        """Even when the 1-slide interior shares nothing but position, absent a
+        section line naming song A the span is left alone (no fold, no drop)."""
+        slides = [
+            make_slide(index=0, lines=["Low in the Grave He Lay", "PaperlessHymnal.com"]),
+            # Chorus-like lyric slide but NO "c – Low in the Grave He Lay" line.
+            make_slide(index=1, lines=["He arose! He arose!",
+                                       "Hallelujah! Christ arose!",
+                                       "PaperlessHymnal.com"]),
+            make_slide(index=2, lines=["Low in the Grave He Lay", "PaperlessHymnal.com"]),
         ]
         groups = _group_song_slides(slides)
         assert [c for c, _ in groups] == [
-            "amazing grace",
-            "how great thou art",
-            "blessed assurance",
+            "low in the grave he lay",
+            "he arose! he arose",
+            "low in the grave he lay",
         ]
 
 

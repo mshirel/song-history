@@ -491,6 +491,24 @@ def _group_song_slides(slides: list[Slide]) -> list[tuple[str, list[Slide]]]:
     return _merge_bracketed_refrains(groups)
 
 
+def _slides_reference_song(slides: list[Slide], canonical: str) -> bool:
+    """Return True if any line in *slides* names the song *canonical* (#471).
+
+    Paperless Hymnal verse/chorus slides carry a section line that spells out the
+    parent song title ("c – Low in the Grave He Lay", "2 – Low in the Grave He
+    Lay"). Stripping the section prefix and canonicalizing that line yields the
+    song's canonical title. Finding such a line is positive evidence that these
+    slides are a verse/refrain OF *canonical* — as opposed to a distinct song that
+    merely happens to sit between two performances of it.
+    """
+    for slide in slides:
+        for line in slide.text.text_lines:
+            stripped = strip_title_prefix(line)
+            if stripped and canonicalize_title(stripped) == canonical:
+                return True
+    return False
+
+
 def _merge_bracketed_refrains(
     groups: list[tuple[str, list[Slide]]],
 ) -> list[tuple[str, list[Slide]]]:
@@ -503,23 +521,31 @@ def _merge_bracketed_refrains(
     not a distinct song: merge it — and the returning group — back into the prior
     group.
 
-    Conservative by design: only a span of at most
-    ``_MAX_BRACKETED_REFRAIN_SLIDES`` slide(s) whose immediately-following group
-    returns to the exact canonical title of the immediately-preceding group is
-    merged, so genuine back-to-back distinct songs are untouched.
+    Conservative by design. A span is folded ONLY when all of these hold, so a
+    genuinely distinct interior song (an A–B–A "reprise" where B is its own song)
+    is never dropped or silently swallowed:
+
+    * it is at most ``_MAX_BRACKETED_REFRAIN_SLIDES`` slide(s) long;
+    * the immediately-following group returns to the exact canonical title of the
+      immediately-preceding group (the flanks are the same song); AND
+    * the span carries a section line that names that same song
+      (``_slides_reference_song``) — positive evidence it is a verse/refrain of it,
+      not an unrelated song. Without that evidence the groups are left untouched.
     """
     merged: list[tuple[str, list[Slide]]] = []
     i = 0
     while i < len(groups):
         canonical, slides = groups[i]
+        prior_canonical = merged[-1][0] if merged else None
         if (
-            merged
+            prior_canonical is not None
             and i + 1 < len(groups)
-            and canonical != merged[-1][0]
-            and groups[i + 1][0] == merged[-1][0]
+            and canonical != prior_canonical
+            and groups[i + 1][0] == prior_canonical
             and len(slides) <= _MAX_BRACKETED_REFRAIN_SLIDES
+            and _slides_reference_song(slides, prior_canonical)
         ):
-            prior_canonical, prior_slides = merged[-1]
+            prior_slides = merged[-1][1]
             merged[-1] = (prior_canonical, prior_slides + slides + groups[i + 1][1])
             _log.debug(
                 "Folded bracketed refrain %r back into song %r (#471)",
