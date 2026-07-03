@@ -134,3 +134,29 @@ limiting depends on `TRUSTED_PROXY`. Upload endpoint accepts user files → vali
 ## History file
 
 - **Location:** `docs/code-review-history.md`  (ten-persona reviews; prepend `## Review N`)
+
+## PR review (`adversarial-pr-review` skill)
+
+Knobs for the PR-scoped, adversarial proposer→challenger review (`~/.claude/skills/adversarial-pr-review`). Reviews a single PR's diff and posts one consolidated comment; complements the whole-repo `full-code-review` above (reuse its "Project identity & stack", "Per-persona / per-group file priorities", and "Threat model / exposure notes" sections for context — do not re-derive them here).
+
+- **Confidence threshold:** 80.
+- **Challengers per finding:** 1 (use `--thorough` for a 3-challenger median on high-stakes PRs — auth/CSRF, upload handling, SQLite concurrency, or anything touching the public tunnel edge).
+- **Lenses that apply:** all 5 apply.
+  - `bug:` — correctness/logic in extraction, credit resolution, reporting math, HTMX route handlers.
+  - `claude-md:` — repo conventions: `uv`, `src/` layout, Ruff 100-char, snake_case, pytest markers, `secret <path>/<field>` over reading `~/.env`.
+  - `sec/data:` — public web app behind a cloudflared tunnel: CSRF on forms, upload type/size/path-traversal, `/metrics` & `/jobs` reachability, `TRUSTED_PROXY`; **plus SQLite concurrency** (background import threads + web request threads sharing a connection, WAL/`busy_timeout`, `_maybe_commit()` races, long transactions blocking readers).
+  - `history:` — regressions against git-blame context and prior PR-comment decisions (e.g. re-introducing a removed public endpoint, un-pinning a digest-pinned third-party image, reverting a concurrency fix).
+  - `test:` — meaningful tests for changed behavior; **respect the pytest markers** (`unit`/`integration`/`slow`/`e2e`) — don't demand `e2e`/Playwright/browser tests unless the change clearly warrants end-to-end coverage (upload workflow, report download, HTMX interactions).
+- **Priority paths for diff context** (see the full "Per-persona / per-group file priorities" table above for the complete map):
+  - `src/worship_catalog/extractor.py`, `pptx_reader.py`, `normalize.py`, `import_service.py`, `library.py`, `service_slots.py` — core extraction/credit/import logic.
+  - `src/worship_catalog/db.py` — schema, connection/thread-safety, transactions.
+  - `src/worship_catalog/web/` — routes (`app.py`), templates, static JS (`upload.js`, `reports.js`).
+  - `src/worship_catalog/cli.py`, `ocr.py`, `notify.py` — CLI + external integrations.
+  - `tests/` and `conftest.py` — matching test coverage for changed behavior.
+  - `Dockerfile`, `compose.yml`, `.github/workflows/ci.yml` — deploy/CI surface (public tunnel edge).
+- **Post on no findings:** false.
+- **Out of scope for challengers (score low):** anything Ruff, mypy, Bandit, pip-audit, gitleaks, or pre-commit already catch (lint/format, type errors, obvious insecure patterns, dependency CVEs, committed secrets); pre-existing issues not touched by this PR; lines the PR did not modify; style nits.
+- **What "real, in-scope" looks like here:**
+  - A new/changed route handler that shares the `Database` connection across the import thread pool without the WAL/`busy_timeout`/locking that the rest of the code relies on, risking `database is locked` under concurrent import + web load.
+  - A new form or upload path that skips CSRF validation or file type/size/path-traversal checks, or an endpoint that becomes reachable unauthenticated through the tunnel (e.g. `/metrics`, `/jobs`).
+  - Changed extraction/credit-resolution or reporting logic (e.g. `extractor.py`, `normalize.py`) with no matching `unit`/`integration` test covering the new behavior.
