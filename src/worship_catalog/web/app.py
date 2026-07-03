@@ -258,8 +258,23 @@ async def metrics(request: Request) -> Response:
     return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
+def _is_htmx_request(request: Request) -> bool:
+    """True when the request came from HTMX (it sets the ``HX-Request`` header)."""
+    return request.headers.get("HX-Request", "").lower() == "true"
+
+
 @app.exception_handler(StarletteHTTPException)
 async def http_exception_handler(request: Request, exc: StarletteHTTPException) -> HTMLResponse:
+    # HTMX only swaps 2xx responses and expects a fragment, not a whole page.
+    # Return a small inline error partial for HTMX callers so a 422 date-range
+    # error surfaces in the result region instead of being silently swallowed —
+    # reports.js drops the fragment into the form's target (#496).
+    if _is_htmx_request(request):
+        return templates.TemplateResponse(
+            request, "_error.html", {"detail": str(exc.detail)},
+            status_code=exc.status_code,
+            headers=getattr(exc, "headers", None),
+        )
     if exc.status_code == 404:
         return templates.TemplateResponse(
             request, "404.html", {"detail": str(exc.detail)}, status_code=404
@@ -274,8 +289,13 @@ async def http_exception_handler(request: Request, exc: StarletteHTTPException) 
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(request: Request, exc: Exception) -> HTMLResponse:
     _log.exception("Unhandled exception", extra={"path": str(request.url)})
+    detail = "An unexpected error occurred."
+    if _is_htmx_request(request):
+        return templates.TemplateResponse(
+            request, "_error.html", {"detail": detail}, status_code=500
+        )
     return templates.TemplateResponse(
-        request, "500.html", {"detail": "An unexpected error occurred."}, status_code=500
+        request, "500.html", {"detail": detail}, status_code=500
     )
 
 
