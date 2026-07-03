@@ -230,6 +230,56 @@ class TestCommittedGoldenExtraction:
             assert actual.slide_count == exp.get("slide_count")
 
 
+class TestChorusRepeatGoldenExtraction:
+    """Golden-file regression on a COMMITTED chorus/refrain deck (#471).
+
+    Reproduces the Wesley 2026-04-05 phantom-song bug: a verse/chorus/verse hymn
+    whose chorus slide leads with a repeated lyric line ("He arose!  He arose!")
+    used to split into its own one-slide phantom song bracketed by the two verse
+    halves. The deck follows the phantom hymn with a genuinely distinct second
+    song, so this golden test also guards against over-merging real back-to-back
+    songs. Both the ``.pptx`` and expected JSON are committed, so this ALWAYS runs.
+    """
+
+    def test_extraction_matches_committed_golden(self):
+        result = extract_songs(FIXTURES / "chorus_repeat_service.pptx")
+        expected = json.loads(
+            (FIXTURES / "chorus_repeat_service.expected.json").read_text()
+        )
+
+        assert result.filename == expected["filename"]
+        assert result.service_date == expected["service_date"]
+        assert result.service_name == expected["service_name"]
+        assert result.song_leader == expected["song_leader"]
+        assert result.preacher == expected["preacher"]
+        assert result.sermon_title == expected["sermon_title"]
+
+        # Exact song count (== not >=): the "He arose! He arose!" phantom must fail.
+        assert len(result.songs) == len(expected["songs"])
+
+        titles = {s.display_title.lower() for s in result.songs}
+        assert "he arose! he arose!" not in titles, (
+            "Chorus refrain leaked out as its own phantom song (#471)"
+        )
+        # The real hymn is present exactly once (verse+chorus+verse folded together).
+        assert (
+            sum(1 for s in result.songs if s.canonical_title == "low in the grave he lay")
+            == 1
+        )
+        # The genuinely distinct second song is preserved, not over-merged.
+        assert "i know that my redeemer lives" in titles
+
+        for actual, exp in zip(result.songs, expected["songs"], strict=True):
+            assert actual.ordinal == exp["ordinal"]
+            assert actual.canonical_title == exp["canonical_title"]
+            assert actual.display_title == exp["display_title"]
+            assert actual.publisher == exp.get("publisher")
+            assert actual.words_by == exp.get("words_by")
+            assert actual.music_by == exp.get("music_by")
+            assert actual.arranger == exp.get("arranger")
+            assert actual.slide_count == exp.get("slide_count")
+
+
 # Real worship decks (dev machines only — never committed; these are real service
 # files). Each previously produced spurious "songs" from sermon/scripture/lyric
 # slides. Regression guard for the non-song output filter.
