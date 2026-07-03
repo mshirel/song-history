@@ -6,6 +6,7 @@ import pytest
 import yaml
 
 COMPOSE_PATH = Path("deploy/pi/docker-compose.yml")
+TRAEFIK_PATH = Path("deploy/pi/traefik/traefik.yml")
 
 
 @pytest.mark.skipif(not COMPOSE_PATH.exists(), reason="Pi compose file not present")
@@ -33,6 +34,23 @@ class TestTrustedProxy:
         assert "TRUSTED_PROXY" in env, (
             "song-history env must set TRUSTED_PROXY so _get_client_ip uses "
             "CF-Connecting-IP instead of bucketing all tunnel traffic as one client"
+        )
+
+
+@pytest.mark.skipif(not TRAEFIK_PATH.exists(), reason="Pi traefik config not present")
+class TestTraefikDashboard:
+    """The Traefik API dashboard must not run in insecure mode (#513).
+
+    `api.insecure: true` exposes the unauthenticated dashboard on :8080, leaking
+    full routing config. The traefik container also mounts the docker socket, so
+    an accidental port publish turns this info-leak into a socket-adjacent
+    exposure on the internet-facing Pi. Defense-in-depth: never ship insecure."""
+
+    def test_traefik_dashboard_not_insecure(self) -> None:
+        cfg = yaml.safe_load(TRAEFIK_PATH.read_text())
+        assert not cfg.get("api", {}).get("insecure", False), (
+            "traefik api.insecure must not be true — it exposes the "
+            "unauthenticated dashboard on :8080 (#513)."
         )
 
 
