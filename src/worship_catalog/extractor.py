@@ -492,18 +492,30 @@ def _group_song_slides(slides: list[Slide]) -> list[tuple[str, list[Slide]]]:
 
 
 def _slides_reference_song(slides: list[Slide], canonical: str) -> bool:
-    """Return True if any line in *slides* names the song *canonical* (#471).
+    """Return True if any slide carries a SECTION line naming the song *canonical* (#471).
 
     Paperless Hymnal verse/chorus slides carry a section line that spells out the
     parent song title ("c – Low in the Grave He Lay", "2 – Low in the Grave He
-    Lay"). Stripping the section prefix and canonicalizing that line yields the
-    song's canonical title. Finding such a line is positive evidence that these
-    slides are a verse/refrain OF *canonical* — as opposed to a distinct song that
-    merely happens to sit between two performances of it.
+    Lay"). Stripping that section prefix and canonicalizing yields the song's
+    canonical title — positive evidence these slides are a verse/refrain OF
+    *canonical*, as opposed to a distinct song that merely sits between two
+    performances of it.
+
+    Only a line from which an actual section prefix was removed counts as
+    evidence. A bare LYRIC line that happens to equal the title (e.g. song B
+    quotes or segues into A) is NOT evidence — otherwise a genuinely distinct
+    interior song would be wrongly folded away (silent data loss). We detect a
+    removed prefix by comparing against the whitespace-collapsed line, so a
+    double-spaced lyric ("He arose!  He arose!") — which ``strip_title_prefix``
+    also whitespace-normalizes — is not mistaken for a prefixed section line.
     """
     for slide in slides:
         for line in slide.text.text_lines:
+            collapsed = " ".join(line.split())
             stripped = strip_title_prefix(line)
+            if stripped == collapsed:
+                # No section prefix was removed — a bare line, not evidence.
+                continue
             if stripped and canonicalize_title(stripped) == canonical:
                 return True
     return False

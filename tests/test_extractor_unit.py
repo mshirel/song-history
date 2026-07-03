@@ -183,17 +183,23 @@ class TestChorusNotSplitIntoPhantomSong:
     song. Regression for the Wesley 2026-04-05 import (#471)."""
 
     def _verse_chorus_verse(self):
-        # Every Paperless Hymnal slide carries the publisher marker, so each one
-        # passes _is_song_title_slide(); the chorus lead-line ("He arose! He
-        # arose!") must NOT win a group. As on real decks, the chorus slide also
-        # carries a "c – Title" section line naming its parent song — the positive
-        # evidence the fold relies on to distinguish a refrain from a distinct song.
+        # Faithful reproduction of the real "He arose!" deck, so the fold is
+        # genuinely exercised. The chorus slide's DOUBLE-spaced lyric lead-line
+        # "He arose!  He arose!" out-scores the real title in select_best_title
+        # (it is shorter, and whitespace normalization makes it look prefixed), so
+        # WITHOUT the fold the chorus splits into its own phantom group between the
+        # two verses (verify: stub _merge_bracketed_refrains to return groups and
+        # test_verse_chorus_verse_is_one_group / test_chorus_does_not_start_a_new_song
+        # both fail). The chorus slide also carries the real "c – Title" section
+        # line — the positive evidence the fold uses to recognize it as a refrain
+        # of "Low in the Grave He Lay", not a new song.
         return [
             make_slide(index=0, lines=["1 – Low in the Grave He Lay",
                                        "Low in the grave He lay, Jesus my Savior",
                                        "PaperlessHymnal.com"]),
-            make_slide(index=1, lines=["He arose! He arose!",
-                                       "Up from the grave He arose",
+            make_slide(index=1, lines=["Up from the grave He arose",
+                                       "He arose!  He arose!",
+                                       "Hallelujah!  Christ arose!",
                                        "c – Low in the Grave He Lay",
                                        "PaperlessHymnal.com"]),
             make_slide(index=2, lines=["2 – Low in the Grave He Lay",
@@ -232,6 +238,26 @@ class TestChorusNotSplitIntoPhantomSong:
             "Distinct interior song was dropped or flanking songs were over-merged"
         )
         assert all(len(s) == 1 for _, s in groups)
+
+    def test_distinct_interior_song_quoting_A_title_is_kept(self):
+        """Silent-data-loss guard: a distinct interior song B whose slide contains
+        a bare LYRIC line equal to A's title (B quotes/segues into A) must still be
+        KEPT — a title-equal lyric line is not section evidence. Only a real
+        "c – <title>" / "N – <title>" section line counts as refrain evidence."""
+        slides = [
+            make_slide(index=0, lines=["Amazing Grace", "PaperlessHymnal.com"]),
+            make_slide(index=1, lines=["Doxology",
+                                       "Praise God from whom all blessings flow",
+                                       "Amazing Grace",  # bare lyric line, NOT "N – Amazing Grace"
+                                       "PaperlessHymnal.com"]),
+            make_slide(index=2, lines=["Amazing Grace", "PaperlessHymnal.com"]),
+        ]
+        groups = _group_song_slides(slides)
+        assert [c for c, _ in groups] == [
+            "amazing grace",
+            "doxology",
+            "amazing grace",
+        ], "Distinct interior song was folded on a bare title-equal lyric line"
 
     def test_bracketed_span_without_refrain_evidence_is_not_folded(self):
         """Even when the 1-slide interior shares nothing but position, absent a
