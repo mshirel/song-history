@@ -131,6 +131,14 @@ to `0.0.0.0` on pi-songs that the tunnel forwards is publicly reachable. Sensiti
 token, tunnel token, CSRF secret, upload password (all must be `600` at rest). Per-client rate
 limiting depends on `TRUSTED_PROXY`. Upload endpoint accepts user files → validate type/size/path.
 
+## Review tuning (full-code-review challenger pass)
+
+- **Challenger:** on — run the Phase 1.5 adversarial refutation pass and tier findings.
+- **File threshold:** 70 — min challenger confidence for a standard issue. A verified `real` finding below
+  70 is filed `deferred` (shared backlog with the PR skill); a `false-positive` is dropped and logged in
+  the history file's Dropped table.
+- **Deferred label:** `deferred` (shared with `adversarial-pr-review`).
+
 ## History file
 
 - **Location:** `docs/code-review-history.md`  (ten-persona reviews; prepend `## Review N`)
@@ -139,7 +147,13 @@ limiting depends on `TRUSTED_PROXY`. Upload endpoint accepts user files → vali
 
 Knobs for the PR-scoped, adversarial proposer→challenger review (`~/.claude/skills/adversarial-pr-review`). Reviews a single PR's diff and posts one consolidated comment; complements the whole-repo `full-code-review` above (reuse its "Project identity & stack", "Per-persona / per-group file priorities", and "Threat model / exposure notes" sections for context — do not re-derive them here).
 
-- **Confidence threshold:** 80.
+- **Confidence threshold:** 80 — minimum challenger confidence to **post** a finding inline.
+- **Defer floor:** 65 — a finding the challenger marks `real` scoring 65–79 is filed as a `deferred` GitHub
+  issue (backlog for future consideration), not dropped. Below 65, even a `real` finding is discarded.
+- **Deferred label:** `deferred` (shared with `full-code-review`).
+- **Hold-merge severity:** HIGH — only a posted (conf ≥ 80) HIGH-severity finding holds an automerge;
+  deferred and MED/LOW findings are non-blocking. (Note: this repo fronts a public Cloudflare tunnel, so a
+  HIGH sec/data finding on the auth/CSRF/upload edge is exactly what should hold a merge.)
 - **Challengers per finding:** 1 (use `--thorough` for a 3-challenger median on high-stakes PRs — auth/CSRF, upload handling, SQLite concurrency, or anything touching the public tunnel edge).
 - **Lenses that apply:** all 5 apply.
   - `bug:` — correctness/logic in extraction, credit resolution, reporting math, HTMX route handlers.
