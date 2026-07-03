@@ -1,0 +1,41 @@
+{
+  "filename": "sample_service.pptx",
+  "service_date": "2026-06-14",
+  "service_name": "Morning Worship",
+  "song_leader": "Matt Shirel",
+  "preacher": "David Morris",
+  "sermon_title": "The Greatness of God",
+  "songs": [
+    {
+      "ordinal": 1,
+      "canonical_title": "majesty",
+      "display_title": "Majesty",
+      "publisher": "Paperless Hymnal",
+      "words_by": "Jack Hayford",
+      "music_by": null,
+      "arranger": "Ken Young",
+      "slide_count": 2
+    },
+    {
+      "ordinal": 2,
+      "canonical_title": "mighty to save",
+      "display_title": "Mighty To Save",
+      "publisher": null,
+      "words_by": null,
+      "music_by": null,
+      "arranger": null,
+      "slide_count": 3
+    },
+    {
+      "ordinal": 3,
+      "canonical_title": "how great thou art",
+      "display_title": "How Great Thou Art",
+      "publisher": "Paperless Hymnal",
+      "words_by": "Stuart K. Hine",
+      "music_by": "Stuart K. Hine",
+      "arranger": null,
+      "slide_count": 2
+    }
+  ],
+  "anomalies": []
+}
