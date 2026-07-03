@@ -149,6 +149,37 @@
     });
   }
 
+  /**
+   * Surface HTMX error responses (e.g. a 422 from an inverted date range) in
+   * the triggering form's result region (#496). htmx only swaps 2xx responses
+   * by default, so without this a validation error produces no DOM change and
+   * the user sees nothing happen. The server returns a small HTML fragment for
+   * HTMX error responses; inject it into the request's target region.
+   */
+  function showHtmxError(evt) {
+    var detail = evt.detail || {};
+    var target = detail.target;
+    /* Fall back to the triggering element's hx-target if htmx didn't resolve
+       one (e.g. some error paths). */
+    if (!target && detail.elt && detail.elt.closest) {
+      var withTarget = detail.elt.closest("[hx-target]");
+      if (withTarget) {
+        target = document.querySelector(withTarget.getAttribute("hx-target"));
+      }
+    }
+    if (!target) return;
+    var xhr = detail.xhr;
+    var body = xhr && xhr.responseText ? xhr.responseText.trim() : "";
+    if (body) {
+      /* Server-rendered fragment; `detail` is Jinja-autoescaped so this is
+         safe to inject and matches how htmx swaps content. */
+      target.innerHTML = body;
+    } else {
+      target.textContent =
+        "Something went wrong — please check your input and try again.";
+    }
+  }
+
   /* Initialise on DOMContentLoaded (or immediately if already loaded). */
   function init() {
     configureHtmxCsrf();
@@ -160,6 +191,9 @@
     document.body.addEventListener("htmx:afterSwap", function () {
       bindDynamicDownloadForms();
     });
+
+    /* Show a friendly message when an HTMX request errors (#496). */
+    document.body.addEventListener("htmx:responseError", showHtmxError);
   }
 
   if (document.readyState === "loading") {

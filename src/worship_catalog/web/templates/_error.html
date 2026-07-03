@@ -1,0 +1,13 @@
+{# Inline error fragment for HTMX requests (#496).
+
+   HTMX only swaps 2xx responses by default, so a 422 date-validation error
+   (e.g. From after To) would otherwise produce no DOM change and no message —
+   the user clicks Generate/Preview and nothing happens. This small partial is
+   returned in place of the full 404/500 page for HTMX requests so reports.js
+   can drop an actionable message into the result region. `detail` is
+   auto-escaped by Jinja, so it is safe to inject via innerHTML. #}
+<div class="alert-error" role="alert" aria-live="assertive"
+     style="margin-top:1rem;padding:0.75rem 1rem;border:1px solid #f5c2c7;
+            background:#f8d7da;color:#842029;border-radius:4px;">
+  {{ detail }}
+</div>
