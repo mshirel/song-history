@@ -6,6 +6,70 @@ import pytest
 import yaml
 
 CI_PATH = Path(".github/workflows/ci.yml")
+DEPENDABOT_PATH = Path(".github/dependabot.yml")
+
+# The set of valid Dependabot package-ecosystem values.  "docker-compose" is
+# deliberately absent — it is NOT a valid ecosystem; the "docker" ecosystem
+# scans both Dockerfiles and docker-compose.yml files (#502).
+_VALID_DEPENDABOT_ECOSYSTEMS = {
+    "pip",
+    "github-actions",
+    "docker",
+    "npm",
+    "gomod",
+    "bundler",
+    "cargo",
+    "composer",
+    "nuget",
+    "gitsubmodule",
+    "terraform",
+    "gradle",
+    "maven",
+    "pub",
+    "mix",
+    "devcontainers",
+    "uv",
+}
+
+
+@pytest.mark.skipif(not DEPENDABOT_PATH.exists(), reason="Dependabot config not present")
+class TestDependabotEcosystems:
+    """Every Dependabot ecosystem must be valid, and the Pi deploy stack images
+    must be covered by a real "docker" entry — not the invalid "docker-compose"
+    ecosystem that Dependabot silently ignores (#502)."""
+
+    def _updates(self) -> list[dict]:
+        cfg = yaml.safe_load(DEPENDABOT_PATH.read_text())
+        return cfg["updates"]
+
+    def test_no_docker_compose_ecosystem(self) -> None:
+        """'docker-compose' is not a valid Dependabot ecosystem and must not appear."""
+        ecos = [u["package-ecosystem"] for u in self._updates()]
+        assert "docker-compose" not in ecos, (
+            "'docker-compose' is not a valid Dependabot package-ecosystem — "
+            "Dependabot silently ignores it. Use 'docker' instead (#502)."
+        )
+
+    def test_all_ecosystems_valid(self) -> None:
+        """Every package-ecosystem entry must be a recognised Dependabot value."""
+        ecos = [u["package-ecosystem"] for u in self._updates()]
+        invalid = [e for e in ecos if e not in _VALID_DEPENDABOT_ECOSYSTEMS]
+        assert not invalid, (
+            f"Invalid Dependabot package-ecosystem value(s): {invalid}. "
+            f"Valid values: {sorted(_VALID_DEPENDABOT_ECOSYSTEMS)}"
+        )
+
+    def test_deploy_pi_covered_by_docker_ecosystem(self) -> None:
+        """The Pi deploy stack (/deploy/pi) must have a 'docker' update entry so
+        traefik/promtail/cloudflared receive digest-bump PRs (#502)."""
+        assert any(
+            u["package-ecosystem"] == "docker"
+            and u["directory"] in ("/deploy/pi", "/deploy/pi/")
+            for u in self._updates()
+        ), (
+            "No 'docker' Dependabot entry for '/deploy/pi' — the production Pi "
+            "stack images (traefik, promtail, cloudflared) get no update PRs."
+        )
 
 
 @pytest.mark.skipif(not CI_PATH.exists(), reason="CI config not present")
