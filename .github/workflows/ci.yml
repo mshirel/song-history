@@ -320,19 +320,56 @@ jobs:
             -e CSRF_SECRET=smoke-test-ephemeral-secret \
             -p 8765:8000 \
             local-scan:latest
-          # Wait for the server to start (max 15s)
+          BASE=http://localhost:8765
+
+          fail() {
+            echo "Smoke test FAILED — $1"
+            docker logs smoke-test
+            docker stop smoke-test
+            exit 1
+          }
+
+          # Wait for the server to become healthy (max 15s)
+          healthy=""
           for i in $(seq 1 15); do
-            if curl -sf http://localhost:8765/health; then
-              echo "Smoke test passed"
-              docker stop smoke-test
-              exit 0
+            if curl -sf "$BASE/health" >/dev/null; then
+              healthy=1
+              break
             fi
             sleep 1
           done
-          echo "Smoke test FAILED — server did not start within 15s"
-          docker logs smoke-test
+          [ -n "$healthy" ] || fail "server did not start within 15s"
+
+          # /health only proves the process is up: it returns a static OK without
+          # touching templates, the DB query paths, or a report route. Exercise a
+          # REAL rendered route and a report route so a broken Jinja template, a
+          # missing static asset, or a router-registration regression fails the
+          # smoke test before the multi-platform push (#515).
+
+          # 1. Rendered page — /songs must return the songs template (router +
+          #    Jinja + base layout), not a static string. The smoke container runs
+          #    a fresh empty DB, so the library shows the empty-state card rather
+          #    than a <table>; assert on the page heading, which renders
+          #    regardless of data.
+          curl -sf "$BASE/songs" | grep -qi "Song Library" \
+            || fail "/songs did not render the songs page (template/router regression?)"
+
+          # 2. Report page renders — GET /reports must return the reports template.
+          curl -sf "$BASE/reports" | grep -qi "Generate Reports" \
+            || fail "/reports did not render the reports page"
+
+          # 3. Report route wired end-to-end — a CSRF-protected POST returning 403
+          #    still proves the router + CSRF middleware are registered (200 is
+          #    also acceptable if CSRF is ever relaxed). Any other status (404,
+          #    5xx) means the CCLI route is broken or unregistered.
+          code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/reports/ccli" \
+            -d 'start_date=2020-01-01&end_date=2030-12-31')
+          { [ "$code" = "403" ] || [ "$code" = "200" ]; } \
+            || fail "/reports/ccli not wired (HTTP $code)"
+
+          echo "Smoke test passed — /health, /songs, /reports and /reports/ccli all OK"
           docker stop smoke-test
-          exit 1
+          exit 0
 
       # Build and push multi-platform only after the CVE scan and smoke test pass (#66, #88).
       # GHA cache from the local build above makes this fast (no layer re-download).
