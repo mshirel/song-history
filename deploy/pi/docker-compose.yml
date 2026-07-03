@@ -42,17 +42,31 @@ services:
   # Image is pulled from GHCR — no source code needed on the Pi.
   # ---------------------------------------------------------------------------
   watcher:
-    image: ghcr.io/mshirel/song-history:latest
+    # Immutably pinned (#512) — was the mutable :latest. `docker compose pull` on
+    # :latest silently swaps running app code with no digest record and no
+    # rollback target. Pin to the sha- tag + digest CI publishes; Dependabot's
+    # `docker` ecosystem entry (#502) bumps this on a reviewed PR.
+    # Tag sha-<commit> = main@61914d1; digest resolved from GHCR 2026-07-03.
+    image: ghcr.io/mshirel/song-history:sha-61914d1e42feb8b5becf0cf0936e28df14bf561c@sha256:5f3a1a4599e50ce80f8920c91631af6b6e73ec4be702bb511ca301b1cf073a57
     restart: unless-stopped
     init: true
     # The app image ships a HEALTHCHECK that probes :8000 (#402); the watcher
-    # runs an import loop and serves no HTTP, so disable the inherited check to
-    # avoid a permanently "unhealthy" container and false monitoring alerts.
+    # runs an import loop and serves no HTTP. Instead of disabling liveness
+    # entirely, define our own lightweight heartbeat check (#514): each loop
+    # iteration touches /tmp/watcher-heartbeat, and the check fails if that file
+    # is stale (older than ~2 loop cycles), so a wedged/hung import is caught by
+    # monitoring — `restart: unless-stopped` only catches a full process exit.
     healthcheck:
-      disable: true
+      test:
+        - CMD-SHELL
+        - test $(( $(date +%s) - $(stat -c %Y /tmp/watcher-heartbeat 2>/dev/null || echo 0) )) -lt 660
+      interval: 60s
+      timeout: 5s
+      retries: 3
+      start_period: 330s
     entrypoint: /bin/sh
     command: >
-      -c "while true; do /app/scripts/import-new.sh; sleep 300; done"
+      -c "while true; do touch /tmp/watcher-heartbeat; /app/scripts/import-new.sh; sleep 300; done"
     environment:
       DB_PATH: /data/worship.db
       INBOX_DIR: /inbox
@@ -68,7 +82,10 @@ services:
         max-file: "3"
 
   song-history:
-    image: ghcr.io/mshirel/song-history:latest
+    # Immutably pinned (#512) — was the mutable :latest. Keep this in lockstep
+    # with the `watcher` service above; Dependabot (#502) bumps both.
+    # Tag sha-<commit> = main@61914d1; digest resolved from GHCR 2026-07-03.
+    image: ghcr.io/mshirel/song-history:sha-61914d1e42feb8b5becf0cf0936e28df14bf561c@sha256:5f3a1a4599e50ce80f8920c91631af6b6e73ec4be702bb511ca301b1cf073a57
     restart: unless-stopped
     stop_grace_period: 35s
     ports:
@@ -134,7 +151,17 @@ services:
     # Digest-pinned (#453) — was :latest. Re-pin on a reviewed Dependabot bump.
     image: grafana/promtail:latest@sha256:6cfa64ec432b24a912d640e2edb940eeae2666f61861a66c121d763dd7241381
     restart: unless-stopped
-    user: root   # needed to read root-owned /var/lib/docker/containers logs
+    # Non-root least-privilege (#514) — was `user: root`. Runs as uid 10001 with
+    # gid 0 (root group) so it can READ the group-readable Docker json logs under
+    # /var/lib/docker/containers WITHOUT root. Requires two host-side prep steps
+    # (see docs/pi-deploy.md):
+    #   1. Container logs must be group-readable. Docker's default is 0640
+    #      root:root (group can read); if a hardened daemon.json sets 0600, apply
+    #      an ACL:  setfacl -R -m g:0:rX -d -m g:0:rX /var/lib/docker/containers
+    #   2. promtail writes positions.yaml into the mounted /opt/song-history/promtail
+    #      dir, so that dir must be writable by uid 10001 (or gid 0):
+    #      chown -R 10001:0 /opt/song-history/promtail && chmod -R g+rwX ...
+    user: "10001:0"
     command: -config.file=/etc/promtail/config.yml
     volumes:
       - /opt/song-history/promtail:/etc/promtail
