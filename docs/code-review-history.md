@@ -7,6 +7,59 @@ Each review produces GitHub issues for every significant finding.
 
 ---
 
+## Review 12 — 2026-07-02
+
+**Branch:** `agent/claude/code-review`
+**Reviewer:** Claude Code (full-code-review skill)
+**Focus:** Full ten-persona sweep, code **and** live pi-songs host. Verified the Review-11 host-posture fixes held (no drift): `.env` 600, port 8000 firewall-gated to Prometheus only, `TRUSTED_PROXY=1`, `/metrics` proxy-header-denied + firewalled, `/jobs` 401, reports rate-limited, third-party images digest-pinned. `#452` (fail2ban) remains the only still-open Review-11 item — password auth is now disabled, fail2ban still inactive.
+**Issues created:** #496–#517
+
+### Findings
+
+| Issue | Persona | Title | Severity |
+|-------|---------|-------|----------|
+| #496 | UAT | HTMX date-validation errors (422) silently swallowed — Stats & CCLI Preview appear to do nothing | HIGH |
+| #497 | QA | Extraction has no golden-file regression test that runs in CI (fixture has no committed input deck; assertion is weak) | HIGH |
+| #498 | Developer | `extract_songs` 120s timeout defeated by `ThreadPoolExecutor` blocking shutdown | MED |
+| #499 | Developer | OCR retries permanent 4xx errors (bad key / bad request) 3× with backoff | MED |
+| #500 | Database | Song-list credits/sort nondeterministic for multi-edition songs | MED |
+| #501 | Architect | Heavy synchronous report/xlsx work blocks the event-loop thread | MED |
+| #502 | DevSecOps | Dependabot `docker-compose` ecosystem invalid — deploy/pi images get no update PRs | MED |
+| #503 | DevOps | `/upload` buffers the entire file (up to 200MB) in memory before writing | MED |
+| #504 | Product | Browser Upload, Missing-Services report, and `UPLOAD_PASSWORD` auth gate absent from user docs | MED |
+| #505 | UAT/QA | Extend Playwright E2E to cover interactive HTMX report & upload flows | MED |
+| #506 | QA | Expand mutation-testing scope to `db.py` + `import_service.py` | MED |
+| #507 | QA | Pytest markers aspirational — most tests unmarked, fast-slice broken, guard tests tautological | MED |
+| #508 | Developer | OCR response parsing assumes a text block at `content[0]` | LOW |
+| #509 | Database | `insert_or_update_service` not retry-safe against a concurrent same-service import | LOW |
+| #510 | Architect | `services` schema defined in two disagreeing places (init_schema vs migration 3) | LOW |
+| #511 | Database | copy-events IN-clause unbounded by SQLite variable limit (latent) | LOW |
+| #512 | DevOps | App image deployed via mutable `:latest` tag on pi-songs | LOW |
+| #513 | Security | Traefik API dashboard runs with `insecure: true` (container-internal only today) | LOW |
+| #514 | DevOps | promtail container runs as root; prod watcher healthcheck disabled | LOW |
+| #515 | QA | Docker image smoke test only pings `/health`, exercises no real route | LOW |
+| #516 | Accessibility | WCAG 2.1 AA polish — table header semantics, muted-text contrast, nav `aria-expanded` | LOW |
+| #517 | UAT | HTMX live-search doesn't push URL state — Back button loses search/filters | LOW |
+
+### Grades
+
+| Persona | Grade | Notes |
+|---------|-------|-------|
+| Senior Architect | A- | Clean layering; only smells are the event-loop-blocking report path (#501) and the dual `services` schema definition (#510) |
+| Senior Developer | B+ | Solid logic; a few real edge-case bugs — timeout shutdown blocks (#498), OCR retries permanent 4xx (#499), unguarded `content[0]` (#508) |
+| Senior DevOps | B | Review-11 host fixes verified holding; new gaps — invalid Dependabot ecosystem (#502), app `:latest` (#512), in-memory upload buffer (#503), promtail root (#514) |
+| Senior Security Architect | A- | Parameterized SQL, thorough upload validation (MIME+ext+magic+size), CSRF/CSP/HSTS, auth gates, host fixes held; only defense-in-depth items left (#513, #503) |
+| Senior DevSecOps | B+ | CI supply chain strong (SHA-pinned actions, Trivy-before-push, digest-pinned base); the Dependabot deploy/pi gap leaves the public proxy/tunnel images unpatched (#502) |
+| Senior QA Engineer | B | Large green suite (1275 passing) but the one golden extraction test never runs in CI (#497), mutation scope narrow (#506), markers aspirational + tautological guards (#507, #515) |
+| Product Manager | B+ | Features solid; docs understate the product and omit the only write surface's auth model (#504) |
+| UAT Analyst | B | Strong `/songs` browser coverage, but reports/upload/missing-services HTMX flows untested in a real browser (#505) and a real 422-swallow bug (#496) |
+| Accessibility Specialist | A- | Prior work (skip-nav, live regions, `aria-sort`, table markup) solid and intact; only minor AA stragglers remain (#516) |
+| Database / Data Engineer | B+ | WAL, indexes, read-snapshot pagination, retry-safe inserts largely done; multi-edition nondeterminism (#500) and one non-retry-safe insert path (#509) remain |
+
+**Overall: B+** — a mature, well-tested, and (post-Review-11) well-hardened codebase. This review's findings are mostly refinements, plus one genuine user-facing bug (#496 swallowed date errors) and one real CI blind spot (#497 the golden extraction test never runs).
+
+---
+
 ## Review 11 — 2026-05-26
 
 **Branch:** `agent/claude/review-11-history`
