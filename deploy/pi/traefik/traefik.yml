@@ -33,10 +33,13 @@ providers:
     exposedByDefault: false           # require traefik.enable=true label
     network: song-history_default
 
-# --- API / dashboard (LAN-only, no auth needed) ----------------------------
+# --- API / dashboard --------------------------------------------------------
+# Dashboard disabled on the Pi (#513). `insecure: true` previously exposed the
+# unauthenticated dashboard on :8080, leaking full routing config on a host that
+# also mounts the docker socket. To re-enable for LAN, add a router with an auth
+# middleware on an internal hostname only — never `insecure: true`.
 api:
-  dashboard: true
-  insecure: true                      # dashboard on :8080, LAN-only
+  dashboard: false
 
 # --- Logging ----------------------------------------------------------------
 log:
