@@ -36,8 +36,11 @@ updates:
       day: "monday"
     open-pull-requests-limit: 2
 
-  # Docker Compose images in Pi deploy stack (Traefik, Watchtower) — weekly
-  - package-ecosystem: "docker-compose"
+  # Docker images in Pi deploy stack (Traefik, Promtail, Cloudflared) — weekly.
+  # Uses the "docker" ecosystem (not "docker-compose", which is not a valid
+  # Dependabot ecosystem); since 2024 "docker" scans both Dockerfiles and
+  # docker-compose.yml files in the directory.
+  - package-ecosystem: "docker"
     directory: "/deploy/pi"
     schedule:
       interval: "weekly"
