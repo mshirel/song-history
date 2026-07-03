@@ -16,6 +16,11 @@ from worship_catalog.pptx_reader import (
 # All structural tests use the synthetic_pptx fixture from conftest.py instead (#85).
 _REAL_PPTX = Path(__file__).parent.parent / "data" / "AM Worship 2026.02.15.pptx"
 
+# Committed golden fixture (#497). Unlike the real deck above, this synthetic-but-
+# realistic deck (built by tests/fixtures/build_sample_service.py) and its expected
+# JSON are committed, so the golden test below ALWAYS runs in CI.
+FIXTURES = Path(__file__).parent / "fixtures"
+
 
 @pytest.mark.integration
 class TestPPTXReading:
@@ -183,6 +188,46 @@ class TestExtractionAccuracy:
             assert actual_song.canonical_title == expected_song["canonical_title"]
             assert actual_song.display_title == expected_song["display_title"]
             assert actual_song.publisher == expected_song.get("publisher")
+
+
+@pytest.mark.integration
+class TestCommittedGoldenExtraction:
+    """Golden-file regression on a COMMITTED synthetic deck (#497).
+
+    Unlike ``TestExtractionAccuracy`` (which skips in CI when the uncommittable
+    real deck is absent), this test ALWAYS runs: both the ``.pptx`` fixture and
+    its expected JSON are committed. It asserts the FULL extraction result —
+    ``==`` on the song count (not ``>=``) and every credit field on every song —
+    so a refactor to ``extractor.py``/``pptx_reader.py`` that silently changes
+    parsing output fails CI.
+    """
+
+    def test_extraction_matches_committed_golden(self):
+        result = extract_songs(FIXTURES / "sample_service.pptx")
+        expected = json.loads((FIXTURES / "sample_service.expected.json").read_text())
+
+        # Service-level metadata — asserted in full.
+        assert result.filename == expected["filename"]
+        assert result.service_date == expected["service_date"]
+        assert result.service_name == expected["service_name"]
+        assert result.song_leader == expected["song_leader"]
+        assert result.preacher == expected["preacher"]
+        assert result.sermon_title == expected["sermon_title"]
+
+        # Exact song count (== not >=): an extra/phantom song must fail.
+        assert len(result.songs) == len(expected["songs"])
+
+        # Every song, every field — including the credit fields the old test
+        # ignored (words_by/music_by/arranger/publisher/slide_count).
+        for actual, exp in zip(result.songs, expected["songs"], strict=True):
+            assert actual.ordinal == exp["ordinal"]
+            assert actual.canonical_title == exp["canonical_title"]
+            assert actual.display_title == exp["display_title"]
+            assert actual.publisher == exp.get("publisher")
+            assert actual.words_by == exp.get("words_by")
+            assert actual.music_by == exp.get("music_by")
+            assert actual.arranger == exp.get("arranger")
+            assert actual.slide_count == exp.get("slide_count")
 
 
 # Real worship decks (dev machines only — never committed; these are real service
