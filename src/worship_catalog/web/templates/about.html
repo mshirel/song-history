@@ -16,10 +16,11 @@
 <div class="card">
   <h2>Version and Build Info</h2>
   <table>
-    <tr><td><strong>Version</strong></td><td>{{ version }}</td></tr>
-    <tr><td><strong>Build Date</strong></td><td>{{ build_date }}</td></tr>
-    <tr><td><strong>Python</strong></td><td>{{ python_version }}</td></tr>
-    <tr><td><strong>Database</strong></td><td>{{ db_path }}</td></tr>
+    <caption class="sr-only">Version and build details for this deployment</caption>
+    <tr><th scope="row">Version</th><td>{{ version }}</td></tr>
+    <tr><th scope="row">Build Date</th><td>{{ build_date }}</td></tr>
+    <tr><th scope="row">Python</th><td>{{ python_version }}</td></tr>
+    <tr><th scope="row">Database</th><td>{{ db_path }}</td></tr>
   </table>
 </div>
 

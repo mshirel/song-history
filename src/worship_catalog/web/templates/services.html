@@ -11,26 +11,26 @@
   <div class="card" style="margin-bottom:1rem;">
     {% if start_date or end_date or q_service or q_leader or q_preacher or q_sermon %}
     <div style="text-align:right;margin-bottom:0.5rem;">
-      <a href="/services" style="font-size:0.85rem;color:#6c757d;">Clear all filters</a>
+      <a href="/services" style="font-size:0.85rem;color:var(--text-muted);">Clear all filters</a>
     </div>
     {% endif %}
     <div class="form-grid">
       <div>
         <label for="filter-start-date" style="font-size:0.8rem;font-weight:600;color:#495057;display:block;margin-bottom:0.2rem;">Date From</label>
         <input type="date" id="filter-start-date" name="start_date" value="{{ start_date }}"
-          hx-get="/services" hx-trigger="change" hx-target="#services-results" hx-swap="innerHTML"
+          hx-get="/services" hx-trigger="change" hx-target="#services-results" hx-push-url="true" hx-swap="innerHTML"
           hx-include="#filter-form">
       </div>
       <div>
         <label for="filter-end-date" style="font-size:0.8rem;font-weight:600;color:#495057;display:block;margin-bottom:0.2rem;">Date To</label>
         <input type="date" id="filter-end-date" name="end_date" value="{{ end_date }}"
-          hx-get="/services" hx-trigger="change" hx-target="#services-results" hx-swap="innerHTML"
+          hx-get="/services" hx-trigger="change" hx-target="#services-results" hx-push-url="true" hx-swap="innerHTML"
           hx-include="#filter-form">
       </div>
       <div>
         <label for="filter-service" style="font-size:0.8rem;font-weight:600;color:#495057;display:block;margin-bottom:0.2rem;">Service</label>
         <select id="filter-service" name="q_service"
-          hx-get="/services" hx-trigger="change" hx-target="#services-results" hx-swap="innerHTML"
+          hx-get="/services" hx-trigger="change" hx-target="#services-results" hx-push-url="true" hx-swap="innerHTML"
           hx-include="#filter-form">
           <option value="">All services</option>
           {% for name in service_names %}
@@ -41,7 +41,7 @@
       <div>
         <label for="filter-leader" style="font-size:0.8rem;font-weight:600;color:#495057;display:block;margin-bottom:0.2rem;">Song Leader</label>
         <select id="filter-leader" name="q_leader"
-          hx-get="/services" hx-trigger="change" hx-target="#services-results" hx-swap="innerHTML"
+          hx-get="/services" hx-trigger="change" hx-target="#services-results" hx-push-url="true" hx-swap="innerHTML"
           hx-include="#filter-form">
           <option value="">All leaders</option>
           {% for leader in leaders %}
@@ -52,7 +52,7 @@
       <div>
         <label for="filter-preacher" style="font-size:0.8rem;font-weight:600;color:#495057;display:block;margin-bottom:0.2rem;">Preacher</label>
         <select id="filter-preacher" name="q_preacher"
-          hx-get="/services" hx-trigger="change" hx-target="#services-results" hx-swap="innerHTML"
+          hx-get="/services" hx-trigger="change" hx-target="#services-results" hx-push-url="true" hx-swap="innerHTML"
           hx-include="#filter-form">
           <option value="">All preachers</option>
           {% for preacher in preachers %}
@@ -63,7 +63,7 @@
       <div>
         <label for="filter-sermon" style="font-size:0.8rem;font-weight:600;color:#495057;display:block;margin-bottom:0.2rem;">Sermon</label>
         <input type="text" id="filter-sermon" name="q_sermon" value="{{ q_sermon }}" placeholder="filter…"
-          hx-get="/services" hx-trigger="input changed delay:300ms" hx-target="#services-results" hx-swap="innerHTML"
+          hx-get="/services" hx-trigger="input changed delay:300ms" hx-target="#services-results" hx-push-url="true" hx-swap="innerHTML"
           hx-include="#filter-form">
       </div>
     </div>

@@ -7,11 +7,12 @@
 <div class="card" style="padding:0;">
   <div class="table-wrap">
   <table>
+    <caption class="sr-only">Song leaders with service counts and links to leader-specific top songs</caption>
     <thead>
       <tr>
-        <th>Leader</th>
-        <th style="text-align:right;">Services</th>
-        <th></th>
+        <th scope="col">Leader</th>
+        <th scope="col" style="text-align:right;">Services</th>
+        <th scope="col"><span class="sr-only">Actions</span></th>
       </tr>
     </thead>
     <tbody>
@@ -29,6 +30,6 @@
   </div>
 </div>
 {% else %}
-<p style="color:#6c757d;">No leaders found. Import some services first.</p>
+<p style="color:var(--text-muted);">No leaders found. Import some services first.</p>
 {% endif %}
 {% endblock %}

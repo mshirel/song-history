@@ -89,6 +89,24 @@ class TestSongsPageHTMX:
         assert browser_page.locator("tbody").count() > 0
         assert browser_page.url  # no crash/redirect
 
+    def test_songs_search_survives_back_button(self, browser_page) -> None:
+        """HTMX search should push URL state so browser Back restores the filter."""
+        browser_page.goto(f"{BASE_URL}/songs")
+        browser_page.wait_for_load_state("networkidle")
+
+        browser_page.fill('input[name="q"]', "grace")
+        browser_page.wait_for_timeout(500)
+
+        link = browser_page.locator("#song-tbody tr td a").first
+        if link.count() == 0:
+            pytest.skip("No song rows in the DB to open")
+        link.click()
+        browser_page.wait_for_load_state("networkidle")
+        browser_page.go_back()
+        browser_page.wait_for_load_state("networkidle")
+
+        assert browser_page.input_value('input[name="q"]') == "grace"
+
 
 @pytest.mark.e2e
 class TestServicesPageHTMX:
@@ -259,7 +277,7 @@ class TestMobileResponsive:
         assert "/songs/" in browser_page.url, "Tapping a song row did not open the detail page"
 
     def test_nav_toggle_reveals_links_mobile(self, browser_page) -> None:
-        """Nav links are hidden until the CSS-only hamburger is toggled (no JS)."""
+        """Nav links are hidden until the hamburger is toggled."""
         browser_page.set_viewport_size(self.MOBILE)
         browser_page.goto(f"{BASE_URL}/songs")
         browser_page.wait_for_load_state("networkidle")
@@ -270,3 +288,14 @@ class TestMobileResponsive:
 
         browser_page.click("label[for='nav-toggle']")
         assert services_link.is_visible(), "Hamburger toggle did not reveal the nav links"
+
+    def test_nav_toggle_exposes_expanded_state(self, browser_page) -> None:
+        """The nav toggle should expose open/closed state to assistive tech."""
+        browser_page.set_viewport_size(self.MOBILE)
+        browser_page.goto(f"{BASE_URL}/songs")
+        browser_page.wait_for_load_state("networkidle")
+
+        toggle = browser_page.locator("#nav-toggle")
+        assert toggle.get_attribute("aria-expanded") == "false"
+        browser_page.click("label[for='nav-toggle']")
+        assert toggle.get_attribute("aria-expanded") == "true"

@@ -2,7 +2,7 @@
 {% block title %}Songs — Highland Worship Catalog{% endblock %}
 {% block content %}
 <h1>Song Library</h1>
-<p style="color:#6c757d;margin-top:-0.75rem;margin-bottom:1rem;">
+<p style="color:var(--text-muted);margin-top:-0.75rem;margin-bottom:1rem;">
   {{ library_size }} unique song{{ "s" if library_size != 1 else "" }} in the library
 </p>
 
@@ -22,12 +22,13 @@
     hx-get="/songs"
     hx-trigger="input changed delay:300ms, search"
     hx-target="#songs-results"
+    hx-push-url="true"
     hx-swap="innerHTML"
     hx-include="[name='q'],[name='sort'],[name='sort_dir']"
     hx-indicator="#spinner"
     autofocus
   >
-  <span id="spinner" class="htmx-indicator" style="align-self:center;color:#6c757d;font-size:0.85rem;">searching…</span>
+  <span id="spinner" class="htmx-indicator" style="align-self:center;color:var(--text-muted);font-size:0.85rem;">searching…</span>
 </div>
 
 {# Search/sort swaps this whole region (table + footer) so pagination never

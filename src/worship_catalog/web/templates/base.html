@@ -6,6 +6,11 @@
   <title>{% block title %}Highland Worship Catalog{% endblock %}</title>
   <script src="/static/htmx.min.js"></script>
   <style>
+    :root {
+      --text-muted: #5c636a;
+      --text-subtle: #495057;
+    }
+
     *, *::before, *::after { box-sizing: border-box; }
 
     body {
@@ -30,7 +35,7 @@
     nav a { color: #ccc; text-decoration: none; font-size: 0.95rem; }
     nav a:hover, nav a.active { color: #fff; }
 
-    /* CSS-only hamburger: hidden checkbox toggles .nav-links on small screens (no JS, CSP-safe). */
+    /* Checkbox controls the mobile nav; nav.js mirrors its state to aria-expanded. */
     #nav-toggle { position: absolute; opacity: 0; width: 1px; height: 1px; }
     .nav-burger { display: none; cursor: pointer; color: #fff; font-size: 1.5rem; line-height: 1; padding: 0.25rem 0.5rem; margin-left: auto; }
     #nav-toggle:focus-visible + .nav-burger { outline: 2px solid #fff; outline-offset: 2px; }
@@ -148,7 +153,7 @@
 <nav>
   <img src="/static/highland-logo.png" alt="Highland logo" class="brand-logo">
   <span class="brand">Highland Worship Catalog</span>
-  <input type="checkbox" id="nav-toggle" aria-label="Toggle navigation menu">
+  <input type="checkbox" id="nav-toggle" aria-label="Toggle navigation menu" aria-expanded="false">
   <label class="nav-burger" for="nav-toggle"><span aria-hidden="true">&#9776;</span><span class="sr-only">Menu</span></label>
   <div class="nav-links">
     <a href="/songs" {% if request.url.path.startswith('/songs') %}class="active"{% endif %}>Songs</a>
@@ -163,5 +168,6 @@
 <main id="main">
   {% block content %}{% endblock %}
 </main>
+<script src="/static/nav.js"></script>
 </body>
 </html>

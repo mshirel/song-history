@@ -2,7 +2,7 @@
 {% block title %}{{ leader }} — Top Songs — Highland Worship Catalog{% endblock %}
 {% block content %}
 <h1>{{ leader }}</h1>
-<p style="color:#6c757d;">{{ service_count }} service{{ 's' if service_count != 1 else '' }} led</p>
+<p style="color:var(--text-muted);">{{ service_count }} service{{ 's' if service_count != 1 else '' }} led</p>
 
 {% if warning_few_services %}
 <div style="background:#fff3cd;border:1px solid #ffc107;border-radius:4px;padding:0.75rem 1rem;margin-bottom:1rem;font-size:0.9rem;">
@@ -18,18 +18,19 @@
 <div class="card" style="padding:0;">
   <div class="table-wrap">
   <table>
+    <caption class="sr-only">Top songs led by {{ leader }}</caption>
     <thead>
       <tr>
-        <th>#</th>
-        <th>Title</th>
-        <th>Credits</th>
-        <th style="text-align:right;">Count</th>
+        <th scope="col">#</th>
+        <th scope="col">Title</th>
+        <th scope="col">Credits</th>
+        <th scope="col" style="text-align:right;">Count</th>
       </tr>
     </thead>
     <tbody>
       {% for song in top_songs %}
       <tr>
-        <td style="color:#6c757d;">{{ loop.index }}</td>
+        <td style="color:var(--text-muted);">{{ loop.index }}</td>
         <td><a href="/songs/{{ song.song_id }}">{{ song.display_title }}</a></td>
         <td style="font-size:0.85rem;color:#495057;">
           {%- set parts = [] -%}
@@ -45,7 +46,7 @@
   </div>
 </div>
 {% else %}
-<p style="color:#6c757d;">No songs have been led at {{ min_count }}+ services.</p>
+<p style="color:var(--text-muted);">No songs have been led at {{ min_count }}+ services.</p>
 {% endif %}
 
 <div style="margin-top:1.5rem;">
