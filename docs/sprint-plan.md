@@ -6,12 +6,8 @@ Current sprint planning mirror for `highland/song-history`.
 - This document mirrors the current **non-deferred** open backlog only.
 - Deferred issues are intentionally excluded from the sprint scopes below, even
   if they still sit on a milestone in GitHub.
-
-## Sprint 2 - Deploy & supply-chain hardening
-
-Focus: finish the remaining public-host hardening item on `pi-songs`.
-
-- #452 `sec`: pi-songs SSH allows password auth with no fail2ban
+- Sprint 2, Sprint 4, and Sprint 5 backlog items were closed overnight on
+  2026-07-03/2026-07-04 and are intentionally absent from the active plan.
 
 ## Sprint 3 - Data layer & reliability
 
@@ -25,27 +21,6 @@ runtime reliability in the web/import stack.
 - #509 `data`: `insert_or_update_service` not retry-safe against a concurrent same-service import
 - #510 `arch`: services schema defined in two disagreeing places
 - #511 `data`: copy-events `IN` clause unbounded by SQLite variable limit
-- #529 `dev`: leader-filtered stats report returns unrelated events when no services match
-
-## Sprint 4 - Test strategy & OCR
-
-Focus: test-suite sliceability, stronger regression coverage, and OCR failure handling.
-
-- #499 `dev`: OCR retries permanent 4xx errors 3x with backoff
-- #505 `qa/uat`: extend Playwright E2E to cover interactive HTMX report and upload flows
-- #506 `qa`: expand mutation-testing scope to `db.py` and `import_service.py`
-- #507 `qa`: pytest markers aspirational; fast-slice and guard tests need cleanup
-- #508 `dev`: OCR response parsing assumes a text block at `content[0]`
-- #530 `qa`: make e2e modules safe to collect during `pytest -m "not e2e"`
-
-## Sprint 5 - UX, a11y & docs
-
-Focus: browser usability, accessibility polish, and user-facing docs for the public web UI.
-
-- #470 `enhancement`: report-page song-leader filter dropdown
-- #504 `pm`: document browser Upload, Missing-Services report, and `UPLOAD_PASSWORD` auth gate
-- #516 `a11y`: WCAG 2.1 AA polish for table semantics, contrast, and nav state
-- #517 `uat`: HTMX live-search should push URL state so Back preserves filters
 
 ## Sprint 6 - Extraction edge cases
 
