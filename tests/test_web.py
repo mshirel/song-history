@@ -3,6 +3,7 @@
 import io
 import json
 import os
+import re
 import sqlite3
 import uuid as _uuid_mod
 from pathlib import Path
@@ -72,6 +73,7 @@ class TestSongsPage:
         """HTMX requests return the results region only (no full-page chrome)."""
         response = client.get("/songs?q=Amazing", headers={"HX-Request": "true"})
         assert response.status_code == 200
+        assert response.headers["Vary"] == "HX-Request, HX-History-Restore-Request"
         assert "Amazing Grace" in response.text
         # Partial must not include the base layout chrome.
         lowered = response.text.lower()
@@ -80,6 +82,17 @@ class TestSongsPage:
         # ...but it now carries the table + pagination footer so the footer
         # stays in sync with the rows (#386).
         assert "<tbody" in response.text
+
+    def test_songs_history_restore_returns_full_page(self, client):
+        """HTMX history restoration must receive the full songs page shell."""
+        response = client.get(
+            "/songs?q=Amazing",
+            headers={"HX-Request": "true", "HX-History-Restore-Request": "true"},
+        )
+        assert response.status_code == 200
+        assert response.headers["Vary"] == "HX-Request, HX-History-Restore-Request"
+        assert "<html" in response.text.lower() or "<!doctype" in response.text.lower()
+        assert 'name="q"' in response.text
 
     def test_songs_empty_search_returns_all(self, client):
         response = client.get("/songs?q=")
@@ -126,6 +139,31 @@ class TestReportsPage:
         response = client.get("/reports")
         assert "stats" in response.text.lower()
         assert "/reports/stats" in response.text
+
+    def test_reports_page_uses_leader_select_not_text_input(self, client):
+        body = client.get("/reports").text
+        assert '<input type="text" id="stats-leader"' not in body
+        assert re.search(r'<select[^>]*name="leader"', body)
+
+    def test_reports_page_leader_select_has_all_leaders_default(self, client):
+        body = client.get("/reports").text
+        assert re.search(r'<option value="">\s*All leaders\s*</option>', body)
+
+    def test_reports_page_leader_select_is_populated(self, client, db_with_songs):
+        body = client.get("/reports").text
+        db = Database(db_with_songs)
+        db.connect()
+        for leader in db.query_distinct_song_leaders():
+            assert f'<option value="{leader}">' in body
+        db.close()
+
+    def test_reports_page_leader_select_has_associated_label(self, client):
+        body = client.get("/reports").text
+        match = re.search(r'<select[^>]*id="([^"]+)"[^>]*name="leader"', body) or re.search(
+            r'<select[^>]*name="leader"[^>]*id="([^"]+)"', body,
+        )
+        assert match, "leader select needs an id for label association"
+        assert f'for="{match.group(1)}"' in body
 
 
 class TestMissingServicesReport:
@@ -285,6 +323,7 @@ class TestStatsReport:
         )
         assert response.status_code == 200
         assert "Amazing Grace" in response.text  # Matt led this service
+        assert "Matt" in response.text
 
     def test_stats_leader_filter_no_match(self, client):
         """Leader filter with no matching services shows empty state."""
@@ -376,6 +415,17 @@ class TestServicesListPage:
     def test_services_page_links_to_detail(self, client, db_with_songs):
         response = client.get("/services")
         assert "/services/" in response.text
+
+    def test_services_history_restore_returns_full_page(self, client):
+        """HTMX history restoration must receive the full services page shell."""
+        response = client.get(
+            "/services?q_leader=Matt",
+            headers={"HX-Request": "true", "HX-History-Restore-Request": "true"},
+        )
+        assert response.status_code == 200
+        assert response.headers["Vary"] == "HX-Request, HX-History-Restore-Request"
+        assert "<html" in response.text.lower() or "<!doctype" in response.text.lower()
+        assert 'id="filter-form"' in response.text
 
     def test_services_empty_db_shows_message(self, client, tmp_path, monkeypatch):
         empty_db = tmp_path / "empty.db"
@@ -3215,19 +3265,52 @@ class TestResponsiveLayout:
             "Services table is not wrapped in a .table-wrap scroll container"
         )
 
-    def test_nav_has_css_only_toggle(self, client):
-        """Mobile nav must collapse via a CSS-only checkbox toggle (no JS, CSP-safe)."""
+    def test_nav_has_mobile_toggle(self, client):
+        """Mobile nav must keep the checkbox toggle and remain CSP-safe."""
         resp = client.get("/songs")
         assert resp.status_code == 200
         html = resp.text
         assert 'id="nav-toggle"' in html, "No #nav-toggle checkbox for the hamburger menu"
         assert 'for="nav-toggle"' in html, "No <label for=nav-toggle> hamburger control"
+        assert 'aria-expanded="false"' in html, "Nav toggle must expose collapsed state"
+        assert "/static/nav.js" in html, "Nav toggle state script must be loaded from /static/"
         # The toggle must not introduce any new inline script (CSP blocks inline JS).
-        import re
         inline_scripts = re.findall(r"<script(?![^>]*\bsrc\b)[^>]*>", html)
         assert not inline_scripts, (
             f"Nav added {len(inline_scripts)} inline <script> tag(s) blocked by CSP"
         )
+
+    def test_songs_search_pushes_url_state(self, client):
+        html = client.get("/songs").text
+        assert 'hx-push-url="true"' in html
+        assert "hx-history-elt" in html
+        assert '"historyCacheSize":0' in html
+        assert '"refreshOnHistoryMiss":true' in html
+
+    def test_services_filters_push_url_state(self, client):
+        html = client.get("/services").text
+        assert html.count('hx-push-url="true"') >= 6
+        assert "hx-history-elt" in html
+
+    def test_leaders_table_headers_have_scope(self, client):
+        body = client.get("/leaders").text
+        assert "<th></th>" not in body
+        assert 'scope="col"' in body
+        assert "<caption" in body
+
+    def test_about_build_table_uses_row_headers_and_caption(self, client):
+        body = client.get("/about").text
+        assert "<caption" in body
+        assert 'scope="row"' in body
+
+    def test_song_detail_history_table_has_caption(self, client):
+        body = client.get("/songs/1").text
+        assert "<caption" in body
+
+    def test_top_songs_table_has_caption(self, client):
+        body = client.get("/leaders/Matt/top-songs").text
+        if "<table" in body:
+            assert "<caption" in body
 
 
 class TestHtmxSelfHosted:

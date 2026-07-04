@@ -615,6 +615,17 @@ async def root() -> RedirectResponse:
     return RedirectResponse(url="/songs")
 
 
+def _is_htmx_history_restore(request: Request) -> bool:
+    """True when HTMX is replaying browser history and needs the full page shell."""
+    return request.headers.get("HX-History-Restore-Request", "").lower() == "true"
+
+
+def _set_htmx_vary_headers(response: HTMLResponse) -> HTMLResponse:
+    """Separate HTMX fragment responses from full-page browser navigations in caches."""
+    response.headers["Vary"] = "HX-Request, HX-History-Restore-Request"
+    return response
+
+
 @app.get("/songs", response_class=HTMLResponse)
 async def songs(
     request: Request,
@@ -641,16 +652,24 @@ async def songs(
     }
     # HTMX search/sort swaps the whole #songs-results region (table + footer)
     # so the pagination footer never drifts from the rows shown (#386).
-    template = "_songs_results.html" if request.headers.get("HX-Request") else "songs.html"
-    return templates.TemplateResponse(request, template, context)
+    template = (
+        "songs.html"
+        if _is_htmx_history_restore(request) or not request.headers.get("HX-Request")
+        else "_songs_results.html"
+    )
+    return _set_htmx_vary_headers(templates.TemplateResponse(request, template, context))
 
 
 @app.get("/reports", response_class=HTMLResponse)
-async def reports_page(request: Request) -> HTMLResponse:
+async def reports_page(
+    request: Request,
+    db: Database = Depends(get_db),  # noqa: B008
+) -> HTMLResponse:
     return templates.TemplateResponse(
         request,
         "reports.html",
         {
+            "leaders": db.query_distinct_song_leaders(),
             "window_options": WINDOW_OPTIONS,
             "default_window": str(DEFAULT_WINDOW_DAYS),
         },
@@ -1029,12 +1048,14 @@ async def services_list(
         "q_sermon": q_sermon, "start_date": start_date, "end_date": end_date,
         "page": page, "per_page": per_page, "total_pages": total_pages, "total": total,
     }
-    if request.headers.get("HX-Request"):
-        return templates.TemplateResponse(request, "_services_results.html", ctx)
+    if request.headers.get("HX-Request") and not _is_htmx_history_restore(request):
+        return _set_htmx_vary_headers(
+            templates.TemplateResponse(request, "_services_results.html", ctx)
+        )
     ctx["service_names"] = db.query_distinct_service_names()
     ctx["leaders"] = db.query_distinct_song_leaders()
     ctx["preachers"] = db.query_distinct_preachers()
-    return templates.TemplateResponse(request, "services.html", ctx)
+    return _set_htmx_vary_headers(templates.TemplateResponse(request, "services.html", ctx))
 
 
 @app.get("/services/{service_id}", response_class=HTMLResponse)
@@ -1425,5 +1446,3 @@ async def get_job(
     if job is None:
         raise HTTPException(status_code=404, detail="Job not found")
     return JSONResponse(content=job)
-
-

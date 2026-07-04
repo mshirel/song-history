@@ -318,12 +318,23 @@ Open `http://localhost:8000`.
 | Song Detail | `/songs/{id}` | Full service history for a single song |
 | Services | `/services` | Filterable, sortable list of all imported services |
 | Service Detail | `/services/{id}` | Complete setlist and metadata for a single service |
-| Reports | `/reports` | Generate CCLI CSV download or view stats report in browser |
+| Reports | `/reports` | Generate CCLI CSV download, stats report, or missing-services report |
+| Upload | `/upload` | Browser upload flow for importing a PPTX slide deck |
+| About | `/about` | App purpose, version, build metadata, and source link |
 | Health | `/health` | Returns `{"status": "ok"}` — used by Docker healthcheck |
 
 **Songs page:** search filters live as you type; click any column header to sort.
 **Services page:** filter by date range, service name, song leader, preacher, or sermon title; click headers to sort.
-**Reports:** stats report supports date range, song leader filter (partial match), and top-20 vs all-songs toggle.
+**Reports:** stats report supports date range, leader dropdown, and top-20 vs all-songs toggle. Missing Services is available under the same page.
+
+### Browser Uploading
+
+`/upload` is the browser-first path for church volunteers to add a worship deck without using the CLI.
+
+- If `UPLOAD_PASSWORD` is unset, `/upload` stays open and any visitor can submit a `.pptx`.
+- If `UPLOAD_PASSWORD` is set, `/upload` requires HTTP Basic auth. The page shows a `Log in to upload` button that links to `/upload?login=1`, which triggers the browser login prompt.
+- `UPLOAD_USERNAME` defaults to `highland` when unset; set it if you want a different username shown in the Basic-auth dialog.
+- The same auth gate also protects `/jobs` and Missing Services edit actions.
 
 ---
 

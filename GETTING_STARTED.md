@@ -118,8 +118,21 @@ Open **http://localhost:8000** to access:
 | Services         | `/services`       | Filterable list of all imported services          |
 | Service Detail   | `/services/{id}`  | Setlist and metadata for a service                |
 | Leaders          | `/leaders`        | Song leader directory with top songs              |
-| Reports          | `/reports`        | Generate CCLI CSV or stats report in browser      |
+| Reports          | `/reports`        | Generate stats, CCLI CSV, or missing-services reports |
+| Upload           | `/upload`         | Browser upload flow for importing a PPTX deck     |
+| About            | `/about`          | App overview plus version and build details       |
 | Health           | `/health`         | `{"status": "ok"}` for Docker healthcheck         |
+
+---
+
+### Uploading In The Browser
+
+The `/upload` page is the easiest way for a church volunteer to add a slide deck.
+
+- When `UPLOAD_PASSWORD` is unset, browser upload is open by default.
+- When `UPLOAD_PASSWORD` is set, `/upload` shows a `Log in to upload` button. Opening `/upload?login=1` triggers the browser's HTTP Basic-auth prompt.
+- `UPLOAD_USERNAME` defaults to `highland` if you do not set it explicitly.
+- The same credentials are required for `/jobs` and for editing exclusions in the Missing Services report.
 
 ---
 
