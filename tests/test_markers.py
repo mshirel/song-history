@@ -5,6 +5,37 @@ Also verifies mutation testing tooling is installed (issue #90).
 
 import subprocess
 import sys
+from collections.abc import Sequence
+
+
+def _run_pytest_collect(args: Sequence[str]) -> subprocess.CompletedProcess[str]:
+    """Run pytest collection and return the completed process."""
+    return subprocess.run(
+        [sys.executable, "-m", "pytest", *args],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def _parse_collect_counts(output: str) -> tuple[int, int]:
+    """Return (selected, deselected) from quiet collect-only output."""
+    import re
+
+    no_tests = re.search(r"no tests collected(?: \((\d+) deselected\))?", output)
+    if no_tests:
+        return 0, int(no_tests.group(1) or 0)
+
+    match = re.search(r"(\d+)(?:/(\d+))? tests? collected(?: \((\d+) deselected\))?", output)
+    assert match, f"Could not parse collection counts from output:\n{output}"
+
+    if match.group(2) is not None:
+        selected = int(match.group(1))
+        deselected = int(match.group(3) or 0)
+    else:
+        selected = int(match.group(1))
+        deselected = 0
+    return selected, deselected
 
 
 def test_slow_marker_is_registered() -> None:
@@ -50,24 +81,20 @@ def test_not_slow_excludes_marked_tests() -> None:
     Collects tests from test_backup_sh.py and asserts none are selected when
     ``-m 'not slow'`` is active (all backup tests carry @pytest.mark.slow).
     """
-    result = subprocess.run(
+    result = _run_pytest_collect(
         [
-            sys.executable, "-m", "pytest",
             "tests/test_backup_sh.py",
-            "-m", "not slow",
-            "--collect-only", "-q",
+            "-m",
+            "not slow",
+            "--collect-only",
+            "-q",
             "--no-header",
             "--no-cov",
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
+        ]
     )
-    # All backup tests are marked slow, so none should appear in the collected list
-    assert "test_backup" not in result.stdout or "deselected" in result.stdout, (
-        "Expected all backup tests to be deselected by -m 'not slow'. "
-        f"Output:\n{result.stdout}"
-    )
+    selected, deselected = _parse_collect_counts(result.stdout)
+    assert selected == 0, f"Expected all backup tests to be deselected, got:\n{result.stdout}"
+    assert deselected > 0, f"Expected backup tests to count as deselected, got:\n{result.stdout}"
 
 
 def test_e2e_marker_is_registered() -> None:
@@ -108,7 +135,6 @@ class TestIntegrationSkipBehavior:
 
     def test_integration_marker_is_registered(self, pytestconfig):
         """The 'integration' marker must be a known pytest marker (in pyproject.toml)."""
-        markers = {m.name for m in pytestconfig.getini("markers") if hasattr(m, "name")}
         # Fallback: check via string representation of registered markers
         marker_strings = pytestconfig.getini("markers")
         registered_names = set()
@@ -131,25 +157,43 @@ class TestIntegrationSkipBehavior:
         file is absent — that is expected and correct behaviour.  The count below
         verifies there are DB-only integration tests that always run.
         """
-        result = subprocess.run(
+        result = _run_pytest_collect(
             [
-                sys.executable, "-m", "pytest",
-                "-m", "integration",
-                "--collect-only", "-q",
+                "-m",
+                "integration",
+                "--collect-only",
+                "-q",
                 "--no-header",
                 "--no-cov",
-            ],
-            capture_output=True,
-            text=True,
-            check=False,
+            ]
         )
         # The output line "N/M tests collected (K deselected)" should show N > 0.
         # We just assert the command succeeded and found some integration tests.
         assert result.returncode == 0, (
             f"pytest collect for integration tests failed:\n{result.stderr}"
         )
-        # There should be integration tests collected — if count is 0 the test suite
-        # has lost coverage of DB-layer integration paths.
-        assert "collected" in result.stdout or "test" in result.stdout, (
-            f"No integration tests found in collection output:\n{result.stdout}"
-        )
+        selected, _ = _parse_collect_counts(result.stdout)
+        assert selected >= 5, f"Expected at least 5 integration tests, got:\n{result.stdout}"
+
+
+def test_all_tests_are_sliceable_by_runtime_markers() -> None:
+    """Every test should land in at least one of the runtime markers."""
+    total = _run_pytest_collect(["--collect-only", "-q", "--no-header", "--no-cov"])
+    marked = _run_pytest_collect(
+        [
+            "-m",
+            "unit or integration or slow or e2e",
+            "--collect-only",
+            "-q",
+            "--no-header",
+            "--no-cov",
+        ]
+    )
+    assert total.returncode == 0, f"Full collection failed:\n{total.stderr}"
+    assert marked.returncode == 0, f"Marked collection failed:\n{marked.stderr}"
+    total_selected, _ = _parse_collect_counts(total.stdout)
+    marked_selected, _ = _parse_collect_counts(marked.stdout)
+    assert marked_selected == total_selected, (
+        "Some tests are still outside the marker slices.\n"
+        f"Full: {total.stdout}\nMarked: {marked.stdout}"
+    )

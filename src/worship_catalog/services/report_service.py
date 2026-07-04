@@ -29,7 +29,11 @@ def compute_stats_data(
     """
     services = db.query_services(start_date, end_date, song_leader=leader or None)
     service_ids = [s["id"] for s in services]
-    events = db.query_copy_events(start_date, end_date, service_ids=service_ids or None)
+    events = (
+        db.query_copy_events(start_date, end_date, service_ids=service_ids)
+        if service_ids
+        else []
+    )
 
     # Count distinct services per song title (not raw copy-event rows).
     # A song with multiple copy events in one service (e.g., projection + recording)

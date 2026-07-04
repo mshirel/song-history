@@ -51,6 +51,14 @@ Because the host serves a public tunnel, lock it down. Codified in the repo:
   `deploy/pi/firewall/docker-user-firewall.sh` + its systemd unit (#447).
 - **Key-only SSH** — install `deploy/pi/ssh/00-hardening.conf` (the `00-` prefix
   must sort before `50-cloud-init.conf`); `PasswordAuthentication no` (#452).
+- **fail2ban for SSH** — install `fail2ban`, copy
+  `deploy/pi/fail2ban/jail.d/sshd.local` into `/etc/fail2ban/jail.d/`, then
+  `sudo systemctl enable --now fail2ban`. Verify with
+  `systemctl is-active fail2ban` and `sudo fail2ban-client status sshd` (#452).
+  On Ubuntu Noble / Python 3.12, the distro `fail2ban` package also needs the
+  `asynchat` compatibility module; install `pyasynchat` into
+  `/usr/local/lib/python3.12/dist-packages/asynchat` before starting the
+  service if the journal shows `No module named 'asynchat'`.
 - **Token rotation** — if `.env` was ever world-readable, rotate the Cloudflare
   API token and tunnel token in the Cloudflare dashboard (#446).
 - **promtail runs non-root** (`user: "10001:0"`, #514) — least privilege on the
@@ -88,7 +96,7 @@ Install **Raspberry Pi OS Lite 64-bit** (no desktop). Enable SSH during flash wi
 sudo apt-get update && sudo apt-get upgrade -y
 curl -fsSL https://get.docker.com | sh
 sudo usermod -aG docker $USER
-sudo apt-get install -y sqlite3   # needed by backup.sh
+sudo apt-get install -y sqlite3 fail2ban   # backup + SSH hardening
 # Log out and back in for docker group change to take effect
 ```
 

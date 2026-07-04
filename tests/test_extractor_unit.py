@@ -425,7 +425,6 @@ class TestPptxSizeLimits:
 
     def test_file_within_limit_is_accepted(self, tmp_path: Path) -> None:
         """A small PPTX within size limit is not rejected by size check."""
-        from tests.test_extractor_unit import TestExtractSongsFileHash
         pptx_bytes = TestExtractSongsFileHash()._minimal_pptx()
         small_file = tmp_path / "small.pptx"
         small_file.write_bytes(pptx_bytes)
@@ -482,7 +481,6 @@ class TestExtractionLogging:
     def test_extract_songs_logs_song_count(self, tmp_path, caplog):
         """extract_songs() should log how many songs were found."""
         import logging
-        from tests.test_extractor_unit import TestExtractSongsFileHash
 
         pptx_bytes = TestExtractSongsFileHash()._minimal_pptx()
         pptx_path = tmp_path / "test.pptx"

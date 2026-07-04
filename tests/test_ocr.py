@@ -1,7 +1,7 @@
 """Tests for worship_catalog.ocr — Vision API credit extraction."""
 
 import sys
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -348,7 +348,7 @@ class TestOcrNamePatternValidation:
         assert result is not None
 
     def test_end_to_end_keywords_no_name_returns_none_from_api(self, monkeypatch):
-        """Full pipeline: API returns keywords-only text → extract_credits_via_vision returns None."""
+        """Full pipeline: keywords-only OCR text should be rejected."""
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
         mock_anthropic = MagicMock()
         mock_client = MagicMock()
@@ -368,9 +368,9 @@ class TestRetryLogic:
         """Return a mock anthropic module with an Anthropic class."""
         mock_anthropic = MagicMock()
         mock_anthropic.RateLimitError = type("RateLimitError", (Exception,), {})
-        mock_anthropic.APIStatusError = type(
-            "APIStatusError", (Exception,), {"status_code": 500}
-        )
+        mock_anthropic.InternalServerError = type("InternalServerError", (Exception,), {})
+        mock_anthropic.APIConnectionError = type("APIConnectionError", (Exception,), {})
+        mock_anthropic.AuthenticationError = type("AuthenticationError", (Exception,), {})
         return mock_anthropic
 
     def test_max_retries_constant_is_3(self):
@@ -427,6 +427,22 @@ class TestRetryLogic:
         with patch.dict(sys.modules, {"anthropic": mock_anthropic}):
             with patch("time.sleep") as mock_sleep:
                 with pytest.raises(ValueError):
+                    extract_credits_via_vision(b"\xff\xd8\x00\x00")
+
+        assert mock_client.messages.create.call_count == 1
+        mock_sleep.assert_not_called()
+
+    def test_authentication_errors_are_not_retried(self, monkeypatch):
+        """Permanent 4xx auth failures should fail fast without backoff."""
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        mock_anthropic = self._make_mock_anthropic()
+        mock_client = MagicMock()
+        mock_anthropic.Anthropic.return_value = mock_client
+        mock_client.messages.create.side_effect = mock_anthropic.AuthenticationError("bad key")
+
+        with patch.dict(sys.modules, {"anthropic": mock_anthropic}):
+            with patch("time.sleep") as mock_sleep:
+                with pytest.raises(mock_anthropic.AuthenticationError, match="bad key"):
                     extract_credits_via_vision(b"\xff\xd8\x00\x00")
 
         assert mock_client.messages.create.call_count == 1
@@ -513,7 +529,7 @@ class TestValidateOcrOutput:
         assert result is not None
 
 
-class TestExtractCreditsViaVision:
+class TestExtractCreditsViaVisionMockedResponses:
     """Tests for the Vision API call with mocked client (#339)."""
 
     def test_returns_none_when_api_says_none(self, monkeypatch):
@@ -525,7 +541,8 @@ class TestExtractCreditsViaVision:
         mock_anthropic = MagicMock()
         mock_anthropic.Anthropic.return_value = mock_client
         mock_anthropic.RateLimitError = type("RateLimitError", (Exception,), {})
-        mock_anthropic.APIStatusError = type("APIStatusError", (Exception,), {})
+        mock_anthropic.InternalServerError = type("InternalServerError", (Exception,), {})
+        mock_anthropic.APIConnectionError = type("APIConnectionError", (Exception,), {})
         monkeypatch.setitem(sys.modules, "anthropic", mock_anthropic)
         # Re-import to pick up the mock
         result = extract_credits_via_vision(b"\xff\xd8fake-jpeg")
@@ -540,7 +557,8 @@ class TestExtractCreditsViaVision:
         mock_anthropic = MagicMock()
         mock_anthropic.Anthropic.return_value = mock_client
         mock_anthropic.RateLimitError = type("RateLimitError", (Exception,), {})
-        mock_anthropic.APIStatusError = type("APIStatusError", (Exception,), {})
+        mock_anthropic.InternalServerError = type("InternalServerError", (Exception,), {})
+        mock_anthropic.APIConnectionError = type("APIConnectionError", (Exception,), {})
         monkeypatch.setitem(sys.modules, "anthropic", mock_anthropic)
         result = extract_credits_via_vision(b"\xff\xd8fake-jpeg")
         assert result is not None
@@ -550,3 +568,33 @@ class TestExtractCreditsViaVision:
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         with pytest.raises(OSError, match="ANTHROPIC_API_KEY"):
             extract_credits_via_vision(b"\xff\xd8fake")
+
+    def test_returns_none_for_empty_content_blocks(self, monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+        msg = MagicMock()
+        msg.content = []
+        mock_client = MagicMock()
+        mock_client.messages.create.return_value = msg
+        mock_anthropic = MagicMock()
+        mock_anthropic.Anthropic.return_value = mock_client
+        mock_anthropic.RateLimitError = type("RateLimitError", (Exception,), {})
+        mock_anthropic.InternalServerError = type("InternalServerError", (Exception,), {})
+        mock_anthropic.APIConnectionError = type("APIConnectionError", (Exception,), {})
+        monkeypatch.setitem(sys.modules, "anthropic", mock_anthropic)
+
+        assert extract_credits_via_vision(b"\xff\xd8fake-jpeg") is None
+
+    def test_returns_none_for_non_text_content_blocks(self, monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+        msg = MagicMock()
+        msg.content = [type("Block", (), {"type": "tool_use"})()]
+        mock_client = MagicMock()
+        mock_client.messages.create.return_value = msg
+        mock_anthropic = MagicMock()
+        mock_anthropic.Anthropic.return_value = mock_client
+        mock_anthropic.RateLimitError = type("RateLimitError", (Exception,), {})
+        mock_anthropic.InternalServerError = type("InternalServerError", (Exception,), {})
+        mock_anthropic.APIConnectionError = type("APIConnectionError", (Exception,), {})
+        monkeypatch.setitem(sys.modules, "anthropic", mock_anthropic)
+
+        assert extract_credits_via_vision(b"\xff\xd8fake-jpeg") is None

@@ -21,7 +21,7 @@ import pytest
 pytest.importorskip("playwright", reason="playwright not installed — run: pip install playwright")
 
 # browser_page fixture and BASE_URL come from conftest.py
-from tests.conftest import E2E_BASE_URL as BASE_URL
+from conftest import E2E_BASE_URL as BASE_URL
 
 
 @pytest.mark.e2e
