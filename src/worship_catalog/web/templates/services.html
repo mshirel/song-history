@@ -3,6 +3,7 @@
 {% block content %}
 <h1>Services</h1>
 
+<div hx-history-elt>
 {# Filter bar — wrapped in a form so HTMX serializes all fields once (no stale hidden duplicates) #}
 <form id="filter-form" autocomplete="off">
   <input type="hidden" name="sort"     value="{{ sort }}">
@@ -74,5 +75,6 @@
    footer and screen-reader count never drift from the rows shown (#431). #}
 <div id="services-results">
 {% include "_services_results.html" %}
+</div>
 </div>
 {% endblock %}

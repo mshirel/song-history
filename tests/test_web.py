@@ -73,6 +73,7 @@ class TestSongsPage:
         """HTMX requests return the results region only (no full-page chrome)."""
         response = client.get("/songs?q=Amazing", headers={"HX-Request": "true"})
         assert response.status_code == 200
+        assert response.headers["Vary"] == "HX-Request, HX-History-Restore-Request"
         assert "Amazing Grace" in response.text
         # Partial must not include the base layout chrome.
         lowered = response.text.lower()
@@ -89,6 +90,7 @@ class TestSongsPage:
             headers={"HX-Request": "true", "HX-History-Restore-Request": "true"},
         )
         assert response.status_code == 200
+        assert response.headers["Vary"] == "HX-Request, HX-History-Restore-Request"
         assert "<html" in response.text.lower() or "<!doctype" in response.text.lower()
         assert 'name="q"' in response.text
 
@@ -421,6 +423,7 @@ class TestServicesListPage:
             headers={"HX-Request": "true", "HX-History-Restore-Request": "true"},
         )
         assert response.status_code == 200
+        assert response.headers["Vary"] == "HX-Request, HX-History-Restore-Request"
         assert "<html" in response.text.lower() or "<!doctype" in response.text.lower()
         assert 'id="filter-form"' in response.text
 
@@ -3280,10 +3283,14 @@ class TestResponsiveLayout:
     def test_songs_search_pushes_url_state(self, client):
         html = client.get("/songs").text
         assert 'hx-push-url="true"' in html
+        assert "hx-history-elt" in html
+        assert '"historyCacheSize":0' in html
+        assert '"refreshOnHistoryMiss":true' in html
 
     def test_services_filters_push_url_state(self, client):
         html = client.get("/services").text
         assert html.count('hx-push-url="true"') >= 6
+        assert "hx-history-elt" in html
 
     def test_leaders_table_headers_have_scope(self, client):
         body = client.get("/leaders").text

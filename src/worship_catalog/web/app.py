@@ -620,6 +620,12 @@ def _is_htmx_history_restore(request: Request) -> bool:
     return request.headers.get("HX-History-Restore-Request", "").lower() == "true"
 
 
+def _set_htmx_vary_headers(response: HTMLResponse) -> HTMLResponse:
+    """Separate HTMX fragment responses from full-page browser navigations in caches."""
+    response.headers["Vary"] = "HX-Request, HX-History-Restore-Request"
+    return response
+
+
 @app.get("/songs", response_class=HTMLResponse)
 async def songs(
     request: Request,
@@ -651,7 +657,7 @@ async def songs(
         if _is_htmx_history_restore(request) or not request.headers.get("HX-Request")
         else "_songs_results.html"
     )
-    return templates.TemplateResponse(request, template, context)
+    return _set_htmx_vary_headers(templates.TemplateResponse(request, template, context))
 
 
 @app.get("/reports", response_class=HTMLResponse)
@@ -1043,11 +1049,13 @@ async def services_list(
         "page": page, "per_page": per_page, "total_pages": total_pages, "total": total,
     }
     if request.headers.get("HX-Request") and not _is_htmx_history_restore(request):
-        return templates.TemplateResponse(request, "_services_results.html", ctx)
+        return _set_htmx_vary_headers(
+            templates.TemplateResponse(request, "_services_results.html", ctx)
+        )
     ctx["service_names"] = db.query_distinct_service_names()
     ctx["leaders"] = db.query_distinct_song_leaders()
     ctx["preachers"] = db.query_distinct_preachers()
-    return templates.TemplateResponse(request, "services.html", ctx)
+    return _set_htmx_vary_headers(templates.TemplateResponse(request, "services.html", ctx))
 
 
 @app.get("/services/{service_id}", response_class=HTMLResponse)

@@ -6,6 +6,7 @@
   {{ library_size }} unique song{{ "s" if library_size != 1 else "" }} in the library
 </p>
 
+<div hx-history-elt>
 {# Hidden inputs carry sort state into HTMX search requests #}
 <input type="hidden" name="sort" value="{{ sort }}">
 <input type="hidden" name="sort_dir" value="{{ sort_dir }}">
@@ -35,5 +36,6 @@
    drifts from the rows shown (#386). #}
 <div id="songs-results">
 {% include "_songs_results.html" %}
+</div>
 </div>
 {% endblock %}
