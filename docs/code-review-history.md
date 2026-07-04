@@ -7,6 +7,36 @@ Each review produces GitHub issues for every significant finding.
 
 ---
 
+## Review 13 — 2026-07-03
+
+**Branch:** `agent/codex/full-code-review-20260703`
+**Reviewer:** Claude Code (full-code-review skill)
+**Issues created:** #529–#530
+
+### Findings
+| Issue | Persona | Title | Severity | Conf |
+|-------|---------|-------|----------|------|
+| #529 | Developer | `compute_stats_data` leaks unrelated events when the leader filter matches nothing | MED | 98 |
+| #530 | QA | E2E modules break `pytest -m "not e2e"` collection when Playwright is installed | HIGH | 97 |
+
+### Grades
+| Persona | Grade | Notes |
+|---------|-------|-------|
+| Senior Architect | A | Layering stayed clean; no new structural debt surfaced |
+| Senior Developer | B+ | One real report bug in the stats service path |
+| Senior DevOps | A | Host posture and runtime exposure looked correct in read-only checks |
+| Senior Security Architect | A | No new app-security regressions found; auth/metrics posture held up |
+| Senior DevSecOps | A | No supply-chain or CI hardening regressions surfaced |
+| Senior QA Engineer | B | Default non-e2e test run fails during collection when Playwright is present |
+| Product Manager | A- | Stats filtering semantics break in a real no-match case |
+| UAT Analyst | A | No new browser-flow regressions found in the reviewed code paths |
+| Accessibility Specialist | A | No new accessibility regressions surfaced in the inspected templates/routes |
+| Database / Data Engineer | A- | Data layer remained solid aside from the report-service filter edge case |
+
+**Overall: B+**
+
+---
+
 ## Review 12 — 2026-07-02
 
 **Branch:** `agent/claude/code-review`
