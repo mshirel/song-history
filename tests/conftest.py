@@ -11,6 +11,7 @@ os.environ.setdefault("TESTING", "1")
 
 import socket  # noqa: E402
 from collections.abc import Generator  # noqa: E402
+from pathlib import Path  # noqa: E402
 from typing import Any  # noqa: E402
 
 import pytest  # noqa: E402
@@ -20,6 +21,20 @@ from worship_catalog.pptx_reader import Slide, SlideImage, SlideText  # noqa: E4
 
 # E2E server URL — configurable via env var for CI (default: local dev server)
 E2E_BASE_URL = os.environ.get("E2E_BASE_URL", "http://localhost:8000")
+
+_TEST_MARKERS = ("unit", "integration", "slow", "e2e")
+_FILE_MARKERS: dict[str, str] = {
+    "test_backup_sh.py": "slow",
+    "test_db_integration.py": "integration",
+    "test_e2e_htmx.py": "e2e",
+    "test_e2e_playwright.py": "e2e",
+    "test_extraction_integration.py": "integration",
+    "test_missing_services_report.py": "integration",
+    "test_pi_init_sh.py": "slow",
+    "test_scripts_sigterm.py": "slow",
+    "test_seed_pi_db_sh.py": "slow",
+    "test_uat_acceptance.py": "e2e",
+}
 
 
 def _e2e_server_is_running() -> bool:
@@ -37,6 +52,25 @@ def _e2e_server_is_running() -> bool:
 
 
 _e2e_server_available = _e2e_server_is_running()
+
+
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    """Auto-mark unclassified tests so marker-based slices stay meaningful."""
+    for item in items:
+        if any(item.get_closest_marker(name) for name in _TEST_MARKERS):
+            continue
+
+        filename = Path(str(item.fspath)).name
+        marker_name = _FILE_MARKERS.get(filename)
+        if marker_name is None:
+            if filename.startswith("test_e2e_") or filename == "test_uat_acceptance.py":
+                marker_name = "e2e"
+            elif filename.endswith("_integration.py"):
+                marker_name = "integration"
+            else:
+                marker_name = "unit"
+
+        item.add_marker(getattr(pytest.mark, marker_name))
 
 
 @pytest.fixture(scope="module")

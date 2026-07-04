@@ -24,7 +24,8 @@ import pytest
 pytest.importorskip("playwright", reason="playwright not installed — run: pip install playwright")
 
 # browser_page fixture and BASE_URL come from conftest.py
-from tests.conftest import E2E_BASE_URL as BASE_URL
+from conftest import E2E_BASE_URL as BASE_URL
+from conftest import UPLOAD_PROBE_SONG_TITLE
 
 
 @pytest.mark.e2e
@@ -104,6 +105,91 @@ class TestServicesPageHTMX:
         browser_page.goto(f"{BASE_URL}/services")
         browser_page.wait_for_load_state("networkidle")
         assert browser_page.locator("table").count() >= 1
+
+    def test_song_leader_filter_updates_results_via_htmx(self, browser_page) -> None:
+        """Changing the leader filter should update #services-results without duplicating tables."""
+        browser_page.goto(f"{BASE_URL}/services")
+        browser_page.wait_for_load_state("networkidle")
+        browser_page.select_option("#filter-leader", label="Matt")
+        browser_page.wait_for_load_state("networkidle")
+
+        rows = browser_page.locator("#services-results tbody tr").count()
+        assert rows >= 1
+        assert browser_page.locator("#services-results table").count() == 1
+
+
+@pytest.mark.e2e
+class TestReportsE2E:
+    """E2E tests for HTMX report flows and dynamic download bindings."""
+
+    def test_ccli_preview_renders_inline_results(self, browser_page) -> None:
+        """The Preview button should swap report content into the CCLI result region."""
+        browser_page.goto(f"{BASE_URL}/reports")
+        browser_page.wait_for_load_state("networkidle")
+        browser_page.click("#tab-ccli")
+        browser_page.wait_for_selector("#ccli-from", state="visible")
+        browser_page.fill("#ccli-from", "2026-01-01")
+        browser_page.fill("#ccli-to", "2026-12-31")
+        browser_page.click('button[hx-post="/reports/ccli/preview"]')
+        browser_page.wait_for_selector("#ccli-result", state="visible")
+        browser_page.wait_for_timeout(500)
+
+        result_text = (browser_page.text_content("#ccli-result") or "").lower()
+        assert "reproduction" in result_text or "no songs were reproduced" in result_text
+
+    def test_stats_xlsx_download_works_after_htmx_swap(self, browser_page) -> None:
+        """Stats XLSX form should be rebound after the HTMX stats result swap."""
+        browser_page.goto(f"{BASE_URL}/reports")
+        browser_page.wait_for_load_state("networkidle")
+        browser_page.fill("#stats-from", "2026-01-01")
+        browser_page.fill("#stats-to", "2026-12-31")
+        browser_page.click('form[hx-post="/reports/stats"] button[type="submit"]')
+        browser_page.wait_for_selector("#stats-result .stat-box", timeout=10000)
+        browser_page.wait_for_timeout(500)
+
+        with browser_page.expect_download(timeout=15000) as download_info:
+            browser_page.locator("#stats-xlsx-form button").click()
+
+        download = download_info.value
+        assert download.suggested_filename.endswith(".xlsx")
+
+    def test_missing_services_tab_loads_without_duplicate_tables(self, browser_page) -> None:
+        """The Missing Services tab should load its HTMX result region cleanly."""
+        browser_page.goto(f"{BASE_URL}/reports")
+        browser_page.wait_for_load_state("networkidle")
+        browser_page.click("#tab-missing")
+        browser_page.wait_for_selector("#missing-result", state="visible")
+        browser_page.wait_for_timeout(1000)
+
+        assert browser_page.locator("#missing-result").count() == 1
+        assert browser_page.locator("#missing-result table").count() <= 1
+
+
+@pytest.mark.e2e
+class TestUploadFlowE2E:
+    """E2E coverage for the async upload -> job poll flow."""
+
+    def test_upload_probe_song_reaches_library(self, browser_page, upload_probe_pptx) -> None:
+        """Uploading a valid PPTX should complete and make the probe song searchable."""
+        browser_page.goto(f"{BASE_URL}/upload")
+        browser_page.wait_for_load_state("networkidle")
+        browser_page.set_input_files('input[type="file"]', str(upload_probe_pptx))
+        browser_page.click('button[type="submit"]')
+        browser_page.wait_for_function(
+            """() => {
+                const el = document.getElementById('upload-result');
+                if (!el) return false;
+                const t = el.textContent.toLowerCase();
+                return t.includes('imported') || t.includes('complete') || t.includes('no songs');
+            }""",
+            timeout=30000,
+        )
+
+        browser_page.goto(f"{BASE_URL}/songs")
+        browser_page.wait_for_load_state("networkidle")
+        browser_page.fill('input[name="q"]', UPLOAD_PROBE_SONG_TITLE)
+        browser_page.wait_for_load_state("networkidle")
+        assert UPLOAD_PROBE_SONG_TITLE in (browser_page.text_content("body") or "")
 
 
 @pytest.mark.e2e

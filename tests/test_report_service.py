@@ -57,8 +57,9 @@ class TestReportService:
     def test_web_app_uses_report_service(self):
         """web/app.py _compute_stats delegates to report_service.compute_stats_data."""
         import inspect
-        from worship_catalog.web import app as web_app
+
         from worship_catalog.services import report_service  # noqa: F401
+        from worship_catalog.web import app as web_app
         # The web _compute_stats should either be removed or call report_service
         src = inspect.getsource(web_app)
         assert "report_service" in src or "compute_stats_data" in src
@@ -66,6 +67,7 @@ class TestReportService:
     def test_cli_stats_delegates_to_compute_stats_data(self):
         """cli.py stats command must delegate to report_service.compute_stats_data (#167)."""
         import inspect
+
         from worship_catalog import cli
         # Click wraps the function; get source of the callback or the module
         src = inspect.getsource(cli)
@@ -141,6 +143,15 @@ class TestComputeStatsDataExtended:
         data = compute_stats_data(seeded_db, "2020-01-01", "2030-12-31", "Matt", False)
         leaders = [s["song_leader"] for s in data["services"]]
         assert "John" not in leaders
+
+    def test_leader_filter_with_no_matching_services_returns_empty_report(self, seeded_db):
+        data = compute_stats_data(seeded_db, "2020-01-01", "2030-12-31", "Nobody", False)
+        assert data["services"] == []
+        assert data["events"] == []
+        assert data["sorted_songs"] == []
+        assert data["total_performances"] == 0
+        assert data["leader_breakdown"] == {}
+        assert data["leader_service_counts"] == {}
 
     def test_all_songs_false_limits_to_top_20(self, tmp_path):
         db = Database(tmp_path / "top20.db")

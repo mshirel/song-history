@@ -67,3 +67,18 @@ class TestSshHardening:
         assert (_PI / "ssh" / "00-hardening.conf").is_file(), (
             "drop-in must be named 00-* to beat 50-cloud-init.conf (first-match-wins)"
         )
+
+
+class TestFail2Ban:
+    """Fail2ban config must exist for the public-service host (#452)."""
+
+    def test_sshd_jail_exists_and_is_enabled(self) -> None:
+        jail = (_PI / "fail2ban" / "jail.d" / "sshd.local").read_text()
+        assert "enabled = true" in jail
+        assert "backend = systemd" in jail
+
+    def test_sshd_jail_sets_retry_and_ban_windows(self) -> None:
+        jail = (_PI / "fail2ban" / "jail.d" / "sshd.local").read_text()
+        assert "maxretry = 5" in jail
+        assert "findtime = 10m" in jail
+        assert "bantime = 1h" in jail

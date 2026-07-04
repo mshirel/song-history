@@ -127,7 +127,7 @@ Specialized QA agents (invoke when relevant):
 
 Run a specific file: `python3 -m pytest tests/test_web.py -v`
 Run with coverage: `python3 -m pytest --cov=worship_catalog`
-Run only fast tests: `python3 -m pytest -m "not integration"`
+Run only fast tests: `python3 -m pytest -m "unit and not slow"`
 
 ---
 

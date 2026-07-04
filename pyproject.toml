@@ -138,6 +138,8 @@ select = ["E", "F", "W", "I", "N", "UP", "B"]
 paths_to_mutate = [
     "src/worship_catalog/normalize.py",
     "src/worship_catalog/extractor.py",
+    "src/worship_catalog/import_service.py",
+    "src/worship_catalog/db.py",
 ]
 tests_dir = ["tests/"]
 

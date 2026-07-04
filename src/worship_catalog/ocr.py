@@ -47,6 +47,31 @@ def _validate_ocr_output(text: str) -> str | None:
     return text
 
 
+def _iter_text_blocks(content: object) -> list[str]:
+    """Return text payloads from Claude response blocks, tolerating absent/empty blocks."""
+    if not isinstance(content, list):
+        return []
+
+    texts: list[str] = []
+    for block in content:
+        text = getattr(block, "text", None)
+        block_type = getattr(block, "type", None)
+        if isinstance(text, str) and (block_type == "text" or not isinstance(block_type, str)):
+            texts.append(text)
+    return texts
+
+
+def _retryable_ocr_errors(anthropic: object) -> tuple[type[BaseException], ...]:
+    """Return only transient Anthropic exception classes."""
+    retryable_names = ("RateLimitError", "InternalServerError", "APIConnectionError")
+    retryable: list[type[BaseException]] = []
+    for name in retryable_names:
+        exc_type = getattr(anthropic, name, None)
+        if isinstance(exc_type, type) and issubclass(exc_type, BaseException):
+            retryable.append(exc_type)
+    return tuple(retryable)
+
+
 def extract_credits_via_vision(image_bytes: bytes) -> str | None:
     """
     Use Claude Vision API to extract the credits line from a slide image.
@@ -115,8 +140,8 @@ def extract_credits_via_vision(image_bytes: bytes) -> str | None:
     }
 
     # Retry on transient API errors with exponential backoff
-    _retryable = (anthropic.RateLimitError, anthropic.APIStatusError)
-    last_exc: Exception | None = None
+    _retryable = _retryable_ocr_errors(anthropic)
+    last_exc: BaseException | None = None
     for attempt in range(_MAX_RETRIES):
         try:
             message = client.messages.create(**request_kwargs)
@@ -138,7 +163,10 @@ def extract_credits_via_vision(image_bytes: bytes) -> str | None:
     else:
         raise last_exc  # type: ignore[misc]
 
-    raw = message.content[0].text.strip()
+    text_blocks = _iter_text_blocks(message.content)
+    if not text_blocks:
+        return None
+    raw = text_blocks[0].strip()
     if raw.lower() == "none" or not raw:
         return None
     return _validate_ocr_output(raw)

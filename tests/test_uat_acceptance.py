@@ -30,7 +30,7 @@ import pytest
 pytest.importorskip("playwright", reason="playwright not installed -- run: pip install playwright")
 
 # browser_page fixture and BASE_URL come from conftest.py
-from tests.conftest import E2E_BASE_URL as BASE_URL
+from conftest import E2E_BASE_URL as BASE_URL
 
 # ---------------------------------------------------------------------------
 # #242 -- Upload form E2E
@@ -489,8 +489,9 @@ class TestUploadWorkflowE2E:
     def test_upload_valid_pptx_shows_progress_and_completion(self, browser_page: Any) -> None:
         """Upload a valid PPTX and verify the polling shows completion (#324)."""
         # Create a minimal valid PPTX in memory
-        from pptx import Presentation
         import io as _io
+
+        from pptx import Presentation
         prs = Presentation()
         # Add a metadata slide
         slide_layout = prs.slide_layouts[5]  # blank
@@ -541,7 +542,7 @@ class TestUploadWorkflowE2E:
         """Full pipeline (#412): upload a PPTX → wait for the background import to
         complete → confirm its (uniquely-titled) song appears in /songs. Proves the
         upload→thread-pool→SQLite→render path end-to-end, which TestClient can't."""
-        from tests.conftest import UPLOAD_PROBE_SONG_TITLE
+        from conftest import UPLOAD_PROBE_SONG_TITLE
 
         browser_page.goto(f"{BASE_URL}/upload")
         browser_page.wait_for_load_state("networkidle")
