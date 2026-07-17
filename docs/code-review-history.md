@@ -7,6 +7,57 @@ Each review produces GitHub issues for every significant finding.
 
 ---
 
+## Review 15 — 2026-07-17
+
+**Branch:** `agent/claude/full-code-review-20260717`
+**Reviewer:** Codex (full-code-review procedure)
+**Issues created:** #544–#546 (standard) · #547 (`deferred`)
+
+### Findings
+| Issue | Persona | Title | Severity | Conf |
+|-------|---------|-------|----------|------|
+| #544 | DevOps | Backup pipeline reports success when `sqlite3` dump fails | HIGH | 100 |
+| #545 | DevOps | Non-root Promtail hardening is not deployed on `pi-songs` | MED | 100 |
+| #546 | DevSecOps | Python lockfiles have conflicting authority and non-deterministic freshness checks | HIGH | 95 |
+
+### Deferred (verified real, below the file threshold)
+| Issue | Persona | Title | Conf |
+|-------|---------|-------|------|
+| #547 | Security | HTMX keeps sending a cached CSRF header after token rotation | 65 |
+
+### Dropped by the challenger (not filed)
+| Persona | Title | Conf | Refuted because |
+|---------|-------|------|-----------------|
+| Developer | OCR refunds defeat the configured call cap | 0 | Refund-on-failure is the explicit behavior accepted and implemented in #18. |
+| Developer | Upload submit failure leaks a pending job and staged file | 25 | `ThreadPoolExecutor` has an unbounded queue; submission failure is limited to executor shutdown, when the app is no longer accepting normal requests. |
+| QA/UAT | Twenty-seven E2E click failures are product regressions | 0 | Local Chromium stopped delivering `requestAnimationFrame`, preventing Playwright stability checks; the authoritative GitHub E2E job passed on the reviewed commit. |
+| Accessibility | CCLI preview results are not announced | 0 | The swapped `ccli_preview.html` fragment already declares an `aria-live` region. |
+
+### Verification
+- `uv run pytest -m "not e2e"`: 1323 passed, 9 skipped, 57 deselected, 2 xfailed.
+- `uv run ruff check src/`, `uv run mypy src/`, and `uv run bandit -r src/ -ll -c pyproject.toml`: passed.
+- `uv run pip-audit --skip-editable`: 17 vulnerabilities across five packages from the current `uv.lock` environment.
+- GitHub CI on merged PR #543: test, security, and E2E jobs passed.
+- Live host review: firewall, SSH, secret permissions, protected metrics/jobs, image pins, and OS security updates passed; Promtail runtime drift is #545.
+
+### Grades
+| Persona | Grade | Notes |
+|---------|-------|-------|
+| Senior Architect | B+ | The structure is coherent, but dependency resolution has two conflicting authorities and existing schema/event-loop debt remains open. |
+| Senior Developer | B+ | Source lint and type checks pass; no new standard application-code defect survived challenge. |
+| Database/Data Engineer | B | SQLite usage is generally disciplined, but the concurrent transaction defects tracked in #540 and #509 remain open. |
+| DevOps / SRE | B | Host controls are strong, but backup failure masking and undeployed container hardening are material operational gaps. |
+| DevSecOps | B | CI security controls are broad, but they audit a different dependency graph than the documented `uv` workflow. |
+| Security Architect | A- | Public exposure and secrets posture are strong; Promtail still runs as root and token-rotation recovery has a deferred UI gap. |
+| QA Engineer | B+ | The suite is extensive and 1323 non-E2E tests pass, but backup failure coverage and the base review-install dependency remain incomplete. |
+| Product Manager | A- | Core catalog and reporting workflows are cohesive; the existing correction workflow gap remains deferred in #323. |
+| UAT Analyst | A- | Authoritative CI browser coverage passes; local browser execution was inconclusive because Chromium's frame clock stalled. |
+| Accessibility Specialist | A | Reviewed navigation, tabs, live regions, keyboard paths, and responsive templates showed no new accessibility defect. |
+
+**Overall: B**
+
+---
+
 ## Review 14 — 2026-07-17
 
 **Branch:** `main`
