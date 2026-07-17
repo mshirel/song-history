@@ -7,6 +7,31 @@ Each review produces GitHub issues for every significant finding.
 
 ---
 
+## Review 14 — 2026-07-17
+
+**Branch:** `main`
+**Reviewer:** Antigravity (full-code-review procedure)
+**Issues created:** #540–#542
+
+### Findings
+| Issue | Persona | Title | Severity | Conf |
+|-------|---------|-------|----------|------|
+| #540 | data | `insert_or_get_*` retry logic fails under concurrent load due to transaction isolation | HIGH | 100 |
+| #541 | devops | `rate_limits.db` is not configured for WAL mode or busy timeouts | HIGH | 75 |
+| #542 | qa | Missing `itsdangerous` dependency breaks `test_web_security.py` | MED | 100 |
+
+### Grades
+| Persona | Grade | Notes |
+|---------|-------|-------|
+| Database/Data Engineer | B | Schema looks robust but the python-side transaction isolation causes failures. |
+| DevOps / SRE | B | Mostly solid, but rate_limits.db lacks WAL mode and busy_timeout. |
+| QA Engineer | C | E2E tests are well structured but the suite breaks immediately on collection due to missing dependencies. |
+| (Others) | N/A | Focused review on sharp edges. |
+
+**Overall: B**
+
+---
+
 ## Review 13 — 2026-07-03
 
 **Branch:** `agent/codex/full-code-review-20260703`
