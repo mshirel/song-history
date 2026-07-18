@@ -86,7 +86,10 @@ def run_import(
     )
     service_hash = result.file_hash  # reuse hash computed during extraction (#278)
 
-    with db.transaction():
+    # Reserve SQLite's writer slot before looking up the service. A concurrent
+    # import of the same date/name then waits here and sees the complete first
+    # import, allowing the normal delete-and-replace path to remain atomic.
+    with db.transaction(immediate=True):
         # Idempotent re-import: delete existing service data if present
         cursor = db.cursor()
         cursor.execute(
