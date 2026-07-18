@@ -3778,6 +3778,121 @@ class TestDbConnectionCleanup:
         )
 
 
+class TestReportEventLoopOffloadIssue501:
+    """Heavy stats aggregation and workbook builds must not block the event loop."""
+
+    _FORM = {
+        "start_date": "2026-01-01",
+        "end_date": "2026-12-31",
+        "leader": "",
+        "all_songs": "true",
+    }
+
+    def test_heavy_stats_routes_are_sync_worker_handlers(self) -> None:
+        """FastAPI offloads ordinary ``def`` handlers to its worker pool."""
+        import inspect
+
+        import worship_catalog.web.app as app_module
+
+        endpoints = {
+            route.path: route.endpoint
+            for route in app_module.app.routes
+            if hasattr(route, "endpoint")
+        }
+        for path in (
+            "/reports/stats",
+            "/reports/stats/csv",
+            "/reports/stats/xlsx",
+        ):
+            assert not inspect.iscoroutinefunction(endpoints[path]), (
+                f"{path} must be a sync handler so blocking report work runs off-loop"
+            )
+
+    def test_health_not_blocked_by_slow_stats_report(
+        self, db_with_songs, tmp_path, monkeypatch
+    ) -> None:
+        import threading
+        import time
+        from importlib import reload
+
+        import worship_catalog.web.app as app_module
+
+        monkeypatch.setenv("DB_PATH", str(db_with_songs))
+        monkeypatch.setenv("INBOX_DIR", str(tmp_path / "inbox"))
+        reload(app_module)
+
+        original_compute = app_module._compute_stats
+        report_started = threading.Event()
+
+        def slow_compute(*args: object, **kwargs: object) -> object:
+            report_started.set()
+            time.sleep(1.0)
+            return original_compute(*args, **kwargs)
+
+        monkeypatch.setattr(app_module, "_compute_stats", slow_compute)
+        report_result: dict[str, object] = {}
+
+        with TestClient(app_module.app) as raw:
+            shared_client = CsrfAwareClient(raw)
+            shared_client._ensure_token()
+
+            def run_report() -> None:
+                report_result["response"] = shared_client.post(
+                    "/reports/stats", data=self._FORM
+                )
+
+            report_thread = threading.Thread(target=run_report)
+            report_thread.start()
+            assert report_started.wait(timeout=2.0), "slow report never started"
+
+            started = time.monotonic()
+            health_response = shared_client.get("/health")
+            health_latency = time.monotonic() - started
+            report_thread.join(timeout=3.0)
+
+        assert not report_thread.is_alive()
+        assert health_response.status_code == 200
+        assert health_latency < 0.5, (
+            f"/health waited {health_latency:.2f}s for blocking report work"
+        )
+        assert report_result["response"].status_code == 200
+
+    def test_worker_database_closes_when_stats_computation_fails(
+        self, db_with_songs, tmp_path, monkeypatch
+    ) -> None:
+        from importlib import reload
+
+        import worship_catalog.web.app as app_module
+
+        monkeypatch.setenv("DB_PATH", str(db_with_songs))
+        monkeypatch.setenv("INBOX_DIR", str(tmp_path / "inbox"))
+        reload(app_module)
+
+        close_calls: list[bool] = []
+        original_close = Database.close
+
+        def tracking_close(self: Database) -> None:
+            close_calls.append(True)
+            original_close(self)
+
+        def fail_compute(*args: object, **kwargs: object) -> object:
+            raise RuntimeError("simulated report failure")
+
+        monkeypatch.setattr(Database, "close", tracking_close)
+        monkeypatch.setattr(app_module, "_compute_stats", fail_compute)
+
+        with TestClient(app_module.app, raise_server_exceptions=False) as raw:
+            shared_client = CsrfAwareClient(raw)
+            shared_client._ensure_token()
+            close_calls.clear()
+            response = shared_client.post("/reports/stats", data=self._FORM)
+
+        assert response.status_code == 500
+        assert close_calls == [True], (
+            "report worker must close exactly its own per-request database connection"
+        )
+
+
 # ---------------------------------------------------------------------------
 # Pushover notifications on early upload rejections (#267)
 # ---------------------------------------------------------------------------

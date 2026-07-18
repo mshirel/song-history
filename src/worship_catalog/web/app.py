@@ -16,9 +16,9 @@ import secrets
 import threading
 import time
 from collections import defaultdict
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Iterator
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
@@ -587,6 +587,21 @@ async def get_db() -> AsyncGenerator[Database, None]:
         db.close()
 
 
+@contextmanager
+def _thread_confined_db() -> Iterator[Database]:
+    """Open and close a DB in the calling worker thread.
+
+    Sync report handlers run in FastAPI's worker pool.  Their SQLite connection
+    must therefore be created, used, and closed inside that same handler rather
+    than by the async ``get_db`` dependency on the event-loop thread (#501).
+    """
+    db = _get_db()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
@@ -719,17 +734,17 @@ def _compute_stats(
 
 
 @app.post("/reports/stats", response_class=HTMLResponse)
-async def reports_stats(
+def reports_stats(
     request: Request,
     start_date: str = Form(...),
     end_date: str = Form(...),
     leader: str = Form(default=""),
     all_songs: bool = Form(default=False),
-    db: Database = Depends(get_db),  # noqa: B008
     _rl: None = Depends(_report_rate_limit),  # noqa: B008
 ) -> HTMLResponse:
     _validate_date_range(start_date, end_date)
-    data = _compute_stats(db, start_date, end_date, leader, all_songs)
+    with _thread_confined_db() as db:
+        data = _compute_stats(db, start_date, end_date, leader, all_songs)
 
     _log.info(
         "Stats report generated",
@@ -750,16 +765,16 @@ async def reports_stats(
 
 
 @app.post("/reports/stats/csv")
-async def reports_stats_csv(
+def reports_stats_csv(
     start_date: str = Form(...),
     end_date: str = Form(...),
     leader: str = Form(default=""),
     all_songs: bool = Form(default=False),
-    db: Database = Depends(get_db),  # noqa: B008
     _rl: None = Depends(_report_rate_limit),  # noqa: B008
 ) -> StreamingResponse:
     _validate_date_range(start_date, end_date)
-    data = _compute_stats(db, start_date, end_date, leader, all_songs)
+    with _thread_confined_db() as db:
+        data = _compute_stats(db, start_date, end_date, leader, all_songs)
 
     output = io.StringIO()
     writer = csv.writer(output)
@@ -777,12 +792,11 @@ async def reports_stats_csv(
 
 
 @app.post("/reports/stats/xlsx")
-async def reports_stats_xlsx(
+def reports_stats_xlsx(
     start_date: str = Form(...),
     end_date: str = Form(...),
     leader: str = Form(default=""),
     all_songs: bool = Form(default=False),
-    db: Database = Depends(get_db),  # noqa: B008
     _rl: None = Depends(_report_rate_limit),  # noqa: B008
 ) -> StreamingResponse:
     _validate_date_range(start_date, end_date)
@@ -795,7 +809,8 @@ async def reports_stats_xlsx(
             detail="Excel export requires openpyxl. Install with: pip install openpyxl",
         ) from exc
 
-    data = _compute_stats(db, start_date, end_date, leader, all_songs)
+    with _thread_confined_db() as db:
+        data = _compute_stats(db, start_date, end_date, leader, all_songs)
 
     wb = openpyxl.Workbook()
     ws = wb.active
