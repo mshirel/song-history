@@ -191,8 +191,8 @@ def _echo_import_summary(result: ImportResult) -> None:
     "--ocr",
     is_flag=True,
     help=(
-        "Fall back to Claude Vision API for credits not found in library"
-        " (requires ANTHROPIC_API_KEY)"
+        "Use the configured Vision provider for image-only scores and credits"
+        " (requires OPENROUTER_API_KEY by default)"
     ),
 )
 @click.option(
@@ -557,8 +557,8 @@ def stats(
     "--ocr",
     is_flag=True,
     help=(
-        "Fall back to Claude Vision API for any songs not in the library index"
-        " (requires ANTHROPIC_API_KEY)"
+        "Use the configured Vision provider for songs not in the library index"
+        " (requires OPENROUTER_API_KEY by default)"
     ),
 )
 @click.option(
@@ -592,7 +592,7 @@ def repair_credits(
 
     \b
     1. Library index (default): fast JSON lookup, no library mount needed.
-    2. --ocr: Claude Vision API fallback for songs not in the index.
+    2. --ocr: configured Vision provider fallback for songs not in the index.
 
     To build or refresh the library index, run:
       worship-catalog library index --path tph_libarary/

@@ -1413,7 +1413,8 @@ class TestJobStatusEndpoint:
             "job_id", "filename", "status", "started_at",
             "completed_at", "songs_imported", "error_message",
             "service_date", "service_name", "song_leader",
-            "preacher", "sermon_title", "songs_json",
+            "preacher", "sermon_title", "songs_json", "anomalies_json",
+            "ocr_model", "ocr_calls",
         ):
             assert field in body
 
@@ -3091,6 +3092,117 @@ class TestBackgroundImportDelegatesToService:
         # Second positional arg should be the pptx_path
         assert call_args[0][1] == pptx_path
 
+    def test_background_import_enables_openrouter_ocr_and_persists_audit(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from importlib import reload
+        from unittest.mock import MagicMock
+
+        from worship_catalog.import_service import ImportResult, ImportedSong
+
+        db_path = tmp_path / "openrouter.db"
+        db = Database(db_path)
+        db.connect()
+        db.init_schema()
+        job_id = "openrouter-score-job"
+        db.create_import_job(job_id, filename="score.pptx")
+        db.close()
+
+        monkeypatch.setenv("DB_PATH", str(db_path))
+        monkeypatch.setenv("OPENROUTER_API_KEY", "test-openrouter-key")
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("WORSHIP_OCR_PROVIDER", raising=False)
+        monkeypatch.delenv("WORSHIP_MAX_OCR_CALLS", raising=False)
+
+        import worship_catalog.web.app as app_module
+
+        reload(app_module)
+        anomaly = {
+            "type": "score_image_ocr",
+            "message": "title recovered from score image via OCR",
+            "title": "Goodness of God",
+        }
+        mock_run = MagicMock(return_value=ImportResult(
+            service_date="2026-06-07",
+            service_name="AM Worship",
+            songs_imported=1,
+            anomalies=[anomaly],
+            songs=[ImportedSong(1, "Goodness of God")],
+            ocr_model="google/gemini-2.5-flash-lite",
+            ocr_calls=25,
+        ))
+        monkeypatch.setattr(app_module, "run_import", mock_run)
+        monkeypatch.setattr(app_module, "send_pushover", MagicMock())
+
+        pptx_path = tmp_path / "score.pptx"
+        pptx_path.write_bytes(b"fake")
+        app_module._run_import_in_background(job_id, pptx_path)
+
+        kwargs = mock_run.call_args.kwargs
+        assert kwargs["use_ocr"] is True
+        assert kwargs["ocr_budget"].max_calls == 25
+
+        result_db = Database(db_path)
+        result_db.connect()
+        row = result_db.get_import_job(job_id)
+        result_db.close()
+        assert row is not None
+        assert json.loads(row["anomalies_json"]) == [anomaly]
+        assert row["ocr_model"] == "google/gemini-2.5-flash-lite"
+        assert row["ocr_calls"] == 25
+
+    def test_background_import_stays_text_only_without_provider_key(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from importlib import reload
+        from unittest.mock import MagicMock
+
+        from worship_catalog.import_service import ImportResult
+
+        db_path = tmp_path / "text-only.db"
+        db = Database(db_path)
+        db.connect()
+        db.init_schema()
+        job_id = "text-only-job"
+        db.create_import_job(job_id, filename="ordinary.pptx")
+        db.close()
+
+        monkeypatch.setenv("DB_PATH", str(db_path))
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("WORSHIP_OCR_PROVIDER", raising=False)
+
+        import worship_catalog.web.app as app_module
+
+        reload(app_module)
+        mock_run = MagicMock(return_value=ImportResult(
+            service_date="2026-06-07",
+            service_name="AM Worship",
+            songs_imported=1,
+        ))
+        monkeypatch.setattr(app_module, "run_import", mock_run)
+        monkeypatch.setattr(app_module, "send_pushover", MagicMock())
+
+        pptx_path = tmp_path / "ordinary.pptx"
+        pptx_path.write_bytes(b"fake")
+        app_module._run_import_in_background(job_id, pptx_path)
+
+        assert mock_run.call_args.kwargs == {"use_ocr": False, "ocr_budget": None}
+
+    def test_web_ocr_budget_honors_configured_cap(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import worship_catalog.web.app as app_module
+
+        monkeypatch.setenv("OPENROUTER_API_KEY", "test-openrouter-key")
+        monkeypatch.delenv("WORSHIP_OCR_PROVIDER", raising=False)
+        monkeypatch.setenv("WORSHIP_MAX_OCR_CALLS", "7")
+
+        budget = app_module._get_web_ocr_budget()
+
+        assert budget is not None
+        assert budget.max_calls == 7
+
 
 class TestGetDbSchemaInit:
     """Verify that init_schema() is only called once, not on every request."""
@@ -3361,6 +3473,9 @@ class TestUploadFormCSPCompatible:
         assert resp.status_code == 200
         assert "fetch" in resp.text, "upload.js must use fetch to POST the form"
         assert "csrftoken" in resp.text.lower(), "upload.js must read the CSRF cookie"
+        assert "ocr_model" in resp.text
+        assert "ocr_calls" in resp.text
+        assert "anomalies_json" in resp.text
 
     def test_upload_form_references_external_js(self, client):
         """upload.html must load upload.js from /static/."""

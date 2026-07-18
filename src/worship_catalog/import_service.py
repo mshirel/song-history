@@ -37,6 +37,8 @@ class ImportResult:
     preacher: str | None = None
     sermon_title: str | None = None
     songs: list[ImportedSong] = field(default_factory=list)
+    ocr_model: str | None = None
+    ocr_calls: int = 0
 
 
 def run_import(
@@ -173,4 +175,6 @@ def run_import(
         preacher=result.preacher,
         sermon_title=result.sermon_title,
         songs=[ImportedSong(s.ordinal, s.display_title) for s in result.songs],
+        ocr_model=result.ocr_model,
+        ocr_calls=result.ocr_calls,
     )
