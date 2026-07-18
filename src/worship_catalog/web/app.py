@@ -1411,45 +1411,58 @@ async def upload(
             content={"detail": "Filename is invalid after sanitization"},
             status_code=400,
         )
-    # Read body in chunks to bound memory usage (#297)
-    chunks: list[bytes] = []
-    total_read = 0
-    while True:
-        chunk = await file.read(_UPLOAD_CHUNK_SIZE)
-        if not chunk:
-            break
-        total_read += len(chunk)
-        if total_read > MAX_UPLOAD_BYTES:
-            break
-        chunks.append(chunk)
-    content = b"".join(chunks)
-    # Validate ZIP magic bytes — PPTX is a ZIP archive (PK\x03\x04) (#320)
-    if len(content) < 4 or content[:4] != b"PK\x03\x04":
-        send_pushover(
-            title="Upload rejected",
-            message=f"{filename} — not a valid PPTX (bad magic bytes)",
-            priority=-1,
-        )
-        return JSONResponse(
-            content={"detail": "File is not a valid PPTX archive"},
-            status_code=400,
-        )
-    if total_read > MAX_UPLOAD_BYTES:
-        limit_mb = MAX_UPLOAD_BYTES // (1024 * 1024)
-        send_pushover(
-            title="Upload rejected",
-            message=f"{filename} — file exceeds {limit_mb} MB limit",
-            priority=-1,
-        )
-        return JSONResponse(
-            content={"detail": f"File exceeds maximum allowed size of {limit_mb} MB"},
-            status_code=413,
-        )
-    # Save to inbox
+    # Stream to a hidden sibling file so neither the watcher nor the import pool
+    # can observe a partial PPTX.  Rename into place only after validation (#503).
     inbox = _get_inbox_dir()
     job_id = secrets.token_urlsafe(32)
     dest = inbox / f"{job_id}_{filename}"
-    dest.write_bytes(content)
+    partial = inbox / f".{job_id}.uploading"
+    total_read = 0
+    magic = bytearray()
+    try:
+        with partial.open("xb") as output:
+            while True:
+                chunk = await file.read(_UPLOAD_CHUNK_SIZE)
+                if not chunk:
+                    break
+                total_read += len(chunk)
+                if total_read > MAX_UPLOAD_BYTES:
+                    break
+                if len(magic) < 4:
+                    magic.extend(chunk[: 4 - len(magic)])
+                output.write(chunk)
+
+        if total_read > MAX_UPLOAD_BYTES:
+            limit_mb = MAX_UPLOAD_BYTES // (1024 * 1024)
+            send_pushover(
+                title="Upload rejected",
+                message=f"{filename} — file exceeds {limit_mb} MB limit",
+                priority=-1,
+            )
+            return JSONResponse(
+                content={
+                    "detail": f"File exceeds maximum allowed size of {limit_mb} MB"
+                },
+                status_code=413,
+            )
+
+        # PPTX is a ZIP archive.  Accumulate only its four-byte signature so
+        # validation also works when a read boundary falls inside the magic.
+        if bytes(magic) != b"PK\x03\x04":
+            send_pushover(
+                title="Upload rejected",
+                message=f"{filename} — not a valid PPTX (bad magic bytes)",
+                priority=-1,
+            )
+            return JSONResponse(
+                content={"detail": "File is not a valid PPTX archive"},
+                status_code=400,
+            )
+
+        partial.replace(dest)
+    finally:
+        partial.unlink(missing_ok=True)
+
     # Create pending job record
     db.create_import_job(job_id, filename=filename)
     # Submit import to bounded thread pool (#52).
