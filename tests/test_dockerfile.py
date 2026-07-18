@@ -18,7 +18,7 @@ class TestNoMaliciousFastapi:
     def test_pyproject_excludes_malicious_fastapi(self):
         pp = (_PROJECT_ROOT / "pyproject.toml").read_text()
         assert "!=0.136.3" in pp, (
-            "pyproject must exclude fastapi 0.136.3 so pip-compile can't re-pin it"
+            "pyproject must exclude fastapi 0.136.3 so uv can't re-pin it"
         )
 
 
@@ -34,7 +34,8 @@ class TestDependencyReproducibility:
         ]
         assert any(f.exists() for f in lockfiles), (
             "No Python dependency lockfile found. "
-            "Run: pip-compile pyproject.toml --output-file requirements.lock"
+            "Run: uv export --frozen --no-dev --extra web --extra ocr "
+            "--no-emit-project --no-hashes --output-file requirements.lock"
         )
 
     def test_lockfile_is_used_in_dockerfile(self):

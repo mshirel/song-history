@@ -7,6 +7,8 @@ import yaml
 
 CI_PATH = Path(".github/workflows/ci.yml")
 DEPENDABOT_PATH = Path(".github/dependabot.yml")
+PYPROJECT_PATH = Path("pyproject.toml")
+REQUIREMENTS_LOCK_PATH = Path("requirements.lock")
 
 # The set of valid Dependabot package-ecosystem values.  "docker-compose" is
 # deliberately absent — it is NOT a valid ecosystem; the "docker" ecosystem
@@ -69,6 +71,60 @@ class TestDependabotEcosystems:
         ), (
             "No 'docker' Dependabot entry for '/deploy/pi' — the production Pi "
             "stack images (traefik, promtail, cloudflared) get no update PRs."
+        )
+
+    def test_python_updates_follow_uv_lockfile(self) -> None:
+        """Dependabot must update the authoritative uv lock, not resolve with pip."""
+        root_python_entries = [
+            update
+            for update in self._updates()
+            if update["directory"] == "/"
+            and update["package-ecosystem"] in {"pip", "uv"}
+        ]
+        assert [entry["package-ecosystem"] for entry in root_python_entries] == ["uv"], (
+            "Python dependencies must use the uv Dependabot ecosystem so uv.lock "
+            "remains the sole resolution authority"
+        )
+
+
+@pytest.mark.skipif(not CI_PATH.exists(), reason="CI config not present")
+class TestDependencyLockAuthority:
+    """CI and deployment artifacts must consume one frozen uv dependency graph (#546)."""
+
+    def test_web_extra_declares_itsdangerous_directly(self) -> None:
+        """The web code imports itsdangerous, so the web extra must declare it (#542)."""
+        try:
+            import tomllib
+        except ModuleNotFoundError:  # pragma: no cover - Python 3.10 compatibility
+            import tomli as tomllib
+
+        project = tomllib.loads(PYPROJECT_PATH.read_text())["project"]
+        web_dependencies = project["optional-dependencies"]["web"]
+        assert any(dep.startswith("itsdangerous") for dep in web_dependencies), (
+            "itsdangerous is imported by the web package and must be a direct web dependency"
+        )
+
+    def test_ci_installs_one_frozen_uv_environment(self) -> None:
+        ci = CI_PATH.read_text()
+        expected = "uv sync --frozen --extra dev --extra web --extra ocr"
+        assert ci.count(expected) >= 3, (
+            "test, e2e, and security jobs must install the same frozen uv graph"
+        )
+        assert "pip install -r requirements.lock" not in ci
+        assert 'pip install -e ".[dev]"' not in ci
+
+    def test_ci_validates_lock_without_reresolving(self) -> None:
+        ci = CI_PATH.read_text()
+        assert "uv lock --check" in ci
+        assert "uv export --frozen" in ci
+        assert "pip-compile" not in ci, (
+            "pip-compile independently resolves dependencies and must not be a lock validator"
+        )
+
+    def test_deployment_lock_identifies_uv_as_generator(self) -> None:
+        header = "\n".join(REQUIREMENTS_LOCK_PATH.read_text().splitlines()[:8])
+        assert "uv export" in header, (
+            "requirements.lock must be a frozen export from uv.lock, not an independent lock"
         )
 
 

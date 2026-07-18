@@ -22,20 +22,22 @@ jobs:
         with:
           python-version: "3.12"
 
+      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990  # v8.3.2
+        with:
+          version: "0.11.7"
+
       - name: Install dependencies
-        run: |
-          pip install -r requirements.lock          # locked runtime deps (#285)
-          pip install -e ".[dev]"                    # dev tools (pytest, ruff, mypy)
+        run: uv sync --frozen --extra dev --extra web --extra ocr
 
       - name: Lint (ruff)
-        run: python3 -m ruff check src/
+        run: uv run --frozen ruff check src/
 
       - name: Type check (mypy)
-        run: python3 -m mypy src/
+        run: uv run --frozen mypy src/
 
       - name: Test
         run: |
-          python3 -m pytest --cov=src/worship_catalog --cov-report=term-missing 2>&1 | tee /tmp/test.log
+          uv run --frozen pytest --cov=src/worship_catalog --cov-report=term-missing 2>&1 | tee /tmp/test.log
           count=$(grep -oP '\d+ passed' /tmp/test.log | grep -oP '\d+')
           # Floor must track the real suite size (1100+ tests as of 2026-05).
           # Bump this whenever the suite grows by >50 tests so a deleted test
@@ -52,7 +54,7 @@ jobs:
       # unexpected skip-all regressions — closes #137.
       - name: Integration tests (DB-only subset)
         run: |
-          python3 -m pytest -m "integration and not slow" -v --tb=short 2>&1 | tee /tmp/integration.log
+          uv run --frozen pytest -m "integration and not slow" -v --tb=short 2>&1 | tee /tmp/integration.log
           # Verify at least 5 integration tests actually passed.
           # Without this check, pytest -m exits 0 even when zero tests match,
           # silently defeating the purpose of this step (#200).
@@ -65,8 +67,8 @@ jobs:
       - name: Mutation testing (informational)
         continue-on-error: true  # non-blocking until mutmut 3.x compatibility is resolved (#322)
         run: |
-          python3 -m mutmut run --max-children 2 2>&1 | tee /tmp/mutmut.log || true
-          python3 -m mutmut results 2>&1 || echo "No mutant results available"
+          uv run --frozen mutmut run --max-children 2 2>&1 | tee /tmp/mutmut.log || true
+          uv run --frozen mutmut results 2>&1 || echo "No mutant results available"
 
   e2e:
     needs: [test]  # only run after unit/integration tests pass
@@ -81,18 +83,20 @@ jobs:
         with:
           python-version: "3.12"
 
+      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990  # v8.3.2
+        with:
+          version: "0.11.7"
+
       - name: Install dependencies
-        run: |
-          pip install -r requirements.lock          # locked runtime deps (#285)
-          pip install -e ".[dev]"                    # dev tools (pytest, playwright)
+        run: uv sync --frozen --extra dev --extra web --extra ocr
 
       - name: Install Playwright Chromium
-        run: python3 -m playwright install chromium --with-deps
+        run: uv run --frozen playwright install chromium --with-deps
 
       - name: Seed test database
         run: |
           mkdir -p /tmp/e2e-inbox
-          python3 -c "
+          uv run --frozen python -c "
           from worship_catalog.db import Database
           db = Database('/tmp/e2e-test.db')
           db.connect()
@@ -126,7 +130,7 @@ jobs:
           # TESTING=1 lets the app use an ephemeral CSRF secret instead of
           # requiring CSRF_SECRET, which is mandatory in production (#406).
           DB_PATH=/tmp/e2e-test.db INBOX_DIR=/tmp/e2e-inbox TESTING=1 \
-            python3 -m uvicorn worship_catalog.web.app:app \
+            uv run --frozen uvicorn worship_catalog.web.app:app \
               --host 127.0.0.1 --port 8000 &
           # Wait for server to become healthy (max 15s)
           for i in $(seq 1 15); do
@@ -145,7 +149,7 @@ jobs:
       - name: Run E2E tests
         env:
           E2E_BASE_URL: "http://127.0.0.1:8000"
-        run: python3 -m pytest -m e2e -v --tb=short --no-header -p no:cacheprovider
+        run: uv run --frozen pytest -m e2e -v --tb=short --no-header -p no:cacheprovider
 
   security:
     runs-on: ubuntu-latest
@@ -170,20 +174,23 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install dependencies
-        run: |
-          pip install --upgrade "pip>=26.1"          # fix CVE-2026-6357 in pip itself
-          pip install -r requirements.lock          # locked runtime deps (#321)
-          pip install -e ".[dev]"                    # dev tools (bandit, pip-audit)
+      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990  # v8.3.2
+        with:
+          version: "0.11.7"
 
-      - name: Verify lockfile is up to date (#174)
+      - name: Install dependencies
+        run: uv sync --frozen --extra dev --extra web --extra ocr
+
+      - name: Verify frozen dependency graph (#174, #546)
         run: |
-          pipx run --spec pip-tools pip-compile --strip-extras --extra web --extra ocr --output-file /tmp/requirements.lock pyproject.toml
-          # Compare non-comment lines only (header contains the output path which differs)
+          uv lock --check
+          uv export --frozen --no-dev --extra web --extra ocr \
+            --no-emit-project --no-hashes --output-file /tmp/requirements.lock
+          # The header records a different output path; package lines must be identical.
           grep -v '^#' requirements.lock > /tmp/lock-current.txt
           grep -v '^#' /tmp/requirements.lock > /tmp/lock-fresh.txt
           diff /tmp/lock-current.txt /tmp/lock-fresh.txt || {
-            echo "::error::requirements.lock is out of date — run: pip-compile --strip-extras --extra web --extra ocr --output-file requirements.lock pyproject.toml"
+            echo "::error::requirements.lock is out of date — run: uv export --frozen --no-dev --extra web --extra ocr --no-emit-project --no-hashes --output-file requirements.lock"
             exit 1
           }
 
@@ -191,11 +198,11 @@ jobs:
         # CVE-2026-3219 affects pip itself; no fix released upstream yet.
         # Re-evaluate at every Dependabot bump of requirements.lock and remove
         # this --ignore-vuln once a fixed pip ships. Tracked by #408.
-        run: python3 -m pip_audit --skip-editable --ignore-vuln CVE-2026-3219
+        run: uv run --frozen pip-audit --skip-editable --ignore-vuln CVE-2026-3219
 
       # --- Static security analysis ----------------------------------------
       - name: Static security scan (bandit)
-        run: python3 -m bandit -r src/ -ll -c pyproject.toml
+        run: uv run --frozen bandit -r src/ -ll -c pyproject.toml
 
       # --- SBOM / dependency baseline validation ---------------------------
       - name: Validate dependency baseline
@@ -203,7 +210,8 @@ jobs:
           # Compare package NAMES only (not versions) so version bumps don't false-alarm.
           # Lowercase all names before sorting so comm uses a stable byte-order comparison.
           # (sort -f keeps original case, which confuses comm's byte-level ordering.)
-          pip list --format=columns | tail -n +3 | awk '{print tolower($1)}' | sort \
+          uv run --frozen python -m pip list --format=columns | tail -n +3 \
+            | awk '{print tolower($1)}' | sort \
             | grep -v "^worship-catalog$" > /tmp/current-names.txt
           NEW_PKGS=$(comm -23 /tmp/current-names.txt <(tr '[:upper:]' '[:lower:]' < sbom-baseline.txt | sort) \
             | grep -v "^$" || true)

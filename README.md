@@ -375,26 +375,24 @@ Default location: `data/worship.db`
 Install all development dependencies (includes web, OCR, linting, type checking, and security tools):
 
 ```bash
-python -m venv venv
-source venv/bin/activate
-pip install -e ".[dev,web,ocr]"
+uv sync --frozen --extra dev --extra web --extra ocr
 ```
 
 Install pre-commit hooks to enforce linting on every commit:
 
 ```bash
-pip install pre-commit
+uv tool install pre-commit
 pre-commit install
 ```
 
 ### Running Tests
 
 ```bash
-pytest                           # Run all tests with coverage
-pytest tests/test_cli.py -v     # CLI tests
-pytest tests/test_web.py -v     # Web UI tests
-pytest tests/test_library.py    # Library/credits parsing tests
-pytest -k "missing_credits"     # Run tests matching keyword
+uv run --frozen pytest                           # Run all tests with coverage
+uv run --frozen pytest tests/test_cli.py -v     # CLI tests
+uv run --frozen pytest tests/test_web.py -v     # Web UI tests
+uv run --frozen pytest tests/test_library.py    # Library/credits parsing tests
+uv run --frozen pytest -k "missing_credits"     # Run tests matching keyword
 ```
 
 ### Test Coverage
