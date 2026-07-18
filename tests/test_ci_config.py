@@ -113,6 +113,19 @@ class TestIntegrationTestStep:
         )
 
 
+@pytest.mark.skipif(not CI_PATH.exists(), reason="CI config not present")
+class TestReleaseTagTrigger:
+    """CI must run the publish job for semver tags created by automated release."""
+
+    def test_ci_triggers_on_release_tags(self) -> None:
+        workflow = yaml.safe_load(CI_PATH.read_text())
+        trigger = workflow.get("on") or workflow.get(True)
+        assert trigger is not None
+        push = trigger["push"]
+        assert "tags" in push, "CI must listen for release tag pushes"
+        assert "v*" in push["tags"], "CI must publish semver tags such as v1.2.0"
+
+
 # Minimum acceptable floor for the main test step (#409).  The suite has
 # 1100+ tests; a floor of 700 left ~400 tests of slack, so whole test files
 # could vanish without CI noticing.  Keep this in step with the suite size.

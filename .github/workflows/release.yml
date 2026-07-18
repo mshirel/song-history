@@ -1,0 +1,78 @@
+name: Automated Release
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    branches: ["main"]
+    types: [completed]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+          fetch-tags: true
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Install release helper dependencies
+        run: |
+          pip install -r requirements.lock
+          pip install -e .
+
+      - name: Determine next release version
+        id: version
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import os
+          import subprocess
+
+          from worship_catalog.release import next_release_version
+
+          version = next_release_version(Path("."))
+          output = Path(os.environ["GITHUB_OUTPUT"])
+          if version is None:
+              with output.open("a", encoding="utf-8") as fh:
+                  fh.write("release=false\n")
+              raise SystemExit(0)
+
+          if subprocess.run(
+              ["git", "rev-parse", "-q", "--verify", f"refs/tags/v{version}"],
+              check=False,
+          ).returncode == 0:
+              with output.open("a", encoding="utf-8") as fh:
+                  fh.write("release=false\n")
+              raise SystemExit(0)
+
+          with output.open("a", encoding="utf-8") as fh:
+              fh.write("release=true\n")
+              fh.write(f"version={version}\n")
+          PY
+
+      - name: Create release tag
+        if: steps.version.outputs.release == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag "v${{ steps.version.outputs.version }}"
+          git push origin "v${{ steps.version.outputs.version }}"
+
+      - name: Publish GitHub Release
+        if: steps.version.outputs.release == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "v${{ steps.version.outputs.version }}" \
+            --title "v${{ steps.version.outputs.version }}" \
+            --generate-notes
