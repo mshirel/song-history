@@ -2936,6 +2936,135 @@ class TestConcurrentInsertOrGet:
         db.conn.execute("PRAGMA busy_timeout=5000")
         return db
 
+    @staticmethod
+    def _connect_cross_thread(db_path):
+        """Create a test connection before its worker thread starts."""
+        db = Database(db_path)
+        db.conn = sqlite3.connect(db_path, check_same_thread=False)
+        db.conn.row_factory = sqlite3.Row
+        db.conn.execute("PRAGMA journal_mode=WAL")
+        db.conn.execute("PRAGMA foreign_keys=ON")
+        db.conn.execute("PRAGMA busy_timeout=5000")
+        return db
+
+    class _BarrierCursor:
+        """Freeze and align two deferred snapshots at their identity read."""
+
+        def __init__(self, cursor, select_prefix, barrier):
+            self._cursor = cursor
+            self._select_prefix = select_prefix
+            self._barrier = barrier
+
+        def execute(self, sql, parameters=()):
+            normalized_sql = " ".join(sql.split())
+            if normalized_sql.startswith(self._select_prefix):
+                if not self._cursor.connection.in_transaction:
+                    self._cursor.execute("BEGIN")
+            result = self._cursor.execute(sql, parameters)
+            if normalized_sql.startswith(self._select_prefix):
+                self._barrier.wait(timeout=5)
+            return result
+
+        def __getattr__(self, name):
+            return getattr(self._cursor, name)
+
+    class _BarrierConnection:
+        def __init__(self, connection, select_prefix, barrier):
+            self._connection = connection
+            self._select_prefix = select_prefix
+            self._barrier = barrier
+
+        def cursor(self):
+            return TestConcurrentInsertOrGet._BarrierCursor(
+                self._connection.cursor(), self._select_prefix, self._barrier
+            )
+
+        def __getattr__(self, name):
+            return getattr(self._connection, name)
+
+    def test_transactional_song_insert_does_not_upgrade_stale_snapshot(self, tmp_path):
+        db_path = tmp_path / "transaction_race_song.db"
+        init = self._connect(db_path)
+        init.init_schema()
+        init.close()
+
+        start_barrier = threading.Barrier(2)
+        select_barrier = threading.Barrier(2)
+        ids: list[int] = []
+        errors: list[Exception] = []
+        databases = [self._connect_cross_thread(db_path) for _ in range(2)]
+        for db in databases:
+            db.conn = self._BarrierConnection(
+                db.conn, "SELECT id FROM songs WHERE canonical_title", select_barrier
+            )
+
+        def worker(db) -> None:
+            try:
+                start_barrier.wait(timeout=5)
+                with db.transaction():
+                    ids.append(
+                        db.insert_or_get_song("amazing grace", "Amazing Grace")
+                    )
+            except Exception as exc:  # noqa: BLE001
+                errors.append(exc)
+            finally:
+                db.close()
+
+        threads = [threading.Thread(target=worker, args=(db,)) for db in databases]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=10)
+
+        assert not any(thread.is_alive() for thread in threads)
+        assert not errors, f"Transactional insert_or_get_song raised: {errors!r}"
+        assert len(ids) == 2
+        assert len(set(ids)) == 1
+
+    def test_transactional_edition_insert_does_not_upgrade_stale_snapshot(
+        self, tmp_path
+    ):
+        db_path = tmp_path / "transaction_race_edition.db"
+        init = self._connect(db_path)
+        init.init_schema()
+        song_id = init.insert_or_get_song("amazing grace", "Amazing Grace")
+        init.close()
+
+        start_barrier = threading.Barrier(2)
+        select_barrier = threading.Barrier(2)
+        ids: list[int] = []
+        errors: list[Exception] = []
+        databases = [self._connect_cross_thread(db_path) for _ in range(2)]
+        for db in databases:
+            db.conn = self._BarrierConnection(
+                db.conn, "SELECT id FROM song_editions WHERE", select_barrier
+            )
+
+        def worker(db) -> None:
+            try:
+                start_barrier.wait(timeout=5)
+                with db.transaction():
+                    ids.append(
+                        db.insert_or_get_song_edition(
+                            song_id, words_by="John Newton"
+                        )
+                    )
+            except Exception as exc:  # noqa: BLE001
+                errors.append(exc)
+            finally:
+                db.close()
+
+        threads = [threading.Thread(target=worker, args=(db,)) for db in databases]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=10)
+
+        assert not any(thread.is_alive() for thread in threads)
+        assert not errors, f"Transactional insert_or_get_song_edition raised: {errors!r}"
+        assert len(ids) == 2
+        assert len(set(ids)) == 1
+
     def test_concurrent_insert_or_get_song_no_error(self, tmp_path):
         db_path = tmp_path / "race_song.db"
         init = self._connect(db_path)
