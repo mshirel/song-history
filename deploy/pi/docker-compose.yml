@@ -163,9 +163,9 @@ services:
     # gid 0 (root group) so it can READ the group-readable Docker json logs under
     # /var/lib/docker/containers WITHOUT root. Requires two host-side prep steps
     # (see docs/pi-deploy.md):
-    #   1. Container logs must be group-readable. Docker's default is 0640
-    #      root:root (group can read); if a hardened daemon.json sets 0600, apply
-    #      an ACL:  setfacl -R -m g:0:rX -d -m g:0:rX /var/lib/docker/containers
+    #   1. Container logs must be group-readable. Docker's default 0640
+    #      root:root is sufficient; the host helper grants directory discovery
+    #      without a default ACL (which would break DNS for non-root containers).
     #   2. promtail writes positions.yaml into the mounted /opt/song-history/promtail
     #      dir, so that dir must be writable by uid 10001 (or gid 0):
     #      chown -R 10001:0 /opt/song-history/promtail && chmod -R g+rwX ...
