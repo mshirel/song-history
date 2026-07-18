@@ -1,12 +1,19 @@
 """Tests for scripts/backup.sh — integrity check and sentinel file (#28)."""
 
 import gzip
+import http.server
+import os
+import sqlite3
 import subprocess
 from pathlib import Path
 
 import pytest
 
 BACKUP_SCRIPT = Path(__file__).parent.parent / "scripts" / "backup.sh"
+DEPLOY_BACKUP_SCRIPT = (
+    Path(__file__).parent.parent / "deploy" / "pi" / "scripts" / "backup.sh"
+)
+BACKUP_SCRIPTS = (BACKUP_SCRIPT, DEPLOY_BACKUP_SCRIPT)
 
 
 def run_backup(
@@ -146,14 +153,14 @@ def _run_backup_with_env(
     db_path: Path,
     backup_dir: Path,
     extra_env: dict[str, str] | None = None,
+    backup_script: Path = BACKUP_SCRIPT,
 ) -> subprocess.CompletedProcess[str]:
     """Run backup.sh with optional extra environment variables."""
-    import os
     env = os.environ.copy()
     if extra_env:
         env.update(extra_env)
     return subprocess.run(
-        ["bash", str(BACKUP_SCRIPT), str(db_path), str(backup_dir)],
+        ["sh", str(backup_script), str(db_path), str(backup_dir)],
         capture_output=True,
         text=True,
         env=env,
@@ -162,7 +169,6 @@ def _run_backup_with_env(
 
 def _make_db(tmp_path: Path) -> Path:
     """Create a minimal SQLite DB for testing."""
-    import sqlite3
     db_path = tmp_path / "worship.db"
     conn = sqlite3.connect(db_path)
     conn.execute("CREATE TABLE t (id INTEGER PRIMARY KEY)")
@@ -172,13 +178,73 @@ def _make_db(tmp_path: Path) -> Path:
 
 
 @pytest.mark.slow
+class TestBackupDumpFailure:
+    """A failed sqlite3 dump must never be promoted as a successful backup (#544)."""
+
+    @pytest.mark.parametrize("backup_script", BACKUP_SCRIPTS)
+    def test_sqlite_dump_failure_is_not_promoted(
+        self,
+        tmp_path: Path,
+        backup_script: Path,
+    ) -> None:
+        db_path = _make_db(tmp_path)
+        backup_dir = tmp_path / "backups"
+        backup_dir.mkdir()
+        fake_bin = tmp_path / "bin"
+        fake_bin.mkdir()
+        fake_sqlite = fake_bin / "sqlite3"
+        fake_sqlite.write_text("#!/bin/sh\nexit 7\n")
+        fake_sqlite.chmod(0o755)
+
+        result = _run_backup_with_env(
+            db_path,
+            backup_dir,
+            {"PATH": f"{fake_bin}:{os.environ['PATH']}"},
+            backup_script,
+        )
+
+        assert result.returncode != 0
+        assert not list(backup_dir.glob("worship-*.sql.gz"))
+        assert not (backup_dir / ".last_success").exists()
+        assert "ERROR" in result.stderr
+
+    @pytest.mark.parametrize("backup_script", BACKUP_SCRIPTS)
+    def test_backup_sql_restores_known_row(
+        self,
+        tmp_path: Path,
+        backup_script: Path,
+    ) -> None:
+        db_path = tmp_path / "worship.db"
+        backup_dir = tmp_path / "backups"
+        backup_dir.mkdir()
+        source = sqlite3.connect(db_path)
+        source.execute("CREATE TABLE known_data (value TEXT NOT NULL)")
+        source.execute("INSERT INTO known_data VALUES ('restored')")
+        source.commit()
+        source.close()
+
+        result = _run_backup_with_env(
+            db_path,
+            backup_dir,
+            backup_script=backup_script,
+        )
+        assert result.returncode == 0, result.stderr
+        backup = next(backup_dir.glob("worship-*.sql.gz"))
+
+        restored = sqlite3.connect(":memory:")
+        with gzip.open(backup, "rt") as sql_dump:
+            restored.executescript(sql_dump.read())
+        row = restored.execute("SELECT value FROM known_data").fetchone()
+        restored.close()
+        assert row == ("restored",)
+
+
+@pytest.mark.slow
 class TestBackupPushoverNotification:
     """backup.sh sends a Pushover notification on failure — closes #136."""
 
-    def _make_post_server(self) -> tuple["http.server.HTTPServer", "list[dict[str, str]]"]:
+    def _make_post_server(self) -> tuple[http.server.HTTPServer, list[dict[str, str]]]:
         """Start a local HTTP server that records POST requests."""
-        import http.server
-
         posts_received: list[dict[str, str]] = []
 
         class _Handler(http.server.BaseHTTPRequestHandler):
@@ -309,7 +375,7 @@ class TestBackupPushoverNotification:
         assert not posts_received, "backup.sh must not notify when USER_KEY is missing"
 
     def test_notification_failure_is_non_fatal(self, tmp_path: Path) -> None:
-        """If the Pushover POST fails, backup.sh exits with the backup exit code, not a curl error."""
+        """A failed Pushover POST must not replace the backup's failure status."""
         db_path = tmp_path / "nonexistent.db"
         backup_dir = tmp_path / "backups"
         backup_dir.mkdir()
