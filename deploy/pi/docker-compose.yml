@@ -46,8 +46,8 @@ services:
     # :latest silently swaps running app code with no digest record and no
     # rollback target. Pin to the sha- tag + digest CI publishes; Dependabot's
     # `docker` ecosystem entry (#502) bumps this on a reviewed PR.
-    # Tag sha-<commit> = main@b317d78; digest resolved from GHCR 2026-07-04.
-    image: ghcr.io/mshirel/song-history:sha-b317d7848a0c55f9fcab05d8c3a3c6f9c68b94fc@sha256:794df3f856d7383816e88e9e19791d16372196483067eb34550075732d33fad7
+    # Tag sha-<commit> = main@f37d817; digest resolved from GHCR 2026-07-18.
+    image: ghcr.io/mshirel/song-history:sha-f37d817e20c00fac31e3f7523c12c8aed9c7ccaf@sha256:b03a8e4e66b2a57c99fbdf4d761c1f28b68a59dc9bab8d8b8829562a4decd7aa
     restart: unless-stopped
     init: true
     # The app image ships a HEALTHCHECK that probes :8000 (#402); the watcher
@@ -88,8 +88,8 @@ services:
   song-history:
     # Immutably pinned (#512) — was the mutable :latest. Keep this in lockstep
     # with the `watcher` service above; Dependabot (#502) bumps both.
-    # Tag sha-<commit> = main@b317d78; digest resolved from GHCR 2026-07-04.
-    image: ghcr.io/mshirel/song-history:sha-b317d7848a0c55f9fcab05d8c3a3c6f9c68b94fc@sha256:794df3f856d7383816e88e9e19791d16372196483067eb34550075732d33fad7
+    # Tag sha-<commit> = main@f37d817; digest resolved from GHCR 2026-07-18.
+    image: ghcr.io/mshirel/song-history:sha-f37d817e20c00fac31e3f7523c12c8aed9c7ccaf@sha256:b03a8e4e66b2a57c99fbdf4d761c1f28b68a59dc9bab8d8b8829562a4decd7aa
     restart: unless-stopped
     stop_grace_period: 35s
     ports:
