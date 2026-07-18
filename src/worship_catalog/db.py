@@ -373,6 +373,11 @@ class Database:
 
         cursor = self._conn.cursor()
 
+        cursor.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'services'"
+        )
+        services_table_existed = cursor.fetchone() is not None
+
         # Services table
         cursor.execute(
             """
@@ -380,13 +385,13 @@ class Database:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 service_date TEXT NOT NULL,
                 service_name TEXT NOT NULL,
+                source_file TEXT NOT NULL,
+                source_hash TEXT NOT NULL,
                 song_leader TEXT,
                 preacher TEXT,
                 sermon_title TEXT,
-                source_file TEXT NOT NULL,
-                source_hash TEXT NOT NULL,
                 imported_at TEXT NOT NULL,
-                UNIQUE(service_date, service_name, source_hash)
+                UNIQUE(service_date, service_name)
             )
             """
         )
@@ -494,12 +499,18 @@ class Database:
         )
 
         # --- Migration tracking & execution ---
-        self._apply_migrations()
+        # A newly created services table already has migration 3's date/name
+        # identity. Record that migration without running its legacy table-copy
+        # upgrade; databases that arrived with services still run it normally.
+        baseline_versions = frozenset({3}) if not services_table_existed else frozenset()
+        self._apply_migrations(baseline_versions=baseline_versions)
 
         self._conn.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
         self._maybe_commit()
 
-    def _apply_migrations(self) -> None:
+    def _apply_migrations(
+        self, *, baseline_versions: frozenset[int] = frozenset()
+    ) -> None:
         """Create schema_migrations table and run any pending migrations."""
         cursor = self._conn.cursor()
 
@@ -522,18 +533,22 @@ class Database:
         for version in sorted(_MIGRATIONS):
             if version in applied:
                 continue
-            for stmt in _MIGRATIONS[version]:
-                # PRAGMA foreign_keys is a no-op inside a transaction (SQLite
-                # rule).  Commit any pending implicit DML transaction first so
-                # the PRAGMA takes effect immediately.
-                if stmt.strip().upper().startswith("PRAGMA"):
-                    self._conn.commit()
-                cursor.execute(stmt)
+            if version not in baseline_versions:
+                for stmt in _MIGRATIONS[version]:
+                    # PRAGMA foreign_keys is a no-op inside a transaction (SQLite
+                    # rule). Commit any pending implicit DML transaction first so
+                    # the PRAGMA takes effect immediately.
+                    if stmt.strip().upper().startswith("PRAGMA"):
+                        self._conn.commit()
+                    cursor.execute(stmt)
             cursor.execute(
                 "INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)",
                 (version, now),
             )
-            _log.info("Applied schema migration %d", version)
+            if version in baseline_versions:
+                _log.info("Recorded schema migration %d from fresh baseline", version)
+            else:
+                _log.info("Applied schema migration %d", version)
 
     # --- Songs ---
 
