@@ -19,6 +19,10 @@ _log = logging.getLogger("worship_catalog.db")
 # on-disk version is *higher* than this value (DB created by a newer release).
 _SCHEMA_VERSION: int = 7
 
+# Leave room below legacy SQLite's 999-variable ceiling for the date bounds and
+# future fixed predicates. Larger service filters are intersected in Python.
+_COPY_EVENTS_SERVICE_ID_SQL_LIMIT: int = 900
+
 # Ordered dict of version → list of SQL statements.  Each migration brings the
 # DB from version (N-1) to version N.  Migration 1 is the baseline — it
 # creates the import_jobs table that was added in #45.  For a fresh database
@@ -841,12 +845,29 @@ class Database:
         cursor.execute(base, params)
         return cursor
 
+    @staticmethod
+    def _copy_event_service_filter(
+        service_ids: list[int] | None,
+    ) -> tuple[list[int] | None, set[int] | None]:
+        """Return the SQL filter and any overflow filter to apply in Python."""
+        if (
+            service_ids is not None
+            and len(service_ids) > _COPY_EVENTS_SERVICE_ID_SQL_LIMIT
+        ):
+            return None, set(service_ids)
+        return service_ids, None
+
     def query_copy_events(
         self, start_date: str, end_date: str, service_ids: list[int] | None = None
     ) -> list[dict]:
         """Query copy events for date range, optionally restricted to given service IDs."""
-        cursor = self._execute_copy_events_query(start_date, end_date, service_ids)
-        return [dict(row) for row in cursor.fetchall()]
+        sql_service_ids, overflow_filter = self._copy_event_service_filter(service_ids)
+        cursor = self._execute_copy_events_query(start_date, end_date, sql_service_ids)
+        return [
+            dict(row)
+            for row in cursor
+            if overflow_filter is None or row["service_id"] in overflow_filter
+        ]
 
     def iter_copy_events(
         self, start_date: str, end_date: str, service_ids: list[int] | None = None
@@ -857,10 +878,12 @@ class Database:
         individually so callers can process large result sets without
         materialising the entire list (#27).
         """
-        cursor = self._execute_copy_events_query(start_date, end_date, service_ids)
+        sql_service_ids, overflow_filter = self._copy_event_service_filter(service_ids)
+        cursor = self._execute_copy_events_query(start_date, end_date, sql_service_ids)
         row = cursor.fetchone()
         while row is not None:
-            yield dict(row)
+            if overflow_filter is None or row["service_id"] in overflow_filter:
+                yield dict(row)
             row = cursor.fetchone()
 
     # --- Service exclusions (missing-services report) ---

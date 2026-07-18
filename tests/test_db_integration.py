@@ -639,6 +639,45 @@ class TestQueryOperations:
         assert len(results) == 1
         assert results[0]["service_id"] == service_id_1
 
+    def test_copy_event_service_filter_survives_low_sqlite_variable_limit(
+        self, temp_db
+    ):
+        """Large service filters fall back without exceeding SQLite's bind cap (#511)."""
+        service_id_1 = temp_db.insert_or_update_service(
+            service_date="2026-02-15",
+            service_name="Morning Worship",
+            source_file="file1.pptx",
+            source_hash="hash1",
+        )
+        service_id_2 = temp_db.insert_or_update_service(
+            service_date="2026-02-22",
+            service_name="Evening Worship",
+            source_file="file2.pptx",
+            source_hash="hash2",
+        )
+        song_id = temp_db.insert_or_get_song("majesty", "Majesty")
+        temp_db.insert_or_get_copy_event(service_id_1, song_id, "projection")
+        temp_db.insert_or_get_copy_event(service_id_2, song_id, "projection")
+
+        # Include one real ID and enough absent IDs to exceed the forced legacy
+        # SQLite limit.  The second real service must still be excluded.
+        service_ids = [service_id_1, *range(10_000, 11_000)]
+        previous_limit = temp_db.conn.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 100)
+        try:
+            queried = temp_db.query_copy_events(
+                "2026-01-01", "2026-12-31", service_ids=service_ids
+            )
+            streamed = list(
+                temp_db.iter_copy_events(
+                    "2026-01-01", "2026-12-31", service_ids=service_ids
+                )
+            )
+        finally:
+            temp_db.conn.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, previous_limit)
+
+        assert [event["service_id"] for event in queried] == [service_id_1]
+        assert [event["service_id"] for event in streamed] == [service_id_1]
+
 
 @pytest.mark.integration
 class TestMissingCredits:
