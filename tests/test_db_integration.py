@@ -2070,6 +2070,24 @@ class TestQuerySongsPaginated:
         assert rows[0]["words_by"] == "Newest Credits"
         assert temp_db.query_song_editions(song_id)[-1]["id"] == newest_edition
 
+    def test_search_finds_alternate_edition_but_displays_recent_use(self, temp_db):
+        song_id = temp_db.insert_or_get_song("song a", "Song A")
+        selected_edition = temp_db.insert_or_get_song_edition(
+            song_id, words_by="Recent Writer"
+        )
+        temp_db.insert_or_get_song_edition(song_id, words_by="Historical Writer")
+        service_id = temp_db.insert_or_update_service(
+            "2026-02-01", "AM Worship", "service.pptx", "hash"
+        )
+        temp_db.insert_service_song(
+            service_id, song_id, ordinal=1, song_edition_id=selected_edition
+        )
+
+        rows, total = temp_db.query_songs_paginated(search="Historical Writer")
+
+        assert total == 1
+        assert rows[0]["words_by"] == "Recent Writer"
+
     def test_pagination(self, temp_db):
         for i in range(5):
             temp_db.insert_or_get_song(f"song {i}", f"Song {i}")
