@@ -38,6 +38,13 @@ _MAX_SLIDE_COUNT: int = 500
 
 # Wall-clock timeout for a single file extraction (#73 — prevents runaway on adversarial PPTX)
 _MAX_EXTRACT_SECONDS: int = 120
+# Keep abandoned timed-out workers bounded to the web import pool's concurrency.
+# Queued futures are canceled on timeout before they begin (#498).
+_MAX_CONCURRENT_EXTRACTIONS: int = 4
+_extract_executor = concurrent.futures.ThreadPoolExecutor(
+    max_workers=_MAX_CONCURRENT_EXTRACTIONS,
+    thread_name_prefix="song-extract",
+)
 
 # Consecutive slides with no text after which the current song group is closed
 _NO_TEXT_STREAK_THRESHOLD: int = 5
@@ -293,8 +300,9 @@ def extract_songs(
         TimeoutError: If extraction exceeds _MAX_EXTRACT_SECONDS.
         ValueError: If file exceeds size/slide-count limits.
     """
-    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-    future = executor.submit(_extract_songs_impl, file_path, use_ocr, ocr_budget, library_index)
+    future = _extract_executor.submit(
+        _extract_songs_impl, file_path, use_ocr, ocr_budget, library_index
+    )
     try:
         return future.result(timeout=_MAX_EXTRACT_SECONDS)
     except concurrent.futures.TimeoutError as exc:
@@ -305,8 +313,6 @@ def extract_songs(
             f"extract_songs exceeded {_MAX_EXTRACT_SECONDS}s time limit for "
             f"{Path(file_path).name}"
         ) from exc
-    finally:
-        executor.shutdown(wait=False, cancel_futures=True)
 
 
 def _extract_songs_impl(
