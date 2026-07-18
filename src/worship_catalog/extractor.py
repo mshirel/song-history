@@ -293,15 +293,20 @@ def extract_songs(
         TimeoutError: If extraction exceeds _MAX_EXTRACT_SECONDS.
         ValueError: If file exceeds size/slide-count limits.
     """
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(_extract_songs_impl, file_path, use_ocr, ocr_budget, library_index)
-        try:
-            return future.result(timeout=_MAX_EXTRACT_SECONDS)
-        except concurrent.futures.TimeoutError as exc:
-            raise TimeoutError(
-                f"extract_songs exceeded {_MAX_EXTRACT_SECONDS}s time limit for "
-                f"{Path(file_path).name}"
-            ) from exc
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    future = executor.submit(_extract_songs_impl, file_path, use_ocr, ocr_budget, library_index)
+    try:
+        return future.result(timeout=_MAX_EXTRACT_SECONDS)
+    except concurrent.futures.TimeoutError as exc:
+        # A running Python thread cannot be killed safely.  Crucially, do not
+        # wait for it here: that would defeat the caller-visible timeout (#498).
+        future.cancel()
+        raise TimeoutError(
+            f"extract_songs exceeded {_MAX_EXTRACT_SECONDS}s time limit for "
+            f"{Path(file_path).name}"
+        ) from exc
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
 
 
 def _extract_songs_impl(
