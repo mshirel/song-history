@@ -1831,6 +1831,42 @@ class TestSchemaMigration:
         assert 1 in versions
         db.close()
 
+    def test_fresh_services_schema_skips_legacy_table_rebuild(self, tmp_path: Path) -> None:
+        """Fresh databases start at the v3 service identity without rebuilding."""
+        db = Database(tmp_path / "fresh.db")
+        db.connect()
+        statements: list[str] = []
+        db.conn.set_trace_callback(statements.append)
+
+        db.init_schema()
+
+        schema_sql = db.conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='services'"
+        ).fetchone()[0]
+        normalized_schema = " ".join(schema_sql.split())
+        assert "UNIQUE(service_date, service_name)" in normalized_schema
+        assert "UNIQUE(service_date, service_name, source_hash)" not in normalized_schema
+        columns = [
+            row["name"]
+            for row in db.conn.execute("PRAGMA table_info(services)").fetchall()
+        ]
+        assert columns == [
+            "id",
+            "service_date",
+            "service_name",
+            "source_file",
+            "source_hash",
+            "song_leader",
+            "preacher",
+            "sermon_title",
+            "imported_at",
+        ]
+        assert not any("SERVICES_NEW" in statement.upper() for statement in statements)
+        assert db.conn.execute(
+            "SELECT COUNT(*) FROM schema_migrations WHERE version = 3"
+        ).fetchone()[0] == 1
+        db.close()
+
     def test_migrations_are_idempotent(self, tmp_path: Path) -> None:
         """Calling init_schema() twice does not duplicate migration records."""
         db_path = tmp_path / "fresh.db"
