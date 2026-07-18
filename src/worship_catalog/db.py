@@ -1260,20 +1260,45 @@ class Database:
     ) -> tuple[list[dict[str, Any]], int]:
         """Return songs with performance count, optionally filtered and sorted."""
         sort = _safe_order_by(sort, self._SONGS_SORT_COLS)
-        order = f"{sort} {_safe_sort_dir(sort_dir)}, s.display_title"
+        order = f"{sort} {_safe_sort_dir(sort_dir)}, s.display_title, s.id"
         cursor = self._conn.cursor()
+        # Choose one display edition per song. Prefer the edition from the most
+        # recent service that explicitly referenced one; for songs never linked
+        # to an edition, fall back to the newest edition row.
+        edition_join = """
+            LEFT JOIN song_editions se ON se.id = COALESCE(
+                (
+                    SELECT recent_ss.song_edition_id
+                    FROM service_songs recent_ss
+                    JOIN services recent_sv ON recent_sv.id = recent_ss.service_id
+                    WHERE recent_ss.song_id = s.id
+                      AND recent_ss.song_edition_id IS NOT NULL
+                    ORDER BY recent_sv.service_date DESC,
+                             recent_sv.id DESC,
+                             recent_ss.id DESC
+                    LIMIT 1
+                ),
+                (
+                    SELECT fallback_se.id
+                    FROM song_editions fallback_se
+                    WHERE fallback_se.song_id = s.id
+                    ORDER BY fallback_se.id DESC
+                    LIMIT 1
+                )
+            )
+        """
         base = """
             SELECT s.id, s.display_title, s.canonical_title,
                    se.words_by, se.music_by, se.arranger,
                    COUNT(DISTINCT ss.service_id) AS performance_count
             FROM songs s
-            LEFT JOIN song_editions se ON se.song_id = s.id
+        """ + edition_join + """
             LEFT JOIN service_songs ss ON ss.song_id = s.id
         """
         count_base = """
             SELECT COUNT(DISTINCT s.id)
             FROM songs s
-            LEFT JOIN song_editions se ON se.song_id = s.id
+        """ + edition_join + """
             LEFT JOIN service_songs ss ON ss.song_id = s.id
         """
         offset = (page - 1) * per_page
@@ -1290,14 +1315,25 @@ class Database:
                 cursor.execute(count_base + where, (like, like, like))
                 total: int = cursor.fetchone()[0]
                 cursor.execute(
-                    base + where + "GROUP BY s.id ORDER BY " + order + " LIMIT ? OFFSET ?",
+                    base
+                    + where
+                    + "GROUP BY s.id, s.display_title, s.canonical_title, "
+                    + "se.words_by, se.music_by, se.arranger "
+                    + "ORDER BY "
+                    + order
+                    + " LIMIT ? OFFSET ?",
                     (like, like, like, per_page, offset),
                 )
             else:
                 cursor.execute(count_base)
                 total = cursor.fetchone()[0]
                 cursor.execute(
-                    base + "GROUP BY s.id ORDER BY " + order + " LIMIT ? OFFSET ?",
+                    base
+                    + "GROUP BY s.id, s.display_title, s.canonical_title, "
+                    + "se.words_by, se.music_by, se.arranger "
+                    + "ORDER BY "
+                    + order
+                    + " LIMIT ? OFFSET ?",
                     (per_page, offset),
                 )
             rows = [dict(row) for row in cursor.fetchall()]
