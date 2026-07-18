@@ -91,6 +91,9 @@ services:
     # Tag sha-<commit> = main@68eaf57; digest resolved from GHCR 2026-07-18.
     image: ghcr.io/mshirel/song-history:sha-68eaf57d3740a2180d3201786d423b2d924f1f69@sha256:4e6e472601d6957ecbc6ec2d7e8f4a9f22117e3503d2a7c40161651856dd1b26
     restart: unless-stopped
+    # Bound the public upload process on the 512 MB Pi host (#503). Uploads are
+    # streamed to disk, so even the 200 MB maximum file fits this budget.
+    mem_limit: 512m
     stop_grace_period: 35s
     ports:
       - "8000:8000"  # Prometheus /metrics scraping (internal only — not routed via Traefik)

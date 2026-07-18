@@ -4080,6 +4080,91 @@ class TestUploadMagicBytes:
         assert "not a valid PPTX" in resp.json()["detail"]
 
 
+class TestUploadStreamingIssue503:
+    """Uploads are streamed atomically without retaining the whole body (#503)."""
+
+    def test_upload_streams_to_inbox_without_path_write_bytes(
+        self, client, tmp_path, monkeypatch
+    ):
+        """The handler must not materialize the complete upload for write_bytes()."""
+        import worship_catalog.web.app as app_module
+
+        submitted: list[Path] = []
+        monkeypatch.setattr(
+            app_module._import_executor,
+            "submit",
+            lambda _fn, _job_id, path: submitted.append(path),
+        )
+
+        def reject_whole_file_write(_self: Path, _data: bytes) -> int:
+            raise AssertionError("upload used Path.write_bytes instead of streaming")
+
+        monkeypatch.setattr(Path, "write_bytes", reject_whole_file_write)
+        payload = b"PK\x03\x04" + b"streamed-payload"
+
+        response = client.post(
+            "/upload",
+            files={"file": ("streamed.pptx", io.BytesIO(payload), VALID_PPTX_MIME)},
+        )
+
+        assert response.status_code == 202
+        assert len(submitted) == 1
+        assert submitted[0].read_bytes() == payload
+        assert not list(submitted[0].parent.glob("*.uploading"))
+
+    def test_magic_bytes_can_span_read_chunks(self, client, monkeypatch):
+        import worship_catalog.web.app as app_module
+
+        submitted: list[Path] = []
+        monkeypatch.setattr(app_module, "_UPLOAD_CHUNK_SIZE", 2)
+        monkeypatch.setattr(
+            app_module._import_executor,
+            "submit",
+            lambda _fn, _job_id, path: submitted.append(path),
+        )
+
+        response = client.post(
+            "/upload",
+            files={"file": ("split.pptx", io.BytesIO(b"PK\x03\x04body"), VALID_PPTX_MIME)},
+        )
+
+        assert response.status_code == 202
+        assert submitted[0].read_bytes() == b"PK\x03\x04body"
+
+    def test_bad_magic_removes_partial_upload(self, client, monkeypatch):
+        import worship_catalog.web.app as app_module
+
+        monkeypatch.setattr(app_module._import_executor, "submit", pytest.fail)
+        response = client.post(
+            "/upload",
+            files={"file": ("fake.pptx", io.BytesIO(b"not-a-zip"), VALID_PPTX_MIME)},
+        )
+
+        assert response.status_code == 400
+        assert not list(Path(os.environ["INBOX_DIR"]).iterdir())
+
+    def test_oversize_body_removes_partial_upload(self, client, monkeypatch):
+        import worship_catalog.web.app as app_module
+
+        monkeypatch.setattr(app_module, "MAX_UPLOAD_BYTES", 8)
+        monkeypatch.setattr(app_module, "_UPLOAD_CHUNK_SIZE", 4)
+        monkeypatch.setattr(app_module._import_executor, "submit", pytest.fail)
+        response = client.post(
+            "/upload",
+            headers={"content-length": "8"},
+            files={
+                "file": (
+                    "large.pptx",
+                    io.BytesIO(b"PK\x03\x04too-large"),
+                    VALID_PPTX_MIME,
+                )
+            },
+        )
+
+        assert response.status_code == 413
+        assert not list(Path(os.environ["INBOX_DIR"]).iterdir())
+
+
 # ---------------------------------------------------------------------------
 # Build date formatting (#331)
 # ---------------------------------------------------------------------------
