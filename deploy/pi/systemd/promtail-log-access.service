@@ -1,0 +1,6 @@
+[Unit]
+Description=Allow non-root Promtail to enumerate Docker container logs
+
+[Service]
+Type=oneshot
+ExecStart=/opt/song-history/scripts/prepare-promtail-log-access.sh

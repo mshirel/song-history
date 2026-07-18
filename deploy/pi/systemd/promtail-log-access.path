@@ -1,0 +1,9 @@
+[Unit]
+Description=Watch for Docker container directories needed by Promtail
+
+[Path]
+PathChanged=/var/lib/docker/containers
+Unit=promtail-log-access.service
+
+[Install]
+WantedBy=multi-user.target
