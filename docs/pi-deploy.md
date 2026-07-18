@@ -62,12 +62,14 @@ Because the host serves a public tunnel, lock it down. Codified in the repo:
 - **Token rotation** — if `.env` was ever world-readable, rotate the Cloudflare
   API token and tunnel token in the Cloudflare dashboard (#446).
 - **promtail runs non-root** (`user: "10001:0"`, #514) — least privilege on the
-  public host. It reads container logs as gid 0 (root group) instead of root, so
-  the host needs two one-time prep steps:
-  1. Docker json logs must stay group-readable. The daemon default is `0640
-     root:root` (group can read). If a hardened `daemon.json` sets `0600`, grant
-     an ACL: `sudo setfacl -R -m g:0:rX -d -m g:0:rX /var/lib/docker/containers`.
-  2. promtail writes `positions.yaml` into the mounted positions dir, so make it
+  public host. It reads container logs as gid 0 (root group) instead of root.
+  The host needs two prep steps:
+  1. Docker json logs are `0640 root:root`, but their container directories are
+     `0710`: gid 0 can open a known file but cannot enumerate Promtail's wildcard.
+     Install and enable `promtail-log-access.path`; it runs the least-privilege
+     `prepare-promtail-log-access.sh` helper whenever Docker creates a container
+     directory, adding only group read/traverse to the directory tree.
+  2. Promtail writes `positions.yaml` into the mounted positions dir, so make it
      writable by the uid/gid: `sudo chown -R 10001:0 /opt/song-history/promtail
      && sudo chmod -R g+rwX /opt/song-history/promtail`.
   If promtail logs `permission denied` on the log path or positions file, one of
@@ -116,8 +118,8 @@ ssh pi@<PI_IP> "sudo mkdir -p /opt/song-history/traefik && sudo chown \$USER /op
 # Copy the deployment config — this is everything the Pi needs
 rsync -av deploy/pi/ pi@<PI_IP>:/opt/song-history/
 
-# Make backup script executable
-ssh pi@<PI_IP> "chmod +x /opt/song-history/scripts/backup.sh"
+# Make host scripts executable
+ssh pi@<PI_IP> "chmod +x /opt/song-history/scripts/*.sh"
 ```
 
 **What gets transferred:**
@@ -127,10 +129,14 @@ ssh pi@<PI_IP> "chmod +x /opt/song-history/scripts/backup.sh"
 ├── docker-compose.yml            # Pi-specific stack (Traefik + app)
 ├── .env.example                  # template — copy to .env and fill in
 ├── worship-catalog.service       # systemd unit for auto-start on boot
+├── systemd/
+│   ├── promtail-log-access.path  # notices newly-created container directories
+│   └── promtail-log-access.service # restores non-root directory enumeration
 ├── traefik/
 │   └── traefik.yml               # Traefik static config (Cloudflare DNS-01)
 └── scripts/
-    └── backup.sh                 # nightly backup script (run via cron)
+    ├── backup.sh                 # nightly backup script (run via cron)
+    └── prepare-promtail-log-access.sh # grants directory-only log discovery
 ```
 
 That's it. No source code, no tests, no docs on the Pi.
@@ -317,9 +323,16 @@ automatically on boot — critical for a headless Pi in a utility closet.
 ```bash
 # Copy the unit file
 sudo cp /opt/song-history/worship-catalog.service /etc/systemd/system/
+sudo cp /opt/song-history/systemd/promtail-log-access.* /etc/systemd/system/
+
+# Prepare existing Docker directories and keep future ones discoverable
+sudo /opt/song-history/scripts/prepare-promtail-log-access.sh
+sudo chown -R 10001:0 /opt/song-history/promtail
+sudo chmod -R g+rwX /opt/song-history/promtail
 
 # Reload systemd, enable and start the service
 sudo systemctl daemon-reload
+sudo systemctl enable --now promtail-log-access.path
 sudo systemctl enable --now worship-catalog
 ```
 
@@ -373,6 +386,32 @@ curl -sf https://songs.highland-coc.com/health | grep -q "ok" && echo "PASS" || 
 
 # 6. Backup log writable
 touch /home/songs/backup.log && echo "PASS" || echo "FAIL"
+
+# 7. Promtail is configured and running as the dedicated non-root uid
+compose_user="$(docker compose config --format json | jq -r '.services.promtail.user')"
+promtail_id="$(docker compose ps -q promtail)"
+runtime_user="$(docker inspect --format '{{.Config.User}}' "$promtail_id")"
+test "$compose_user" = "10001:0" && test "$runtime_user" = "10001:0" \
+    && echo "PASS" || echo "FAIL"
+
+# 8. Promtail can persist positions for its newly-created Docker log file
+promtail_log="$(docker inspect --format '{{.LogPath}}' "$promtail_id")"
+sudo grep -Fq "$promtail_log" /opt/song-history/promtail/positions.yaml \
+    && echo "PASS" || echo "FAIL"
+
+# 9. A known application log line reaches Loki and advances positions
+positions_before="$(stat -c %Y /opt/song-history/promtail/positions.yaml)"
+marker="promtail-verify-$(date +%s)"
+curl -sS -o /dev/null "http://localhost/$marker"  # expected HTTP 404
+sleep 10
+positions_after="$(stat -c %Y /opt/song-history/promtail/positions.yaml)"
+loki_hits="$(curl -fsSG 'http://10.20.100.249:3100/loki/api/v1/query_range' \
+    --data-urlencode 'query={host="pi-songs"} |= "'"$marker"'"' \
+    --data-urlencode "start=$(date -d '2 minutes ago' +%s%N)" \
+    --data-urlencode "end=$(date +%s%N)" \
+    --data-urlencode 'limit=10' | jq '[.data.result[].values[]] | length')"
+test "$positions_after" -gt "$positions_before" && test "$loki_hits" -ge 1 \
+    && echo "PASS" || echo "FAIL"
 ```
 
 | Check | Expected |
@@ -383,6 +422,9 @@ touch /home/songs/backup.log && echo "PASS" || echo "FAIL"
 | Backup file | `worship-YYYYMMDD-HHMMSS.sql.gz` present |
 | HTTPS cert | no browser cert warning |
 | Backup log | `~/backup.log` writable |
+| Promtail user | Compose and container runtime both report `10001:0` |
+| Promtail positions | new container log path appears in `positions.yaml` |
+| Loki delivery | unique 404 request line appears in Loki and positions advance |
 
 ---
 
