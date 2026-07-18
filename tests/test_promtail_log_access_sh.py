@@ -1,5 +1,6 @@
 """Tests for the non-root Promtail Docker-log access helper."""
 
+import os
 import stat
 import subprocess
 from pathlib import Path
@@ -7,6 +8,13 @@ from pathlib import Path
 SCRIPT = Path("deploy/pi/scripts/prepare-promtail-log-access.sh")
 PATH_UNIT = Path("deploy/pi/systemd/promtail-log-access.path")
 SERVICE_UNIT = Path("deploy/pi/systemd/promtail-log-access.service")
+
+# Equivalent to the stale default ACL observed on pi-songs: owner rwx, group
+# r-x, mask r-x, other ---. Files Docker creates beneath it inherit other=---.
+STALE_DEFAULT_ACL = bytes.fromhex(
+    "0200000001000700ffffffff04000500ffffffff"
+    "10000500ffffffff20000000ffffffff"
+)
 
 
 def test_grants_group_enumeration_without_changing_log_mode(tmp_path: Path) -> None:
@@ -24,6 +32,23 @@ def test_grants_group_enumeration_without_changing_log_mode(tmp_path: Path) -> N
     assert stat.S_IMODE(containers.stat().st_mode) == 0o750
     assert stat.S_IMODE(container.stat().st_mode) == 0o750
     assert stat.S_IMODE(log.stat().st_mode) == 0o640
+
+
+def test_removes_stale_default_acl_and_repairs_docker_resolver_mode(tmp_path: Path) -> None:
+    containers = tmp_path / "containers"
+    container = containers / ("a" * 64)
+    container.mkdir(parents=True)
+    resolver = container / "resolv.conf"
+    resolver.write_text("nameserver 127.0.0.11\n")
+    resolver.chmod(0o640)
+    os.setxattr(containers, "system.posix_acl_default", STALE_DEFAULT_ACL)
+    os.setxattr(container, "system.posix_acl_default", STALE_DEFAULT_ACL)
+
+    subprocess.run([str(SCRIPT), str(containers)], check=True)
+
+    assert "system.posix_acl_default" not in os.listxattr(containers)
+    assert "system.posix_acl_default" not in os.listxattr(container)
+    assert stat.S_IMODE(resolver.stat().st_mode) == 0o644
 
 
 def test_rejects_missing_container_directory(tmp_path: Path) -> None:

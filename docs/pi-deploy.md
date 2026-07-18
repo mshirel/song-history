@@ -68,7 +68,9 @@ Because the host serves a public tunnel, lock it down. Codified in the repo:
      `0710`: gid 0 can open a known file but cannot enumerate Promtail's wildcard.
      Install and enable `promtail-log-access.path`; it runs the least-privilege
      `prepare-promtail-log-access.sh` helper whenever Docker creates a container
-     directory, adding only group read/traverse to the directory tree.
+     directory, adding only group read/traverse to the directory tree. The helper
+     also removes legacy default ACLs from this tree: those ACLs make Docker's
+     resolver files unreadable to non-root containers and break outbound DNS.
   2. Promtail writes `positions.yaml` into the mounted positions dir, so make it
      writable by the uid/gid: `sudo chown -R 10001:0 /opt/song-history/promtail
      && sudo chmod -R g+rwX /opt/song-history/promtail`.
