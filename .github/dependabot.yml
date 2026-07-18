@@ -1,8 +1,8 @@
 version: 2
 updates:
 
-  # Python package updates — weekly, dev deps grouped to reduce PR noise
-  - package-ecosystem: "pip"
+  # Python package updates — uv.lock is the sole resolution authority (#546)
+  - package-ecosystem: "uv"
     directory: "/"
     schedule:
       interval: "weekly"

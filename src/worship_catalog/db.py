@@ -17,7 +17,11 @@ _log = logging.getLogger("worship_catalog.db")
 # Bump this integer whenever the schema changes.  Each new version must have a
 # corresponding entry in _MIGRATIONS.  connect() raises SchemaVersionError if the
 # on-disk version is *higher* than this value (DB created by a newer release).
-_SCHEMA_VERSION: int = 6
+_SCHEMA_VERSION: int = 7
+
+# Leave room below legacy SQLite's 999-variable ceiling for the date bounds and
+# future fixed predicates. Larger service filters are intersected in Python.
+_COPY_EVENTS_SERVICE_ID_SQL_LIMIT: int = 900
 
 # Ordered dict of version → list of SQL statements.  Each migration brings the
 # DB from version (N-1) to version N.  Migration 1 is the baseline — it
@@ -191,6 +195,12 @@ _MIGRATIONS: dict[int, list[str]] = {
         "CREATE INDEX IF NOT EXISTS idx_service_exclusions_date "
         "ON service_exclusions(service_date)",
     ],
+    7: [
+        # Persist OCR audit details for completed web imports (#537).
+        "ALTER TABLE import_jobs ADD COLUMN anomalies_json TEXT",
+        "ALTER TABLE import_jobs ADD COLUMN ocr_model TEXT",
+        "ALTER TABLE import_jobs ADD COLUMN ocr_calls INTEGER NOT NULL DEFAULT 0",
+    ],
 }
 
 # Whitelist of column names that update_import_job is allowed to SET.
@@ -200,7 +210,8 @@ _IMPORT_JOB_MUTABLE_FIELDS: frozenset[str] = frozenset(
     {
         "status", "completed_at", "songs_imported", "error_message",
         "service_date", "service_name", "song_leader", "preacher",
-        "sermon_title", "songs_json",
+        "sermon_title", "songs_json", "anomalies_json", "ocr_model",
+        "ocr_calls",
     }
 )
 
@@ -304,14 +315,20 @@ class Database:
             self.conn = None
 
     @contextmanager
-    def transaction(self) -> Generator[None, None, None]:
+    def transaction(self, *, immediate: bool = False) -> Generator[None, None, None]:
         """Context manager that wraps multiple DB calls in a single transaction.
+
+        Set ``immediate`` when a transaction must read before writing. SQLite
+        then reserves the single-writer slot before the first read, preventing
+        another writer from invalidating that read snapshot.
 
         On success: commits once when the block exits.
         On exception: rolls back all changes and re-raises.
         """
         self._in_transaction = True
         try:
+            if immediate:
+                self._conn.execute("BEGIN IMMEDIATE")
             yield
             self._conn.commit()
         except Exception:
@@ -360,6 +377,11 @@ class Database:
 
         cursor = self._conn.cursor()
 
+        cursor.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'services'"
+        )
+        services_table_existed = cursor.fetchone() is not None
+
         # Services table
         cursor.execute(
             """
@@ -367,13 +389,13 @@ class Database:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 service_date TEXT NOT NULL,
                 service_name TEXT NOT NULL,
+                source_file TEXT NOT NULL,
+                source_hash TEXT NOT NULL,
                 song_leader TEXT,
                 preacher TEXT,
                 sermon_title TEXT,
-                source_file TEXT NOT NULL,
-                source_hash TEXT NOT NULL,
                 imported_at TEXT NOT NULL,
-                UNIQUE(service_date, service_name, source_hash)
+                UNIQUE(service_date, service_name)
             )
             """
         )
@@ -481,12 +503,18 @@ class Database:
         )
 
         # --- Migration tracking & execution ---
-        self._apply_migrations()
+        # A newly created services table already has migration 3's date/name
+        # identity. Record that migration without running its legacy table-copy
+        # upgrade; databases that arrived with services still run it normally.
+        baseline_versions = frozenset({3}) if not services_table_existed else frozenset()
+        self._apply_migrations(baseline_versions=baseline_versions)
 
         self._conn.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
         self._maybe_commit()
 
-    def _apply_migrations(self) -> None:
+    def _apply_migrations(
+        self, *, baseline_versions: frozenset[int] = frozenset()
+    ) -> None:
         """Create schema_migrations table and run any pending migrations."""
         cursor = self._conn.cursor()
 
@@ -509,18 +537,22 @@ class Database:
         for version in sorted(_MIGRATIONS):
             if version in applied:
                 continue
-            for stmt in _MIGRATIONS[version]:
-                # PRAGMA foreign_keys is a no-op inside a transaction (SQLite
-                # rule).  Commit any pending implicit DML transaction first so
-                # the PRAGMA takes effect immediately.
-                if stmt.strip().upper().startswith("PRAGMA"):
-                    self._conn.commit()
-                cursor.execute(stmt)
+            if version not in baseline_versions:
+                for stmt in _MIGRATIONS[version]:
+                    # PRAGMA foreign_keys is a no-op inside a transaction (SQLite
+                    # rule). Commit any pending implicit DML transaction first so
+                    # the PRAGMA takes effect immediately.
+                    if stmt.strip().upper().startswith("PRAGMA"):
+                        self._conn.commit()
+                    cursor.execute(stmt)
             cursor.execute(
                 "INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)",
                 (version, now),
             )
-            _log.info("Applied schema migration %d", version)
+            if version in baseline_versions:
+                _log.info("Recorded schema migration %d from fresh baseline", version)
+            else:
+                _log.info("Applied schema migration %d", version)
 
     # --- Songs ---
 
@@ -529,36 +561,19 @@ class Database:
     ) -> int:
         """Insert or get song by canonical title. Returns song_id."""
         cursor = self._conn.cursor()
-
-        # Try to get existing
         cursor.execute(
-            "SELECT id FROM songs WHERE canonical_title = ?", (canonical_title,)
+            """
+            INSERT INTO songs (canonical_title, display_title)
+            VALUES (?, ?)
+            ON CONFLICT(canonical_title) DO UPDATE SET id = songs.id
+            RETURNING id
+            """,
+            (canonical_title, display_title),
         )
         row = cursor.fetchone()
-        if row:
-            return row[0]
-
-        # Insert new — retry-safe under concurrent writers (#400).  A second
-        # importer can insert the same canonical_title between our SELECT and
-        # INSERT; the UNIQUE(canonical_title) constraint then raises
-        # IntegrityError.  Re-read and return the row the other writer created.
-        try:
-            cursor.execute(
-                "INSERT INTO songs (canonical_title, display_title) VALUES (?, ?)",
-                (canonical_title, display_title),
-            )
-            self._maybe_commit()
-            return cursor.lastrowid
-        except sqlite3.IntegrityError:
-            if not self._in_transaction:
-                self._conn.rollback()
-            cursor.execute(
-                "SELECT id FROM songs WHERE canonical_title = ?", (canonical_title,)
-            )
-            row = cursor.fetchone()
-            if row:
-                return row[0]
-            raise
+        assert row is not None
+        self._maybe_commit()
+        return int(row[0])
 
     def insert_or_get_song_edition(
         self,
@@ -571,56 +586,22 @@ class Database:
     ) -> int:
         """Insert or get song edition. Returns edition_id."""
         cursor = self._conn.cursor()
-
-        # Try to get existing - handle NULL comparisons explicitly.
-        select_sql = """
-            SELECT id FROM song_editions
-            WHERE song_id = ?
-            AND (publisher = ? OR (publisher IS NULL AND ? IS NULL))
-            AND (words_by = ? OR (words_by IS NULL AND ? IS NULL))
-            AND (music_by = ? OR (music_by IS NULL AND ? IS NULL))
-            AND (arranger = ? OR (arranger IS NULL AND ? IS NULL))
+        # The identity constraint is an expression index over COALESCE values,
+        # so omit a column conflict target and let SQLite match that index.
+        cursor.execute(
             """
-        select_params = (
-            song_id,
-            publisher,
-            publisher,
-            words_by,
-            words_by,
-            music_by,
-            music_by,
-            arranger,
-            arranger,
+            INSERT INTO song_editions
+            (song_id, publisher, words_by, music_by, arranger, copyright_notice)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT DO UPDATE SET id = song_editions.id
+            RETURNING id
+            """,
+            (song_id, publisher, words_by, music_by, arranger, copyright_notice),
         )
-        cursor.execute(select_sql, select_params)
         row = cursor.fetchone()
-        if row:
-            return row[0]
-
-        # Insert new — retry-safe under concurrent writers when the identity
-        # columns are non-NULL (#400).  NOTE: when publisher/words_by/music_by/
-        # arranger are NULL, SQLite treats each NULL as distinct in the UNIQUE
-        # index, so no IntegrityError fires and concurrent duplicates are still
-        # possible — that NULL-distinct weakness is tracked in #420.
-        try:
-            cursor.execute(
-                """
-                INSERT INTO song_editions
-                (song_id, publisher, words_by, music_by, arranger, copyright_notice)
-                VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                (song_id, publisher, words_by, music_by, arranger, copyright_notice),
-            )
-            self._maybe_commit()
-            return cursor.lastrowid
-        except sqlite3.IntegrityError:
-            if not self._in_transaction:
-                self._conn.rollback()
-            cursor.execute(select_sql, select_params)
-            row = cursor.fetchone()
-            if row:
-                return row[0]
-            raise
+        assert row is not None
+        self._maybe_commit()
+        return int(row[0])
 
     # --- Services ---
 
@@ -644,55 +625,36 @@ class Database:
         """
         service_date = normalize_service_date(service_date) or service_date
         cursor = self._conn.cursor()
-
-        # Look up by (date, name) only — the unique constraint is now on these two
-        # columns, so a matching row must be updated regardless of source_hash.
+        imported_at = datetime.now(timezone.utc).isoformat()
         cursor.execute(
             """
-            SELECT id FROM services
-            WHERE service_date = ? AND service_name = ?
+            INSERT INTO services
+            (service_date, service_name, source_file, source_hash,
+             song_leader, preacher, sermon_title, imported_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(service_date, service_name) DO UPDATE SET
+                source_file = excluded.source_file,
+                source_hash = excluded.source_hash,
+                song_leader = excluded.song_leader,
+                preacher = excluded.preacher,
+                sermon_title = excluded.sermon_title,
+                imported_at = excluded.imported_at
+            RETURNING id
             """,
-            (service_date, service_name),
+            (
+                service_date,
+                service_name,
+                source_file,
+                source_hash,
+                song_leader,
+                preacher,
+                sermon_title,
+                imported_at,
+            ),
         )
         row = cursor.fetchone()
-
-        imported_at = datetime.now(timezone.utc).isoformat()
-
-        if row:
-            # Update existing — also refresh source_file and source_hash so the
-            # record reflects the most recently imported file.
-            service_id = row[0]
-            cursor.execute(
-                """
-                UPDATE services
-                SET source_file = ?, source_hash = ?,
-                    song_leader = ?, preacher = ?, sermon_title = ?, imported_at = ?
-                WHERE id = ?
-                """,
-                (source_file, source_hash, song_leader, preacher, sermon_title,
-                 imported_at, service_id),
-            )
-        else:
-            # Insert new
-            cursor.execute(
-                """
-                INSERT INTO services
-                (service_date, service_name, source_file, source_hash,
-                 song_leader, preacher, sermon_title, imported_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    service_date,
-                    service_name,
-                    source_file,
-                    source_hash,
-                    song_leader,
-                    preacher,
-                    sermon_title,
-                    imported_at,
-                ),
-            )
-            service_id = cursor.lastrowid
+        assert row is not None
+        service_id = int(row[0])
 
         # A real service now exists for this Sunday slot, so any prior
         # "intentionally excluded" marker is obsolete — clear it so a real
@@ -883,12 +845,29 @@ class Database:
         cursor.execute(base, params)
         return cursor
 
+    @staticmethod
+    def _copy_event_service_filter(
+        service_ids: list[int] | None,
+    ) -> tuple[list[int] | None, set[int] | None]:
+        """Return the SQL filter and any overflow filter to apply in Python."""
+        if (
+            service_ids is not None
+            and len(service_ids) > _COPY_EVENTS_SERVICE_ID_SQL_LIMIT
+        ):
+            return None, set(service_ids)
+        return service_ids, None
+
     def query_copy_events(
         self, start_date: str, end_date: str, service_ids: list[int] | None = None
     ) -> list[dict]:
         """Query copy events for date range, optionally restricted to given service IDs."""
-        cursor = self._execute_copy_events_query(start_date, end_date, service_ids)
-        return [dict(row) for row in cursor.fetchall()]
+        sql_service_ids, overflow_filter = self._copy_event_service_filter(service_ids)
+        cursor = self._execute_copy_events_query(start_date, end_date, sql_service_ids)
+        return [
+            dict(row)
+            for row in cursor
+            if overflow_filter is None or row["service_id"] in overflow_filter
+        ]
 
     def iter_copy_events(
         self, start_date: str, end_date: str, service_ids: list[int] | None = None
@@ -899,10 +878,12 @@ class Database:
         individually so callers can process large result sets without
         materialising the entire list (#27).
         """
-        cursor = self._execute_copy_events_query(start_date, end_date, service_ids)
+        sql_service_ids, overflow_filter = self._copy_event_service_filter(service_ids)
+        cursor = self._execute_copy_events_query(start_date, end_date, sql_service_ids)
         row = cursor.fetchone()
         while row is not None:
-            yield dict(row)
+            if overflow_filter is None or row["service_id"] in overflow_filter:
+                yield dict(row)
             row = cursor.fetchone()
 
     # --- Service exclusions (missing-services report) ---
@@ -1174,6 +1155,9 @@ class Database:
         preacher: str | None = None,
         sermon_title: str | None = None,
         songs_json: str | None = None,
+        anomalies_json: str | None = None,
+        ocr_model: str | None = None,
+        ocr_calls: int | None = None,
         **_extra_kwargs: Any,
     ) -> None:
         """Update mutable fields on an import job record.
@@ -1220,6 +1204,15 @@ class Database:
         if songs_json is not None:
             sets.append("songs_json = ?")
             params.append(songs_json)
+        if anomalies_json is not None:
+            sets.append("anomalies_json = ?")
+            params.append(anomalies_json)
+        if ocr_model is not None:
+            sets.append("ocr_model = ?")
+            params.append(ocr_model)
+        if ocr_calls is not None:
+            sets.append("ocr_calls = ?")
+            params.append(ocr_calls)
         if not sets:
             return
         # Build the SET clause from whitelisted column names only.
@@ -1305,20 +1298,45 @@ class Database:
     ) -> tuple[list[dict[str, Any]], int]:
         """Return songs with performance count, optionally filtered and sorted."""
         sort = _safe_order_by(sort, self._SONGS_SORT_COLS)
-        order = f"{sort} {_safe_sort_dir(sort_dir)}, s.display_title"
+        order = f"{sort} {_safe_sort_dir(sort_dir)}, s.display_title, s.id"
         cursor = self._conn.cursor()
+        # Choose one display edition per song. Prefer the edition from the most
+        # recent service that explicitly referenced one; for songs never linked
+        # to an edition, fall back to the newest edition row.
+        edition_join = """
+            LEFT JOIN song_editions se ON se.id = COALESCE(
+                (
+                    SELECT recent_ss.song_edition_id
+                    FROM service_songs recent_ss
+                    JOIN services recent_sv ON recent_sv.id = recent_ss.service_id
+                    WHERE recent_ss.song_id = s.id
+                      AND recent_ss.song_edition_id IS NOT NULL
+                    ORDER BY recent_sv.service_date DESC,
+                             recent_sv.id DESC,
+                             recent_ss.id DESC
+                    LIMIT 1
+                ),
+                (
+                    SELECT fallback_se.id
+                    FROM song_editions fallback_se
+                    WHERE fallback_se.song_id = s.id
+                    ORDER BY fallback_se.id DESC
+                    LIMIT 1
+                )
+            )
+        """
         base = """
             SELECT s.id, s.display_title, s.canonical_title,
                    se.words_by, se.music_by, se.arranger,
                    COUNT(DISTINCT ss.service_id) AS performance_count
             FROM songs s
-            LEFT JOIN song_editions se ON se.song_id = s.id
+        """ + edition_join + """
             LEFT JOIN service_songs ss ON ss.song_id = s.id
         """
         count_base = """
             SELECT COUNT(DISTINCT s.id)
             FROM songs s
-            LEFT JOIN song_editions se ON se.song_id = s.id
+        """ + edition_join + """
             LEFT JOIN service_songs ss ON ss.song_id = s.id
         """
         offset = (page - 1) * per_page
@@ -1329,20 +1347,39 @@ class Database:
                 like = f"%{_escape_like(search)}%"
                 where = """
                     WHERE (LOWER(s.display_title) LIKE LOWER(?) ESCAPE '\\'
-                       OR LOWER(COALESCE(se.words_by, '')) LIKE LOWER(?) ESCAPE '\\'
-                       OR LOWER(COALESCE(se.music_by, '')) LIKE LOWER(?) ESCAPE '\\')
+                       OR EXISTS (
+                           SELECT 1 FROM song_editions search_se
+                           WHERE search_se.song_id = s.id
+                             AND (
+                               LOWER(COALESCE(search_se.words_by, ''))
+                                   LIKE LOWER(?) ESCAPE '\\'
+                               OR LOWER(COALESCE(search_se.music_by, ''))
+                                   LIKE LOWER(?) ESCAPE '\\'
+                             )
+                       ))
                 """
                 cursor.execute(count_base + where, (like, like, like))
                 total: int = cursor.fetchone()[0]
                 cursor.execute(
-                    base + where + "GROUP BY s.id ORDER BY " + order + " LIMIT ? OFFSET ?",
+                    base
+                    + where
+                    + "GROUP BY s.id, s.display_title, s.canonical_title, "
+                    + "se.words_by, se.music_by, se.arranger "
+                    + "ORDER BY "
+                    + order
+                    + " LIMIT ? OFFSET ?",
                     (like, like, like, per_page, offset),
                 )
             else:
                 cursor.execute(count_base)
                 total = cursor.fetchone()[0]
                 cursor.execute(
-                    base + "GROUP BY s.id ORDER BY " + order + " LIMIT ? OFFSET ?",
+                    base
+                    + "GROUP BY s.id, s.display_title, s.canonical_title, "
+                    + "se.words_by, se.music_by, se.arranger "
+                    + "ORDER BY "
+                    + order
+                    + " LIMIT ? OFFSET ?",
                     (per_page, offset),
                 )
             rows = [dict(row) for row in cursor.fetchall()]

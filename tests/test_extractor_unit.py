@@ -622,6 +622,69 @@ class TestExtractionTimeout:
         with pytest.raises(TimeoutError):
             ext_module.extract_songs(pptx_path)
 
+    def test_timeout_returns_without_waiting_for_stuck_worker(
+        self, tmp_path, monkeypatch
+    ):
+        """Executor shutdown must not defeat the public wall-clock timeout (#498)."""
+        import threading
+        import time
+
+        import worship_catalog.extractor as ext_module
+
+        worker_started = threading.Event()
+
+        def slow_impl(*args, **kwargs):
+            worker_started.set()
+            time.sleep(0.5)
+
+        monkeypatch.setattr(ext_module, "_MAX_EXTRACT_SECONDS", 0.05)
+        monkeypatch.setattr(ext_module, "_extract_songs_impl", slow_impl)
+        pptx_path = tmp_path / "stuck.pptx"
+        pptx_path.write_bytes(b"PK\x03\x04")
+
+        started = time.monotonic()
+        with pytest.raises(TimeoutError):
+            ext_module.extract_songs(pptx_path)
+        elapsed = time.monotonic() - started
+
+        assert worker_started.is_set()
+        assert elapsed < 0.25, (
+            f"extract_songs waited {elapsed:.2f}s for its timed-out worker to finish"
+        )
+
+    def test_timed_out_extractions_cannot_grow_worker_threads_without_bound(
+        self, tmp_path, monkeypatch
+    ):
+        """Repeated timeouts must remain capped by the shared extraction pool."""
+        import threading
+        import time
+
+        import worship_catalog.extractor as ext_module
+
+        state = {"active": 0, "peak": 0}
+        lock = threading.Lock()
+
+        def slow_impl(*args, **kwargs):
+            with lock:
+                state["active"] += 1
+                state["peak"] = max(state["peak"], state["active"])
+            try:
+                time.sleep(0.3)
+            finally:
+                with lock:
+                    state["active"] -= 1
+
+        monkeypatch.setattr(ext_module, "_MAX_EXTRACT_SECONDS", 0.01)
+        monkeypatch.setattr(ext_module, "_extract_songs_impl", slow_impl)
+        pptx_path = tmp_path / "repeated-timeouts.pptx"
+        pptx_path.write_bytes(b"PK\x03\x04")
+
+        for _ in range(8):
+            with pytest.raises(TimeoutError):
+                ext_module.extract_songs(pptx_path)
+
+        assert state["peak"] <= ext_module._MAX_CONCURRENT_EXTRACTIONS
+
     def test_normal_extraction_completes_within_limit(self, tmp_path):
         """A minimal PPTX completes well within the default time limit."""
         from pptx import Presentation

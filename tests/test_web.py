@@ -1413,7 +1413,8 @@ class TestJobStatusEndpoint:
             "job_id", "filename", "status", "started_at",
             "completed_at", "songs_imported", "error_message",
             "service_date", "service_name", "song_leader",
-            "preacher", "sermon_title", "songs_json",
+            "preacher", "sermon_title", "songs_json", "anomalies_json",
+            "ocr_model", "ocr_calls",
         ):
             assert field in body
 
@@ -3091,6 +3092,117 @@ class TestBackgroundImportDelegatesToService:
         # Second positional arg should be the pptx_path
         assert call_args[0][1] == pptx_path
 
+    def test_background_import_enables_openrouter_ocr_and_persists_audit(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from importlib import reload
+        from unittest.mock import MagicMock
+
+        from worship_catalog.import_service import ImportResult, ImportedSong
+
+        db_path = tmp_path / "openrouter.db"
+        db = Database(db_path)
+        db.connect()
+        db.init_schema()
+        job_id = "openrouter-score-job"
+        db.create_import_job(job_id, filename="score.pptx")
+        db.close()
+
+        monkeypatch.setenv("DB_PATH", str(db_path))
+        monkeypatch.setenv("OPENROUTER_API_KEY", "test-openrouter-key")
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("WORSHIP_OCR_PROVIDER", raising=False)
+        monkeypatch.delenv("WORSHIP_MAX_OCR_CALLS", raising=False)
+
+        import worship_catalog.web.app as app_module
+
+        reload(app_module)
+        anomaly = {
+            "type": "score_image_ocr",
+            "message": "title recovered from score image via OCR",
+            "title": "Goodness of God",
+        }
+        mock_run = MagicMock(return_value=ImportResult(
+            service_date="2026-06-07",
+            service_name="AM Worship",
+            songs_imported=1,
+            anomalies=[anomaly],
+            songs=[ImportedSong(1, "Goodness of God")],
+            ocr_model="google/gemini-2.5-flash-lite",
+            ocr_calls=25,
+        ))
+        monkeypatch.setattr(app_module, "run_import", mock_run)
+        monkeypatch.setattr(app_module, "send_pushover", MagicMock())
+
+        pptx_path = tmp_path / "score.pptx"
+        pptx_path.write_bytes(b"fake")
+        app_module._run_import_in_background(job_id, pptx_path)
+
+        kwargs = mock_run.call_args.kwargs
+        assert kwargs["use_ocr"] is True
+        assert kwargs["ocr_budget"].max_calls == 25
+
+        result_db = Database(db_path)
+        result_db.connect()
+        row = result_db.get_import_job(job_id)
+        result_db.close()
+        assert row is not None
+        assert json.loads(row["anomalies_json"]) == [anomaly]
+        assert row["ocr_model"] == "google/gemini-2.5-flash-lite"
+        assert row["ocr_calls"] == 25
+
+    def test_background_import_stays_text_only_without_provider_key(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from importlib import reload
+        from unittest.mock import MagicMock
+
+        from worship_catalog.import_service import ImportResult
+
+        db_path = tmp_path / "text-only.db"
+        db = Database(db_path)
+        db.connect()
+        db.init_schema()
+        job_id = "text-only-job"
+        db.create_import_job(job_id, filename="ordinary.pptx")
+        db.close()
+
+        monkeypatch.setenv("DB_PATH", str(db_path))
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("WORSHIP_OCR_PROVIDER", raising=False)
+
+        import worship_catalog.web.app as app_module
+
+        reload(app_module)
+        mock_run = MagicMock(return_value=ImportResult(
+            service_date="2026-06-07",
+            service_name="AM Worship",
+            songs_imported=1,
+        ))
+        monkeypatch.setattr(app_module, "run_import", mock_run)
+        monkeypatch.setattr(app_module, "send_pushover", MagicMock())
+
+        pptx_path = tmp_path / "ordinary.pptx"
+        pptx_path.write_bytes(b"fake")
+        app_module._run_import_in_background(job_id, pptx_path)
+
+        assert mock_run.call_args.kwargs == {"use_ocr": False, "ocr_budget": None}
+
+    def test_web_ocr_budget_honors_configured_cap(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import worship_catalog.web.app as app_module
+
+        monkeypatch.setenv("OPENROUTER_API_KEY", "test-openrouter-key")
+        monkeypatch.delenv("WORSHIP_OCR_PROVIDER", raising=False)
+        monkeypatch.setenv("WORSHIP_MAX_OCR_CALLS", "7")
+
+        budget = app_module._get_web_ocr_budget()
+
+        assert budget is not None
+        assert budget.max_calls == 7
+
 
 class TestGetDbSchemaInit:
     """Verify that init_schema() is only called once, not on every request."""
@@ -3361,6 +3473,9 @@ class TestUploadFormCSPCompatible:
         assert resp.status_code == 200
         assert "fetch" in resp.text, "upload.js must use fetch to POST the form"
         assert "csrftoken" in resp.text.lower(), "upload.js must read the CSRF cookie"
+        assert "ocr_model" in resp.text
+        assert "ocr_calls" in resp.text
+        assert "anomalies_json" in resp.text
 
     def test_upload_form_references_external_js(self, client):
         """upload.html must load upload.js from /static/."""
@@ -3660,6 +3775,121 @@ class TestDbConnectionCleanup:
         assert direct_calls == 0, (
             f"Found {direct_calls} direct _get_db() call(s) in route handlers. "
             "Routes must use Depends(get_db) for automatic connection cleanup."
+        )
+
+
+class TestReportEventLoopOffloadIssue501:
+    """Heavy stats aggregation and workbook builds must not block the event loop."""
+
+    _FORM = {
+        "start_date": "2026-01-01",
+        "end_date": "2026-12-31",
+        "leader": "",
+        "all_songs": "true",
+    }
+
+    def test_heavy_stats_routes_are_sync_worker_handlers(self) -> None:
+        """FastAPI offloads ordinary ``def`` handlers to its worker pool."""
+        import inspect
+
+        import worship_catalog.web.app as app_module
+
+        endpoints = {
+            route.path: route.endpoint
+            for route in app_module.app.routes
+            if hasattr(route, "endpoint")
+        }
+        for path in (
+            "/reports/stats",
+            "/reports/stats/csv",
+            "/reports/stats/xlsx",
+        ):
+            assert not inspect.iscoroutinefunction(endpoints[path]), (
+                f"{path} must be a sync handler so blocking report work runs off-loop"
+            )
+
+    def test_health_not_blocked_by_slow_stats_report(
+        self, db_with_songs, tmp_path, monkeypatch
+    ) -> None:
+        import threading
+        import time
+        from importlib import reload
+
+        import worship_catalog.web.app as app_module
+
+        monkeypatch.setenv("DB_PATH", str(db_with_songs))
+        monkeypatch.setenv("INBOX_DIR", str(tmp_path / "inbox"))
+        reload(app_module)
+
+        original_compute = app_module._compute_stats
+        report_started = threading.Event()
+
+        def slow_compute(*args: object, **kwargs: object) -> object:
+            report_started.set()
+            time.sleep(1.0)
+            return original_compute(*args, **kwargs)
+
+        monkeypatch.setattr(app_module, "_compute_stats", slow_compute)
+        report_result: dict[str, object] = {}
+
+        with TestClient(app_module.app) as raw:
+            shared_client = CsrfAwareClient(raw)
+            shared_client._ensure_token()
+
+            def run_report() -> None:
+                report_result["response"] = shared_client.post(
+                    "/reports/stats", data=self._FORM
+                )
+
+            report_thread = threading.Thread(target=run_report)
+            report_thread.start()
+            assert report_started.wait(timeout=2.0), "slow report never started"
+
+            started = time.monotonic()
+            health_response = shared_client.get("/health")
+            health_latency = time.monotonic() - started
+            report_thread.join(timeout=3.0)
+
+        assert not report_thread.is_alive()
+        assert health_response.status_code == 200
+        assert health_latency < 0.5, (
+            f"/health waited {health_latency:.2f}s for blocking report work"
+        )
+        assert report_result["response"].status_code == 200
+
+    def test_worker_database_closes_when_stats_computation_fails(
+        self, db_with_songs, tmp_path, monkeypatch
+    ) -> None:
+        from importlib import reload
+
+        import worship_catalog.web.app as app_module
+
+        monkeypatch.setenv("DB_PATH", str(db_with_songs))
+        monkeypatch.setenv("INBOX_DIR", str(tmp_path / "inbox"))
+        reload(app_module)
+
+        close_calls: list[bool] = []
+        original_close = Database.close
+
+        def tracking_close(self: Database) -> None:
+            close_calls.append(True)
+            original_close(self)
+
+        def fail_compute(*args: object, **kwargs: object) -> object:
+            raise RuntimeError("simulated report failure")
+
+        monkeypatch.setattr(Database, "close", tracking_close)
+        monkeypatch.setattr(app_module, "_compute_stats", fail_compute)
+
+        with TestClient(app_module.app, raise_server_exceptions=False) as raw:
+            shared_client = CsrfAwareClient(raw)
+            shared_client._ensure_token()
+            close_calls.clear()
+            response = shared_client.post("/reports/stats", data=self._FORM)
+
+        assert response.status_code == 500
+        assert close_calls == [True], (
+            "report worker must close exactly its own per-request database connection"
         )
 
 
@@ -3963,6 +4193,91 @@ class TestUploadMagicBytes:
         )
         assert resp.status_code == 400
         assert "not a valid PPTX" in resp.json()["detail"]
+
+
+class TestUploadStreamingIssue503:
+    """Uploads are streamed atomically without retaining the whole body (#503)."""
+
+    def test_upload_streams_to_inbox_without_path_write_bytes(
+        self, client, tmp_path, monkeypatch
+    ):
+        """The handler must not materialize the complete upload for write_bytes()."""
+        import worship_catalog.web.app as app_module
+
+        submitted: list[Path] = []
+        monkeypatch.setattr(
+            app_module._import_executor,
+            "submit",
+            lambda _fn, _job_id, path: submitted.append(path),
+        )
+
+        def reject_whole_file_write(_self: Path, _data: bytes) -> int:
+            raise AssertionError("upload used Path.write_bytes instead of streaming")
+
+        monkeypatch.setattr(Path, "write_bytes", reject_whole_file_write)
+        payload = b"PK\x03\x04" + b"streamed-payload"
+
+        response = client.post(
+            "/upload",
+            files={"file": ("streamed.pptx", io.BytesIO(payload), VALID_PPTX_MIME)},
+        )
+
+        assert response.status_code == 202
+        assert len(submitted) == 1
+        assert submitted[0].read_bytes() == payload
+        assert not list(submitted[0].parent.glob("*.uploading"))
+
+    def test_magic_bytes_can_span_read_chunks(self, client, monkeypatch):
+        import worship_catalog.web.app as app_module
+
+        submitted: list[Path] = []
+        monkeypatch.setattr(app_module, "_UPLOAD_CHUNK_SIZE", 2)
+        monkeypatch.setattr(
+            app_module._import_executor,
+            "submit",
+            lambda _fn, _job_id, path: submitted.append(path),
+        )
+
+        response = client.post(
+            "/upload",
+            files={"file": ("split.pptx", io.BytesIO(b"PK\x03\x04body"), VALID_PPTX_MIME)},
+        )
+
+        assert response.status_code == 202
+        assert submitted[0].read_bytes() == b"PK\x03\x04body"
+
+    def test_bad_magic_removes_partial_upload(self, client, monkeypatch):
+        import worship_catalog.web.app as app_module
+
+        monkeypatch.setattr(app_module._import_executor, "submit", pytest.fail)
+        response = client.post(
+            "/upload",
+            files={"file": ("fake.pptx", io.BytesIO(b"not-a-zip"), VALID_PPTX_MIME)},
+        )
+
+        assert response.status_code == 400
+        assert not list(Path(os.environ["INBOX_DIR"]).iterdir())
+
+    def test_oversize_body_removes_partial_upload(self, client, monkeypatch):
+        import worship_catalog.web.app as app_module
+
+        monkeypatch.setattr(app_module, "MAX_UPLOAD_BYTES", 8)
+        monkeypatch.setattr(app_module, "_UPLOAD_CHUNK_SIZE", 4)
+        monkeypatch.setattr(app_module._import_executor, "submit", pytest.fail)
+        response = client.post(
+            "/upload",
+            headers={"content-length": "8"},
+            files={
+                "file": (
+                    "large.pptx",
+                    io.BytesIO(b"PK\x03\x04too-large"),
+                    VALID_PPTX_MIME,
+                )
+            },
+        )
+
+        assert response.status_code == 413
+        assert not list(Path(os.environ["INBOX_DIR"]).iterdir())
 
 
 # ---------------------------------------------------------------------------

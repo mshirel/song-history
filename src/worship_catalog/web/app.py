@@ -16,9 +16,9 @@ import secrets
 import threading
 import time
 from collections import defaultdict
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Iterator
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
@@ -41,6 +41,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 
 from worship_catalog.db import Database
+from worship_catalog.extractor import OcrBudget
 from worship_catalog.import_service import run_import
 from worship_catalog.log_config import RequestLoggingMiddleware
 from worship_catalog.log_config import setup as _setup_logging
@@ -586,6 +587,21 @@ async def get_db() -> AsyncGenerator[Database, None]:
         db.close()
 
 
+@contextmanager
+def _thread_confined_db() -> Iterator[Database]:
+    """Open and close a DB in the calling worker thread.
+
+    Sync report handlers run in FastAPI's worker pool.  Their SQLite connection
+    must therefore be created, used, and closed inside that same handler rather
+    than by the async ``get_db`` dependency on the event-loop thread (#501).
+    """
+    db = _get_db()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
@@ -718,17 +734,17 @@ def _compute_stats(
 
 
 @app.post("/reports/stats", response_class=HTMLResponse)
-async def reports_stats(
+def reports_stats(
     request: Request,
     start_date: str = Form(...),
     end_date: str = Form(...),
     leader: str = Form(default=""),
     all_songs: bool = Form(default=False),
-    db: Database = Depends(get_db),  # noqa: B008
     _rl: None = Depends(_report_rate_limit),  # noqa: B008
 ) -> HTMLResponse:
     _validate_date_range(start_date, end_date)
-    data = _compute_stats(db, start_date, end_date, leader, all_songs)
+    with _thread_confined_db() as db:
+        data = _compute_stats(db, start_date, end_date, leader, all_songs)
 
     _log.info(
         "Stats report generated",
@@ -749,16 +765,16 @@ async def reports_stats(
 
 
 @app.post("/reports/stats/csv")
-async def reports_stats_csv(
+def reports_stats_csv(
     start_date: str = Form(...),
     end_date: str = Form(...),
     leader: str = Form(default=""),
     all_songs: bool = Form(default=False),
-    db: Database = Depends(get_db),  # noqa: B008
     _rl: None = Depends(_report_rate_limit),  # noqa: B008
 ) -> StreamingResponse:
     _validate_date_range(start_date, end_date)
-    data = _compute_stats(db, start_date, end_date, leader, all_songs)
+    with _thread_confined_db() as db:
+        data = _compute_stats(db, start_date, end_date, leader, all_songs)
 
     output = io.StringIO()
     writer = csv.writer(output)
@@ -776,12 +792,11 @@ async def reports_stats_csv(
 
 
 @app.post("/reports/stats/xlsx")
-async def reports_stats_xlsx(
+def reports_stats_xlsx(
     start_date: str = Form(...),
     end_date: str = Form(...),
     leader: str = Form(default=""),
     all_songs: bool = Form(default=False),
-    db: Database = Depends(get_db),  # noqa: B008
     _rl: None = Depends(_report_rate_limit),  # noqa: B008
 ) -> StreamingResponse:
     _validate_date_range(start_date, end_date)
@@ -794,7 +809,8 @@ async def reports_stats_xlsx(
             detail="Excel export requires openpyxl. Install with: pip install openpyxl",
         ) from exc
 
-    data = _compute_stats(db, start_date, end_date, leader, all_songs)
+    with _thread_confined_db() as db:
+        data = _compute_stats(db, start_date, end_date, leader, all_songs)
 
     wb = openpyxl.Workbook()
     ws = wb.active
@@ -1146,6 +1162,35 @@ def _get_inbox_dir() -> Path:
     return p
 
 
+_WEB_OCR_MAX_CALLS_DEFAULT = 25
+
+
+def _get_web_ocr_budget() -> OcrBudget | None:
+    """Return a per-upload OCR budget when the selected provider is configured."""
+    provider = os.environ.get("WORSHIP_OCR_PROVIDER", "openrouter").strip().lower()
+    key_name = (
+        "ANTHROPIC_API_KEY" if provider == "anthropic" else "OPENROUTER_API_KEY"
+    )
+    if not os.environ.get(key_name):
+        return None
+
+    configured = os.environ.get(
+        "WORSHIP_MAX_OCR_CALLS", str(_WEB_OCR_MAX_CALLS_DEFAULT)
+    )
+    try:
+        max_calls = int(configured)
+        if max_calls < 0:
+            raise ValueError
+    except ValueError:
+        _log.warning(
+            "Invalid WORSHIP_MAX_OCR_CALLS=%r; using default %d",
+            configured,
+            _WEB_OCR_MAX_CALLS_DEFAULT,
+        )
+        max_calls = _WEB_OCR_MAX_CALLS_DEFAULT
+    return OcrBudget(max_calls=max_calls)
+
+
 def _run_import_in_background(job_id: str, pptx_path: Path) -> None:
     """Import a PPTX file and update the job record when done.  Runs in a thread.
 
@@ -1162,7 +1207,15 @@ def _run_import_in_background(job_id: str, pptx_path: Path) -> None:
     _notify_message = f"{pptx_path.name} — unknown error"
     _notify_priority = -1
     try:
-        result = run_import(db, pptx_path)
+        ocr_budget = _get_web_ocr_budget()
+        result = run_import(
+            db,
+            pptx_path,
+            use_ocr=ocr_budget is not None,
+            ocr_budget=ocr_budget,
+        )
+
+        anomalies_json = json.dumps(result.anomalies) if result.anomalies else None
 
         if result.songs_imported == 0:
             db.update_import_job(
@@ -1170,6 +1223,9 @@ def _run_import_in_background(job_id: str, pptx_path: Path) -> None:
                 status="complete",
                 songs_imported=0,
                 error_message="No songs found — file may not be a worship slide deck",
+                anomalies_json=anomalies_json,
+                ocr_model=result.ocr_model,
+                ocr_calls=result.ocr_calls,
             )
             _notify_title = "Import complete (0 songs)"
             _notify_message = f"{pptx_path.name} — no songs found"
@@ -1187,6 +1243,9 @@ def _run_import_in_background(job_id: str, pptx_path: Path) -> None:
                 songs_json=json.dumps(
                     [s.display_title for s in result.songs]
                 ) if result.songs else None,
+                anomalies_json=anomalies_json,
+                ocr_model=result.ocr_model,
+                ocr_calls=result.ocr_calls,
             )
             _notify_title = "Import complete"
             _notify_message = (
@@ -1367,45 +1426,58 @@ async def upload(
             content={"detail": "Filename is invalid after sanitization"},
             status_code=400,
         )
-    # Read body in chunks to bound memory usage (#297)
-    chunks: list[bytes] = []
-    total_read = 0
-    while True:
-        chunk = await file.read(_UPLOAD_CHUNK_SIZE)
-        if not chunk:
-            break
-        total_read += len(chunk)
-        if total_read > MAX_UPLOAD_BYTES:
-            break
-        chunks.append(chunk)
-    content = b"".join(chunks)
-    # Validate ZIP magic bytes — PPTX is a ZIP archive (PK\x03\x04) (#320)
-    if len(content) < 4 or content[:4] != b"PK\x03\x04":
-        send_pushover(
-            title="Upload rejected",
-            message=f"{filename} — not a valid PPTX (bad magic bytes)",
-            priority=-1,
-        )
-        return JSONResponse(
-            content={"detail": "File is not a valid PPTX archive"},
-            status_code=400,
-        )
-    if total_read > MAX_UPLOAD_BYTES:
-        limit_mb = MAX_UPLOAD_BYTES // (1024 * 1024)
-        send_pushover(
-            title="Upload rejected",
-            message=f"{filename} — file exceeds {limit_mb} MB limit",
-            priority=-1,
-        )
-        return JSONResponse(
-            content={"detail": f"File exceeds maximum allowed size of {limit_mb} MB"},
-            status_code=413,
-        )
-    # Save to inbox
+    # Stream to a hidden sibling file so neither the watcher nor the import pool
+    # can observe a partial PPTX.  Rename into place only after validation (#503).
     inbox = _get_inbox_dir()
     job_id = secrets.token_urlsafe(32)
     dest = inbox / f"{job_id}_{filename}"
-    dest.write_bytes(content)
+    partial = inbox / f".{job_id}.uploading"
+    total_read = 0
+    magic = bytearray()
+    try:
+        with partial.open("xb") as output:
+            while True:
+                chunk = await file.read(_UPLOAD_CHUNK_SIZE)
+                if not chunk:
+                    break
+                total_read += len(chunk)
+                if total_read > MAX_UPLOAD_BYTES:
+                    break
+                if len(magic) < 4:
+                    magic.extend(chunk[: 4 - len(magic)])
+                output.write(chunk)
+
+        if total_read > MAX_UPLOAD_BYTES:
+            limit_mb = MAX_UPLOAD_BYTES // (1024 * 1024)
+            send_pushover(
+                title="Upload rejected",
+                message=f"{filename} — file exceeds {limit_mb} MB limit",
+                priority=-1,
+            )
+            return JSONResponse(
+                content={
+                    "detail": f"File exceeds maximum allowed size of {limit_mb} MB"
+                },
+                status_code=413,
+            )
+
+        # PPTX is a ZIP archive.  Accumulate only its four-byte signature so
+        # validation also works when a read boundary falls inside the magic.
+        if bytes(magic) != b"PK\x03\x04":
+            send_pushover(
+                title="Upload rejected",
+                message=f"{filename} — not a valid PPTX (bad magic bytes)",
+                priority=-1,
+            )
+            return JSONResponse(
+                content={"detail": "File is not a valid PPTX archive"},
+                status_code=400,
+            )
+
+        partial.replace(dest)
+    finally:
+        partial.unlink(missing_ok=True)
+
     # Create pending job record
     db.create_import_job(job_id, filename=filename)
     # Submit import to bounded thread pool (#52).

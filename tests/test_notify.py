@@ -208,6 +208,9 @@ class TestImportNotificationIntegration:
         mock_result.preacher = None
         mock_result.sermon_title = None
         mock_result.songs = []
+        mock_result.anomalies = []
+        mock_result.ocr_model = None
+        mock_result.ocr_calls = 0
 
         with (
             patch("worship_catalog.web.app._get_db") as mock_get_db,

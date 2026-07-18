@@ -28,3 +28,18 @@ class TestPiDeployDocAccuracy:
         assert "ufw" in doc or "firewall" in doc          # host firewall step
         assert "chmod 600" in doc and ".env" in doc        # secret perms step
         assert "passwordauthentication no" in doc or "key-only" in doc  # SSH hardening
+
+    def test_verifies_promtail_compose_and_runtime_users(self) -> None:
+        doc = self._text()
+        checklist = doc.split("## 14. go/no-go verification checklist", 1)[1]
+        assert "docker compose config --format json" in checklist
+        assert ".services.promtail.user" in checklist
+        assert "{{.config.user}}" in checklist
+        assert "10001:0" in checklist
+
+    def test_verifies_promtail_positions_and_loki_delivery(self) -> None:
+        doc = self._text()
+        checklist = doc.split("## 14. go/no-go verification checklist", 1)[1]
+        assert "positions.yaml" in checklist
+        assert "promtail-verify-" in checklist
+        assert "/loki/api/v1/query_range" in checklist
