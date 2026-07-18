@@ -311,14 +311,20 @@ class Database:
             self.conn = None
 
     @contextmanager
-    def transaction(self) -> Generator[None, None, None]:
+    def transaction(self, *, immediate: bool = False) -> Generator[None, None, None]:
         """Context manager that wraps multiple DB calls in a single transaction.
+
+        Set ``immediate`` when a transaction must read before writing. SQLite
+        then reserves the single-writer slot before the first read, preventing
+        another writer from invalidating that read snapshot.
 
         On success: commits once when the block exits.
         On exception: rolls back all changes and re-raises.
         """
         self._in_transaction = True
         try:
+            if immediate:
+                self._conn.execute("BEGIN IMMEDIATE")
             yield
             self._conn.commit()
         except Exception:
@@ -600,55 +606,36 @@ class Database:
         """
         service_date = normalize_service_date(service_date) or service_date
         cursor = self._conn.cursor()
-
-        # Look up by (date, name) only — the unique constraint is now on these two
-        # columns, so a matching row must be updated regardless of source_hash.
+        imported_at = datetime.now(timezone.utc).isoformat()
         cursor.execute(
             """
-            SELECT id FROM services
-            WHERE service_date = ? AND service_name = ?
+            INSERT INTO services
+            (service_date, service_name, source_file, source_hash,
+             song_leader, preacher, sermon_title, imported_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(service_date, service_name) DO UPDATE SET
+                source_file = excluded.source_file,
+                source_hash = excluded.source_hash,
+                song_leader = excluded.song_leader,
+                preacher = excluded.preacher,
+                sermon_title = excluded.sermon_title,
+                imported_at = excluded.imported_at
+            RETURNING id
             """,
-            (service_date, service_name),
+            (
+                service_date,
+                service_name,
+                source_file,
+                source_hash,
+                song_leader,
+                preacher,
+                sermon_title,
+                imported_at,
+            ),
         )
         row = cursor.fetchone()
-
-        imported_at = datetime.now(timezone.utc).isoformat()
-
-        if row:
-            # Update existing — also refresh source_file and source_hash so the
-            # record reflects the most recently imported file.
-            service_id = row[0]
-            cursor.execute(
-                """
-                UPDATE services
-                SET source_file = ?, source_hash = ?,
-                    song_leader = ?, preacher = ?, sermon_title = ?, imported_at = ?
-                WHERE id = ?
-                """,
-                (source_file, source_hash, song_leader, preacher, sermon_title,
-                 imported_at, service_id),
-            )
-        else:
-            # Insert new
-            cursor.execute(
-                """
-                INSERT INTO services
-                (service_date, service_name, source_file, source_hash,
-                 song_leader, preacher, sermon_title, imported_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    service_date,
-                    service_name,
-                    source_file,
-                    source_hash,
-                    song_leader,
-                    preacher,
-                    sermon_title,
-                    imported_at,
-                ),
-            )
-            service_id = cursor.lastrowid
+        assert row is not None
+        service_id = int(row[0])
 
         # A real service now exists for this Sunday slot, so any prior
         # "intentionally excluded" marker is obsolete — clear it so a real
