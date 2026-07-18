@@ -26,6 +26,7 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+from itsdangerous import URLSafeSerializer
 
 # Skip entire module if playwright is not installed
 pytest.importorskip("playwright", reason="playwright not installed -- run the frozen uv sync")
@@ -141,6 +142,74 @@ class TestReportFormsE2E:
         assert result_text and "Services" in result_text, (
             "Stats result did not render service count"
         )
+
+    def test_htmx_uses_rotated_csrf_cookie_without_reload(
+        self, browser_page: Any
+    ) -> None:
+        """Every HTMX request must source its header from the current cookie."""
+        browser_page.goto(f"{BASE_URL}/reports")
+        browser_page.wait_for_load_state("networkidle")
+        fresh = next(
+            cookie["value"]
+            for cookie in browser_page.context.cookies()
+            if cookie["name"] == "csrftoken"
+        )
+        browser_page.evaluate(
+            "document.body.setAttribute('hx-headers', "
+            "JSON.stringify({'X-CSRFToken': 'stale-token'}))"
+        )
+
+        seen: list[str | None] = []
+        browser_page.on(
+            "request",
+            lambda request: seen.append(request.headers.get("x-csrftoken"))
+            if request.url.endswith("/reports/stats")
+            else None,
+        )
+        browser_page.fill("#stats-from", "2026-01-01")
+        browser_page.fill("#stats-to", "2026-12-31")
+        browser_page.locator(
+            'form[hx-post="/reports/stats"] button[type="submit"]'
+        ).click(force=True)
+        browser_page.wait_for_selector("#stats-result .stat-box", timeout=5000)
+
+        assert seen[-1] == fresh
+
+    def test_htmx_retries_with_replacement_cookie_without_reload(
+        self, browser_page: Any
+    ) -> None:
+        """A stale-token 403 must heal on the next click on the same page."""
+        browser_page.goto(f"{BASE_URL}/reports")
+        browser_page.wait_for_load_state("networkidle")
+        stale = URLSafeSerializer(
+            "an-old-rotated-secret", "csrftoken"
+        ).dumps("old-token-payload")
+        browser_page.context.add_cookies(
+            [{"name": "csrftoken", "value": stale, "url": BASE_URL}]
+        )
+        browser_page.fill("#stats-from", "2026-01-01")
+        browser_page.fill("#stats-to", "2026-12-31")
+        submit = 'form[hx-post="/reports/stats"] button[type="submit"]'
+
+        with browser_page.expect_response(
+            lambda response: response.url.endswith("/reports/stats")
+        ) as first_response:
+            browser_page.locator(submit).click(force=True)
+        assert first_response.value.status == 403
+
+        replacement = next(
+            cookie["value"]
+            for cookie in browser_page.context.cookies()
+            if cookie["name"] == "csrftoken"
+        )
+        assert replacement != stale
+
+        with browser_page.expect_response(
+            lambda response: response.url.endswith("/reports/stats")
+        ) as second_response:
+            browser_page.locator(submit).click(force=True)
+        assert second_response.value.status == 200
+        browser_page.wait_for_selector("#stats-result .stat-box", timeout=5000)
 
     def test_stats_inverted_date_range_shows_error(self, browser_page: Any) -> None:
         """#496: an inverted date range (From after To) must surface an error in

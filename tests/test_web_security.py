@@ -890,15 +890,15 @@ class TestReportCsrfTokens:
 
     def test_htmx_csrf_header_configured_via_reports_js(self, client):
         """reports.js must configure htmx to send CSRF headers on all requests."""
-        # reports.js is loaded on the reports page and calls configureHtmxCsrf()
-        # which sets hx-headers on document.body with the X-CSRFToken header.
+        # The configRequest hook must read the cookie for every request so a
+        # token replaced after CSRF_SECRET rotation is used without a reload.
         resp = client.get("/static/reports.js")
         assert resp.status_code == 200
-        assert "hx-headers" in resp.text, (
-            "reports.js must set hx-headers on document.body for htmx CSRF"
+        assert "htmx:configRequest" in resp.text, (
+            "reports.js must refresh the htmx header before every request"
         )
         assert "X-CSRFToken" in resp.text, (
-            "reports.js must include X-CSRFToken in the hx-headers config"
+            "reports.js must populate the X-CSRFToken request header"
         )
 
     def test_stats_csv_download_with_csrf_succeeds(self, client):
