@@ -1309,8 +1309,16 @@ class Database:
                 like = f"%{_escape_like(search)}%"
                 where = """
                     WHERE (LOWER(s.display_title) LIKE LOWER(?) ESCAPE '\\'
-                       OR LOWER(COALESCE(se.words_by, '')) LIKE LOWER(?) ESCAPE '\\'
-                       OR LOWER(COALESCE(se.music_by, '')) LIKE LOWER(?) ESCAPE '\\')
+                       OR EXISTS (
+                           SELECT 1 FROM song_editions search_se
+                           WHERE search_se.song_id = s.id
+                             AND (
+                               LOWER(COALESCE(search_se.words_by, ''))
+                                   LIKE LOWER(?) ESCAPE '\\'
+                               OR LOWER(COALESCE(search_se.music_by, ''))
+                                   LIKE LOWER(?) ESCAPE '\\'
+                             )
+                       ))
                 """
                 cursor.execute(count_base + where, (like, like, like))
                 total: int = cursor.fetchone()[0]
