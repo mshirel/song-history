@@ -57,6 +57,10 @@ _NO_TEXT_STREAK_THRESHOLD: int = 5
 # (#471) — keeps genuine back-to-back distinct songs untouched.
 _MAX_BRACKETED_REFRAIN_SLIDES: int = 1
 
+# A repeated self-titled unit needs multiple slides before it can be classified
+# as an empty service placeholder rather than an ordinary one-slide title card.
+_MIN_SELF_TITLED_NON_SONG_SLIDES: int = 2
+
 # SFP (Songs For Praise) catalog numbers — Paperless Hymnal reference IDs, not song titles (#264)
 _SFP_CATALOG_RE = re.compile(r"^SFP\s+\d{3,4}$", re.IGNORECASE)
 
@@ -419,6 +423,13 @@ def _extract_songs_impl(
     )
     songs: list[SongOccurrence] = []
     for canonical, group in song_groups:
+        if _is_self_titled_non_song_unit(canonical, group):
+            _log.debug(
+                "Dropped self-titled non-song unit %r from %s",
+                canonical,
+                file_path.name,
+            )
+            continue
         score_info = (
             score_grouping.score_groups.get(group[0].index)
             if score_grouping and group
@@ -774,6 +785,38 @@ def _merge_bracketed_refrains(
         merged.append((canonical, slides))
         i += 1
     return merged
+
+
+def _is_self_titled_non_song_unit(canonical: str, slides: list[Slide]) -> bool:
+    """Return True for a repeated unit containing labels but no song content.
+
+    Some Paperless Hymnal service exports contain multi-slide placeholders where
+    every slide repeats only the unit title: once with a section prefix
+    (``1-1 Title``, ``C-1 Title``) and once bare.  With no lyric, credit, or
+    publisher line, those slides prove only that the placeholder is internally
+    labelled—not that a song was projected.  Requiring multiple slides, a
+    section prefix on every slide, and no text resolving to anything except the
+    same canonical title keeps the rule structural and conservative (#527).
+    """
+    if len(slides) < _MIN_SELF_TITLED_NON_SONG_SLIDES:
+        return False
+
+    for slide in slides:
+        lines = [line.strip() for line in slide.text.text_lines if line.strip()]
+        if not lines:
+            return False
+        has_section_prefix = False
+        for line in lines:
+            collapsed = " ".join(line.split())
+            stripped = strip_title_prefix(line)
+            if stripped != collapsed:
+                has_section_prefix = True
+            if canonicalize_title(stripped) != canonical:
+                return False
+        if not has_section_prefix:
+            return False
+
+    return True
 
 
 def _is_song_title_slide(slide: Slide) -> bool:
