@@ -2004,6 +2004,72 @@ class TestQuerySongsPaginated:
         rows, total = temp_db.query_songs_paginated(search="Newton")
         assert total == 1
 
+    def test_credits_use_most_recently_used_edition(self, temp_db):
+        song_id = temp_db.insert_or_get_song("amazing grace", "Amazing Grace")
+        bob_edition = temp_db.insert_or_get_song_edition(
+            song_id, publisher="Z Publisher", words_by="Bob"
+        )
+        alice_edition = temp_db.insert_or_get_song_edition(
+            song_id, publisher="A Publisher", words_by="Alice"
+        )
+        old_service = temp_db.insert_or_update_service(
+            "2026-01-01", "AM Worship", "old.pptx", "old"
+        )
+        new_service = temp_db.insert_or_update_service(
+            "2026-02-01", "AM Worship", "new.pptx", "new"
+        )
+        temp_db.insert_service_song(
+            old_service, song_id, ordinal=1, song_edition_id=alice_edition
+        )
+        temp_db.insert_service_song(
+            new_service, song_id, ordinal=1, song_edition_id=bob_edition
+        )
+
+        rows, total = temp_db.query_songs_paginated()
+
+        assert total == 1
+        assert len(rows) == 1
+        assert rows[0]["words_by"] == "Bob"
+
+    def test_credit_sort_uses_displayed_edition(self, temp_db):
+        song_a = temp_db.insert_or_get_song("song a", "Song A")
+        selected_a = temp_db.insert_or_get_song_edition(
+            song_a, publisher="Z Publisher", words_by="Zulu"
+        )
+        temp_db.insert_or_get_song_edition(
+            song_a, publisher="A Publisher", words_by="Aaron"
+        )
+        song_b = temp_db.insert_or_get_song("song b", "Song B")
+        selected_b = temp_db.insert_or_get_song_edition(song_b, words_by="Mike")
+        service_id = temp_db.insert_or_update_service(
+            "2026-02-01", "AM Worship", "service.pptx", "hash"
+        )
+        temp_db.insert_service_song(
+            service_id, song_a, ordinal=1, song_edition_id=selected_a
+        )
+        temp_db.insert_service_song(
+            service_id, song_b, ordinal=2, song_edition_id=selected_b
+        )
+
+        rows, _ = temp_db.query_songs_paginated(sort="words_by", sort_dir="asc")
+
+        assert [(row["display_title"], row["words_by"]) for row in rows] == [
+            ("Song B", "Mike"),
+            ("Song A", "Zulu"),
+        ]
+
+    def test_unperformed_song_uses_newest_edition_as_fallback(self, temp_db):
+        song_id = temp_db.insert_or_get_song("song a", "Song A")
+        temp_db.insert_or_get_song_edition(song_id, words_by="Older Credits")
+        newest_edition = temp_db.insert_or_get_song_edition(
+            song_id, words_by="Newest Credits"
+        )
+
+        rows, _ = temp_db.query_songs_paginated()
+
+        assert rows[0]["words_by"] == "Newest Credits"
+        assert temp_db.query_song_editions(song_id)[-1]["id"] == newest_edition
+
     def test_pagination(self, temp_db):
         for i in range(5):
             temp_db.insert_or_get_song(f"song {i}", f"Song {i}")
