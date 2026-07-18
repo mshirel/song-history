@@ -13,9 +13,8 @@ Due: 2026-07-31. Focus: restore operational safety and deliver image-only score
 recognition after establishing a reproducible development and CI environment.
 
 - #537 `arch`: recognize songs presented as scanned sheet-music image slides
-- #547 `security`: refresh the HTMX CSRF header after token rotation
 
-Completed: #542, #544, #545, and #546.
+Completed: #542, #544, #545, #546, and #547.
 
 ## Sprint 4 - Data correctness and OCR rollout
 
