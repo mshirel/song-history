@@ -1,34 +1,45 @@
 # Sprint Plan
 
-Current sprint planning mirror for `highland/song-history`.
+Current sprint planning mirror for `mshirel/song-history`, synchronized on
+2026-07-17.
 
 - GitHub milestones are the sprint assignment source of truth.
 - This document mirrors the current **non-deferred** open backlog only.
-- Deferred issues are intentionally excluded from the sprint scopes below, even
-  if they still sit on a milestone in GitHub.
-- Sprint 2, Sprint 4, and Sprint 5 backlog items were closed overnight on
-  2026-07-03/2026-07-04 and are intentionally absent from the active plan.
+- Deferred issues are intentionally excluded, even when assigned to a milestone.
 
-## Sprint 3 - Data layer & reliability
+## Sprint 3 - Safety and image OCR
 
-Focus: core data-path correctness, import concurrency, report correctness, and
-runtime reliability in the web/import stack.
+Due: 2026-07-31. Focus: restore operational safety and deliver image-only score
+recognition after establishing a reproducible development and CI environment.
 
-- #498 `dev`: `extract_songs` 120s timeout defeated by `ThreadPoolExecutor` blocking shutdown
-- #500 `data`: song-list credits/sort nondeterministic for multi-edition songs
-- #501 `arch`: heavy synchronous report/xlsx work blocks the event-loop thread
-- #503 `devops`: `/upload` buffers the entire file (up to 200MB) in memory before writing
-- #509 `data`: `insert_or_update_service` not retry-safe against a concurrent same-service import
-- #510 `arch`: services schema defined in two disagreeing places
-- #511 `data`: copy-events `IN` clause unbounded by SQLite variable limit
+- #537 `arch`: recognize songs presented as scanned sheet-music image slides
+- #544 `devops`: fail backups when the SQLite dump fails
+- #545 `devops`: deploy the non-root Promtail configuration to `pi-songs`
+- #547 `security`: refresh the HTMX CSRF header after token rotation
 
-## Sprint 6 - Extraction edge cases
+Completed by the dependency-authority change: #542 and #546.
 
-Focus: remaining extraction false positives that need domain-reviewed heuristics
-rather than mechanical parser cleanup.
+## Sprint 4 - Data correctness and OCR rollout
 
-- #527 `bug`: `What the Lord Has Done` extracted as a phantom song; needs a
-  non-refrain/domain-specific mechanism
+Due: 2026-08-14. Focus: harden concurrent writes, make credits deterministic,
+and roll the Sprint 3 OCR result into production data.
+
+- #500 `data`: make multi-edition song credits and sorting deterministic
+- #509 `data`: make same-service concurrent imports retry-safe
+- #510 `arch`: align the fresh services schema with migration 3
+- #538 `ops`: re-import the Goodness of God decks after #537 ships
+- #540 `data`: fix the transaction snapshot race in `insert_or_get_song`
+
+## Sprint 5 - Runtime and extraction reliability
+
+Due: 2026-08-28. Focus: bound resource use and blocking work, then address the
+remaining extraction false positive requiring domain review.
+
+- #498 `dev`: enforce the `extract_songs` timeout without blocking shutdown
+- #501 `arch`: move synchronous report/xlsx work off the event-loop thread
+- #503 `security`: stream uploads instead of buffering up to 200 MB in memory
+- #511 `data`: bound copy-events queries by SQLite's variable limit
+- #527 `bug`: classify `What the Lord Has Done` without a phantom song
 
 ## Out of scope for this plan
 
