@@ -17,7 +17,7 @@ _log = logging.getLogger("worship_catalog.db")
 # Bump this integer whenever the schema changes.  Each new version must have a
 # corresponding entry in _MIGRATIONS.  connect() raises SchemaVersionError if the
 # on-disk version is *higher* than this value (DB created by a newer release).
-_SCHEMA_VERSION: int = 6
+_SCHEMA_VERSION: int = 7
 
 # Ordered dict of version → list of SQL statements.  Each migration brings the
 # DB from version (N-1) to version N.  Migration 1 is the baseline — it
@@ -191,6 +191,12 @@ _MIGRATIONS: dict[int, list[str]] = {
         "CREATE INDEX IF NOT EXISTS idx_service_exclusions_date "
         "ON service_exclusions(service_date)",
     ],
+    7: [
+        # Persist OCR audit details for completed web imports (#537).
+        "ALTER TABLE import_jobs ADD COLUMN anomalies_json TEXT",
+        "ALTER TABLE import_jobs ADD COLUMN ocr_model TEXT",
+        "ALTER TABLE import_jobs ADD COLUMN ocr_calls INTEGER NOT NULL DEFAULT 0",
+    ],
 }
 
 # Whitelist of column names that update_import_job is allowed to SET.
@@ -200,7 +206,8 @@ _IMPORT_JOB_MUTABLE_FIELDS: frozenset[str] = frozenset(
     {
         "status", "completed_at", "songs_imported", "error_message",
         "service_date", "service_name", "song_leader", "preacher",
-        "sermon_title", "songs_json",
+        "sermon_title", "songs_json", "anomalies_json", "ocr_model",
+        "ocr_calls",
     }
 )
 
@@ -1174,6 +1181,9 @@ class Database:
         preacher: str | None = None,
         sermon_title: str | None = None,
         songs_json: str | None = None,
+        anomalies_json: str | None = None,
+        ocr_model: str | None = None,
+        ocr_calls: int | None = None,
         **_extra_kwargs: Any,
     ) -> None:
         """Update mutable fields on an import job record.
@@ -1220,6 +1230,15 @@ class Database:
         if songs_json is not None:
             sets.append("songs_json = ?")
             params.append(songs_json)
+        if anomalies_json is not None:
+            sets.append("anomalies_json = ?")
+            params.append(anomalies_json)
+        if ocr_model is not None:
+            sets.append("ocr_model = ?")
+            params.append(ocr_model)
+        if ocr_calls is not None:
+            sets.append("ocr_calls = ?")
+            params.append(ocr_calls)
         if not sets:
             return
         # Build the SET clause from whitelisted column names only.

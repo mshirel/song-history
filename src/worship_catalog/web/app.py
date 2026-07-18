@@ -41,6 +41,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 
 from worship_catalog.db import Database
+from worship_catalog.extractor import OcrBudget
 from worship_catalog.import_service import run_import
 from worship_catalog.log_config import RequestLoggingMiddleware
 from worship_catalog.log_config import setup as _setup_logging
@@ -1146,6 +1147,35 @@ def _get_inbox_dir() -> Path:
     return p
 
 
+_WEB_OCR_MAX_CALLS_DEFAULT = 25
+
+
+def _get_web_ocr_budget() -> OcrBudget | None:
+    """Return a per-upload OCR budget when the selected provider is configured."""
+    provider = os.environ.get("WORSHIP_OCR_PROVIDER", "openrouter").strip().lower()
+    key_name = (
+        "ANTHROPIC_API_KEY" if provider == "anthropic" else "OPENROUTER_API_KEY"
+    )
+    if not os.environ.get(key_name):
+        return None
+
+    configured = os.environ.get(
+        "WORSHIP_MAX_OCR_CALLS", str(_WEB_OCR_MAX_CALLS_DEFAULT)
+    )
+    try:
+        max_calls = int(configured)
+        if max_calls < 0:
+            raise ValueError
+    except ValueError:
+        _log.warning(
+            "Invalid WORSHIP_MAX_OCR_CALLS=%r; using default %d",
+            configured,
+            _WEB_OCR_MAX_CALLS_DEFAULT,
+        )
+        max_calls = _WEB_OCR_MAX_CALLS_DEFAULT
+    return OcrBudget(max_calls=max_calls)
+
+
 def _run_import_in_background(job_id: str, pptx_path: Path) -> None:
     """Import a PPTX file and update the job record when done.  Runs in a thread.
 
@@ -1162,7 +1192,15 @@ def _run_import_in_background(job_id: str, pptx_path: Path) -> None:
     _notify_message = f"{pptx_path.name} — unknown error"
     _notify_priority = -1
     try:
-        result = run_import(db, pptx_path)
+        ocr_budget = _get_web_ocr_budget()
+        result = run_import(
+            db,
+            pptx_path,
+            use_ocr=ocr_budget is not None,
+            ocr_budget=ocr_budget,
+        )
+
+        anomalies_json = json.dumps(result.anomalies) if result.anomalies else None
 
         if result.songs_imported == 0:
             db.update_import_job(
@@ -1170,6 +1208,9 @@ def _run_import_in_background(job_id: str, pptx_path: Path) -> None:
                 status="complete",
                 songs_imported=0,
                 error_message="No songs found — file may not be a worship slide deck",
+                anomalies_json=anomalies_json,
+                ocr_model=result.ocr_model,
+                ocr_calls=result.ocr_calls,
             )
             _notify_title = "Import complete (0 songs)"
             _notify_message = f"{pptx_path.name} — no songs found"
@@ -1187,6 +1228,9 @@ def _run_import_in_background(job_id: str, pptx_path: Path) -> None:
                 songs_json=json.dumps(
                     [s.display_title for s in result.songs]
                 ) if result.songs else None,
+                anomalies_json=anomalies_json,
+                ocr_model=result.ocr_model,
+                ocr_calls=result.ocr_calls,
             )
             _notify_title = "Import complete"
             _notify_message = (

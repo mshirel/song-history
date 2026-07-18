@@ -1370,6 +1370,36 @@ class TestUpdateImportJobSQLSafety:
         songs = json.loads(row["songs_json"])
         assert songs == ["Amazing Grace", "How Great Thou Art", "Holy Holy Holy"]
 
+    def test_update_with_ocr_audit_metadata_persists(self, temp_db: Database) -> None:
+        import json
+
+        job_id = "ocr-audit-job-001"
+        anomalies = [
+            {
+                "type": "score_image_ocr",
+                "message": "title recovered from score image via OCR",
+                "title": "Goodness of God",
+                "first_slide_index": 38,
+                "model": "google/gemini-2.5-flash-lite",
+            }
+        ]
+        temp_db.create_import_job(job_id, filename="score.pptx")
+        temp_db.update_import_job(
+            job_id,
+            status="complete",
+            anomalies_json=json.dumps(anomalies),
+            ocr_model="google/gemini-2.5-flash-lite",
+            ocr_calls=25,
+        )
+
+        row = temp_db.get_import_job(job_id)
+        temp_db.close()
+
+        assert row is not None
+        assert json.loads(row["anomalies_json"]) == anomalies
+        assert row["ocr_model"] == "google/gemini-2.5-flash-lite"
+        assert row["ocr_calls"] == 25
+
     def test_new_metadata_fields_present_as_none_when_not_set(self, temp_db: Database) -> None:
         job_id = "meta-job-002"
         temp_db.create_import_job(job_id, filename="test.pptx")
@@ -2358,7 +2388,7 @@ class TestDatabaseIndexes:
         cursor = temp_db.cursor()
         cursor.execute("PRAGMA user_version")
         assert cursor.fetchone()[0] == _SCHEMA_VERSION
-        assert _SCHEMA_VERSION == 6  # bumped for service_exclusions table (#480)
+        assert _SCHEMA_VERSION == 7  # bumped for import-job OCR audit fields (#537)
 
 
 @pytest.mark.integration

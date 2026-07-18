@@ -12,11 +12,11 @@ source venv/bin/activate
 pip install -e .
 ```
 
-For Claude Vision OCR support (optional):
+For Vision OCR support through OpenRouter (optional):
 
 ```bash
 pip install -e ".[ocr]"
-export ANTHROPIC_API_KEY=sk-ant-...
+export OPENROUTER_API_KEY=...
 ```
 
 For the web UI (optional):
@@ -85,7 +85,7 @@ worship-catalog import "data/AM Worship 2026.02.15.pptx"
 worship-catalog import "data/" --library-index /path/to/my_index.json
 ```
 
-**Use Claude Vision API** as a further fallback for credits not in the library:
+**Use the configured Vision provider** for image-only scores and credits:
 
 ```bash
 worship-catalog import "data/" --ocr
@@ -99,7 +99,7 @@ Options:
 | `--recurse` | off | Recurse into subdirectories |
 | `--non-interactive` | off | Skip interactive prompts |
 | `--library-index` | bundled | Pre-scraped credits index (overrides bundled default) |
-| `--ocr` | off | Fall back to Claude Vision API |
+| `--ocr` | off | Enable the configured Vision OCR provider |
 
 ---
 
@@ -172,7 +172,7 @@ to backfill credits from the library index or via Vision OCR.
 worship-catalog repair-credits
 ```
 
-**With Claude Vision OCR fallback for songs not in the library:**
+**With Vision OCR fallback for songs not in the library:**
 
 ```bash
 worship-catalog repair-credits --ocr
@@ -190,7 +190,7 @@ Options:
 |------|---------|-------------|
 | `--db` | `data/worship.db` | SQLite database path |
 | `--library-index` | bundled | Pre-scraped credits index (overrides bundled default) |
-| `--ocr` | off | Fall back to Claude Vision API |
+| `--ocr` | off | Enable the configured Vision OCR provider |
 | `--dry-run` | off | Show what would change without writing |
 
 ---
@@ -335,13 +335,18 @@ Open `http://localhost:8000`.
 - If `UPLOAD_PASSWORD` is set, `/upload` requires HTTP Basic auth. The page shows a `Log in to upload` button that links to `/upload?login=1`, which triggers the browser login prompt.
 - `UPLOAD_USERNAME` defaults to `highland` when unset; set it if you want a different username shown in the Basic-auth dialog.
 - The same auth gate also protects `/jobs` and Missing Services edit actions.
+- When `OPENROUTER_API_KEY` is set, uploads OCR image-only slides with
+  `google/gemini-2.5-flash-lite` and a 25-call per-deck cap by default. Configure
+  these with `WORSHIP_OCR_MODEL` and `WORSHIP_MAX_OCR_CALLS`; omit the key to
+  keep uploads text-only. Anthropic remains available by setting
+  `WORSHIP_OCR_PROVIDER=anthropic` and `ANTHROPIC_API_KEY`.
 
 ---
 
 ## Features
 
 - **Song Extraction**: Parses PowerPoint slides to extract song titles, credits, and slide positions
-- **Credit Sources**: Text-based parsing → bundled library index → Claude Vision OCR (cascading fallback)
+- **Credit Sources**: Text-based parsing → bundled library index → Vision OCR (cascading fallback)
 - **Bundled Library Index**: ~3,800 song credits shipped with the package; no setup required
 - **Duplicate Handling**: Songs appearing multiple times in a service are counted once for reporting
 - **CCLI Reporting**: CSV reports for CCLI license compliance (projection + recording)
@@ -449,5 +454,6 @@ The publish job only fires when `Dockerfile`, `pyproject.toml`, `src/`, `config/
 - PPTX files must have metadata in standard locations (title slide table or filename)
 - Song credits are parsed from text patterns (Words by, Music by, Arranger, Publisher)
 - Taylor Publications / sheet-music slides store credits in images — use `repair-credits` with `--library-index` or `--ocr` to fill these in
-- Vision OCR requires `ANTHROPIC_API_KEY` and `pip install -e ".[ocr]"`
+- Vision OCR uses OpenRouter by default (`OPENROUTER_API_KEY`) and requires
+  `pip install -e ".[ocr]"`; Anthropic is available as a legacy fallback
 - Requires Python 3.10+

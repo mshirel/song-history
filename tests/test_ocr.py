@@ -9,6 +9,12 @@ from worship_catalog.extractor import OcrBudget
 from worship_catalog.ocr import _MAX_RETRIES, _detect_media_type, extract_credits_via_vision
 
 
+@pytest.fixture(autouse=True)
+def _legacy_anthropic_provider(monkeypatch):
+    """Keep legacy credit-extraction tests on their original backend."""
+    monkeypatch.setenv("WORSHIP_OCR_PROVIDER", "anthropic")
+
+
 class TestOcrBudget:
     """Tests for the OcrBudget call-cap class."""
 

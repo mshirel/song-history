@@ -22,6 +22,17 @@
   grep -q "ANTHROPIC_API_KEY" deploy/pi/.env.example
 }
 
+@test ".env.example contains OpenRouter OCR defaults" {
+  grep -q "OPENROUTER_API_KEY" deploy/pi/.env.example
+  grep -q "WORSHIP_OCR_MODEL=google/gemini-2.5-flash-lite" deploy/pi/.env.example
+  grep -q "WORSHIP_MAX_OCR_CALLS=25" deploy/pi/.env.example
+}
+
+@test "docker-compose passes OpenRouter OCR configuration to web imports" {
+  grep -q "OPENROUTER_API_KEY" deploy/pi/docker-compose.yml
+  grep -q "WORSHIP_MAX_OCR_CALLS" deploy/pi/docker-compose.yml
+}
+
 @test "docker-compose.yml references traefik service" {
   grep -q "traefik" deploy/pi/docker-compose.yml
 }

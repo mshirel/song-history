@@ -70,6 +70,10 @@ services:
     environment:
       DB_PATH: /data/worship.db
       INBOX_DIR: /inbox
+      WORSHIP_OCR_PROVIDER: "${WORSHIP_OCR_PROVIDER:-openrouter}"
+      WORSHIP_OCR_MODEL: "${WORSHIP_OCR_MODEL:-google/gemini-2.5-flash-lite}"
+      WORSHIP_MAX_OCR_CALLS: "${WORSHIP_MAX_OCR_CALLS:-25}"
+      OPENROUTER_API_KEY: "${OPENROUTER_API_KEY:-}"
       ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
     volumes:
       - /opt/song-history/data:/data
@@ -93,6 +97,10 @@ services:
     environment:
       DB_PATH: /data/worship.db
       INBOX_DIR: /inbox
+      WORSHIP_OCR_PROVIDER: "${WORSHIP_OCR_PROVIDER:-openrouter}"
+      WORSHIP_OCR_MODEL: "${WORSHIP_OCR_MODEL:-google/gemini-2.5-flash-lite}"
+      WORSHIP_MAX_OCR_CALLS: "${WORSHIP_MAX_OCR_CALLS:-25}"
+      OPENROUTER_API_KEY: "${OPENROUTER_API_KEY:-}"
       ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
       CSRF_SECRET: "${CSRF_SECRET}"
       PUSHOVER_USER_KEY: "${PUSHOVER_USER_KEY:-}"
