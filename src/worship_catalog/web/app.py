@@ -16,7 +16,7 @@ import secrets
 import threading
 import time
 from collections import defaultdict
-from collections.abc import AsyncGenerator, Iterator
+from collections.abc import AsyncGenerator, Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager, contextmanager
 from datetime import date, datetime
@@ -34,6 +34,7 @@ from fastapi import (
     UploadFile,
 )
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
+from fastapi.routing import APIRoute
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from prometheus_client import CONTENT_TYPE_LATEST, REGISTRY, Counter, Histogram, generate_latest
@@ -106,6 +107,79 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
 
 app = FastAPI(title="Worship Catalog", lifespan=_lifespan)
+
+
+class _HeadAwareAPIRoute(APIRoute):
+    """An ``APIRoute`` that answers ``HEAD`` wherever it answers ``GET`` (#581).
+
+    FastAPI takes ``methods`` literally, unlike plain Starlette's ``Route``, which adds
+    ``HEAD`` whenever ``GET`` is present. Every ``@app.get`` route therefore answered
+    ``405 Method Not Allowed`` to a HEAD request — and UptimeRobot probes with HEAD by
+    default, so the external monitor read a perfectly healthy site as hard-down. RFC 9110
+    also requires HEAD of any general-purpose server, and link checkers and ``curl -I``
+    expect it.
+
+    Fixing it on the route *class* rather than per-route is the point: it holds for every
+    route registered afterwards, so a new ``@app.get`` cannot quietly reintroduce the gap.
+    A HEAD response must carry no body, which Starlette and uvicorn already handle.
+    """
+
+    def __init__(
+        self,
+        path: str,
+        endpoint: Callable[..., Any],
+        *,
+        methods: list[str] | set[str] | None = None,
+        **kwargs: Any,
+    ) -> None:
+        if methods is not None:
+            upper = {m.upper() for m in methods}
+            if "GET" in upper and "HEAD" not in upper:
+                methods = [*methods, "HEAD"]
+        super().__init__(path, endpoint, methods=methods, **kwargs)
+
+
+app.router.route_class = _HeadAwareAPIRoute
+
+# Routing HEAD and *documenting* it are different things. FastAPI derives one operation id
+# per route and reuses it for every method, so a route carrying both GET and HEAD emits two
+# operations sharing an id — 16 duplicate `operationId`s in a schema that is served publicly
+# at /openapi.json, which makes the document invalid and breaks client generators. HEAD is a
+# protocol affordance of the GET operation, not a separate operation, so it is stripped for
+# schema generation only. The lock keeps a concurrent request from matching a route during
+# the brief window when HEAD is removed; the schema is built once and cached thereafter.
+_openapi_lock = threading.Lock()
+_default_openapi = app.openapi
+
+
+def _openapi_without_head() -> dict[str, Any]:
+    """The generated schema, minus the HEAD methods added by :class:`_HeadAwareAPIRoute`."""
+    if app.openapi_schema:
+        return app.openapi_schema
+    with _openapi_lock:
+        if app.openapi_schema:
+            return app.openapi_schema
+        # Keep each route's ORIGINAL method set and restore that verbatim, rather than
+        # re-adding HEAD afterwards — restoring what was actually there cannot invent a
+        # method that a future route never declared.
+        patched: list[tuple[APIRoute, set[str]]] = [
+            (route, set(route.methods))
+            for route in app.routes
+            if isinstance(route, APIRoute)
+            and route.methods
+            and "HEAD" in route.methods
+            and route.methods != {"HEAD"}
+        ]
+        for route, methods in patched:
+            route.methods = methods - {"HEAD"}
+        try:
+            return _default_openapi()
+        finally:
+            for route, methods in patched:
+                route.methods = methods
+
+
+app.openapi = _openapi_without_head  # type: ignore[method-assign]
 
 # CSRF protection — must be added BEFORE RequestLoggingMiddleware so that 403
 # responses are logged correctly. A stable CSRF_SECRET is REQUIRED in
@@ -230,6 +304,91 @@ _TEMPLATES_DIR = Path(__file__).parent / "templates"
 _STATIC_DIR = Path(__file__).parent / "static"
 templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
 app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
+
+# ---------------------------------------------------------------------------
+# Render proof (#581) — ported from espn-ff #1093
+# ---------------------------------------------------------------------------
+
+# Pieces whose absence leaves the catalog visibly broken while the process stays perfectly
+# healthy: base.html wraps every page, and both scripts are VENDORED rather than pulled from
+# a CDN (the #197 CSP allows 'self' only), so a bad Dockerfile COPY ships a site that returns
+# 200 on every request with dead search, dead pagination and dead nav. The stylesheet needs no
+# entry here — it is inline in base.html, so loading the template already covers it.
+_RENDER_PROOF_TEMPLATE = "base.html"
+_RENDER_PROOF_ASSETS: tuple[str, ...] = ("htmx.min.js", "nav.js")
+
+# Last result logged, so a degraded deployment does not reprint its warning on every probe.
+# /health is hit every 30s by the container healthcheck, every 60s by the Prometheus scrape
+# and every 300s by UptimeRobot — roughly three lines a minute, forever, shipped to Loki.
+# That is not a log, it is a denial of service against the log: the one signal worth seeing
+# would be buried in thousands of copies of itself. Logging only on TRANSITION keeps both
+# edges (broke / recovered) while costing two lines per incident.
+_LAST_RENDER_PROOF: str | None = None
+
+
+def _log_render_proof_transition(result: str, detail: str) -> None:
+    """Log a render-proof result only when it CHANGES, at a level matching the direction."""
+    global _LAST_RENDER_PROOF
+    if result == _LAST_RENDER_PROOF:
+        return
+    previous, _LAST_RENDER_PROOF = _LAST_RENDER_PROOF, result
+    if result == "ok":
+        # Only announce a recovery if there was something to recover from — otherwise every
+        # process start logs a "recovered" line for a deployment that was never broken.
+        if previous is not None:
+            _log.warning("render proof RECOVERED — the app can produce a page again")
+        return
+    _log.warning(
+        "render proof DEGRADED — %s. /health still returns 200 (liveness is fine); "
+        "the catalog cannot render correctly.",
+        detail,
+    )
+
+
+def _render_proof() -> str:
+    """``"ok"`` if this deployment can still produce a page, else ``"degraded"`` (#581).
+
+    Deliberately narrow. It answers "is this image intact?" — the failure mode where the
+    process is alive, every page 500s or renders unusable, and bare-200 monitoring reports
+    perfect health. It does NOT check catalog contents: an empty database is a legitimate
+    state for a fresh deployment, and a proof that reported ``degraded`` until the first
+    import landed would train everyone to ignore it.
+
+    Constraints it has to respect, being on a public, unauthenticated path hit every 30s
+    (container healthcheck), 60s (Prometheus) and 300s (UptimeRobot):
+
+    * **I/O-free beyond two stats.** ``get_template`` is served from Jinja's compiled-template
+      cache after the first call, so steady state is a cache hit plus two ``is_file()`` calls.
+      In particular it must never touch the database — ``status`` already covers that, and
+      doubling the query rate on a Pi's SD card to say the same thing twice is not a trade.
+    * **Cannot raise.** The caller returns its status code either way, but a raise here would
+      escape into the 500 handler and take the status code with it, which is the one thing
+      that must not happen. Hence the broad ``except``.
+
+    Loading the template compiles it, so a Jinja syntax error in base.html is caught here;
+    ``{% include %}`` targets resolve at render time and are not, which is the honest limit.
+    """
+    try:
+        templates.get_template(_RENDER_PROOF_TEMPLATE)
+        for asset in _RENDER_PROOF_ASSETS:
+            if not (_STATIC_DIR / asset).is_file():
+                _log_render_proof_transition(
+                    "degraded", f"vendored asset {asset} is missing from {_STATIC_DIR}"
+                )
+                return "degraded"
+        if not _TEMPLATES_DIR.is_dir():
+            _log_render_proof_transition(
+                "degraded", f"template dir {_TEMPLATES_DIR} is not present"
+            )
+            return "degraded"
+    except Exception:
+        # exc_info on the transition only — a permanently-broken deployment must not ship a
+        # traceback every 30s. The message names the cause; the traceback is on the first one.
+        _log.debug("render proof raised", exc_info=True)
+        _log_render_proof_transition("degraded", "loading the base template raised")
+        return "degraded"
+    _log_render_proof_transition("ok", "")
+    return "ok"
 
 
 # Headers added by the public proxy chain (Cloudflare tunnel → Traefik). Their
@@ -609,21 +768,41 @@ def _thread_confined_db() -> Iterator[Database]:
 
 @app.get("/health")
 async def health(response: Response) -> dict[str, str]:
-    """Return 200 if DB is reachable; 503 otherwise (issue #31).
+    """Liveness (``status``) plus a render proof (``render``) — issue #31, #581.
 
-    Uses manual _get_db()/close() instead of Depends(get_db) because
-    the health check must return 503 (not 500) when the DB is unreachable,
-    including when _get_db() itself raises.
+    ``status`` is 200 if the DB is reachable, 503 otherwise. Uses manual
+    _get_db()/close() instead of Depends(get_db) because the health check must return
+    503 (not 500) when the DB is unreachable, including when _get_db() itself raises.
+
+    ``render`` is a readiness-of-content signal — whether this deployment still has the
+    pieces it needs to produce a page at all. **It never changes the status code.** The
+    Dockerfile HEALTHCHECK and the compose healthcheck both call ``urlopen``, which raises
+    on any non-2xx, so letting a missing stylesheet drop the code would restart the
+    container in production — trading a monitoring gap for a real availability bug. The
+    distinction lives in the body, where the UptimeRobot keyword monitor reads it.
+
+    Why the proof is served *here* rather than on a real page: ``/health`` is the one path
+    an external, unauthenticated vantage point is guaranteed to be able to observe.
     """
     try:
         db = _get_db()
         db.cursor().execute("SELECT 1")
         db.close()
-        return {"status": "ok"}
+        status = "ok"
     except Exception as exc:
         _log.warning("Health check DB failure", extra={"error": str(exc)})
         response.status_code = 503
-        return {"status": "error"}
+        status = "error"
+    # The no-raise guarantee is enforced HERE, at the route, not only inside _render_proof.
+    # If it lived only in the helper, a future refactor that let an exception escape would
+    # silently convert this endpoint into a 500 — restarting the container in prod. The
+    # helper guards itself too; this is the one that must never be removed.
+    try:
+        render = _render_proof()
+    except Exception:
+        _log.warning("render proof raised", exc_info=True)
+        render = "degraded"
+    return {"status": status, "render": render}
 
 
 @app.get("/", response_class=RedirectResponse)
