@@ -22,6 +22,11 @@ import pytest
 from fastapi.testclient import TestClient
 from starlette.routing import Route
 
+# The literal string configured as the UptimeRobot keyword for songs.highland-coc.com
+# (`keyword_type: 2` — alert when ABSENT). UptimeRobot matches it against the raw response
+# bytes, so it must appear verbatim. Do not normalise whitespace when asserting on it.
+_MONITOR_KEYWORD = '"render":"ok"'
+
 
 @pytest.fixture
 def app_module(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
@@ -158,8 +163,35 @@ class TestRenderProof:
         assert client.get("/health").json() == {"status": "ok", "render": "ok"}
 
     def test_keyword_monitor_can_match_the_body(self, client: TestClient) -> None:
-        """UptimeRobot matches a substring, so the serialised form matters, not just the dict."""
-        assert '"render":"ok"' in client.get("/health").text.replace(" ", "")
+        """The keyword must appear in the RAW body, byte for byte.
+
+        Normalising whitespace before asserting (``.replace(" ", "")``) is what this test
+        used to do, and it is worse than no test: a change to FastAPI's JSON separators
+        would keep it green while silently breaking the monitor, returning us to the
+        bare-200 blindness this endpoint exists to fix. The monitor fails OPEN — a keyword
+        it can never match reports the site as down, and a keyword it always matches
+        reports nothing at all — so the literal is a contract, not a formatting detail.
+        """
+        assert _MONITOR_KEYWORD in client.get("/health").text
+
+    def test_keyword_is_absent_when_degraded(
+        self,
+        app_module: Any,
+        client: TestClient,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The other half of the contract: the keyword has to actually discriminate.
+
+        Asserting only that it is present on a healthy deployment would pass for a keyword
+        that is present unconditionally — a monitor that can never fire.
+        """
+        empty = tmp_path / "no_static_kw"
+        empty.mkdir()
+        monkeypatch.setattr(app_module, "_STATIC_DIR", empty)
+        resp = client.get("/health")
+        assert resp.status_code == 200, "degraded must stay 200 — only the body differs"
+        assert _MONITOR_KEYWORD not in resp.text
 
     def test_missing_vendored_asset_is_degraded(
         self,
