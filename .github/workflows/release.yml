@@ -25,15 +25,18 @@ jobs:
         with:
           python-version: "3.12"
 
+      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990  # v8.3.2
+        with:
+          version: "0.11.7"
+
+      # Installs from uv.lock, the sole committed lockfile (#546, #589).
       - name: Install release helper dependencies
-        run: |
-          pip install -r requirements.lock
-          pip install -e .
+        run: uv sync --frozen --extra web --extra ocr
 
       - name: Determine next release version
         id: version
         run: |
-          python3 - <<'PY'
+          uv run --frozen python3 - <<'PY'
           from pathlib import Path
           import os
           import subprocess
