@@ -8,8 +8,13 @@ services:
   # or testing changes before pushing), comment out the `image:` line and
   # uncomment the `build:` line in each service below, then run:
   #
+  #   make lockfile                 # export requirements.lock from uv.lock (#589)
   #   docker compose build          # rebuild from local Dockerfile
   #   docker compose up -d web      # start with the newly built image
+  #
+  # `make lockfile` is required first: the Dockerfile COPYs requirements.lock,
+  # which is generated from uv.lock rather than committed.  `make build` does
+  # this for you; `docker compose build` does not.
   #
   # To go back to the published image:
   #
