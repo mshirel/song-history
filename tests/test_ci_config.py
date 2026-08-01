@@ -1,14 +1,18 @@
 """Tests for CI configuration — ensure action pins and steps stay current."""
 
+import subprocess
 from pathlib import Path
 
 import pytest
 import yaml
 
 CI_PATH = Path(".github/workflows/ci.yml")
+RELEASE_PATH = Path(".github/workflows/release.yml")
 DEPENDABOT_PATH = Path(".github/dependabot.yml")
 PYPROJECT_PATH = Path("pyproject.toml")
 REQUIREMENTS_LOCK_PATH = Path("requirements.lock")
+UV_LOCK_PATH = Path("uv.lock")
+GITIGNORE_PATH = Path(".gitignore")
 
 # The set of valid Dependabot package-ecosystem values.  "docker-compose" is
 # deliberately absent — it is NOT a valid ecosystem; the "docker" ecosystem
@@ -121,10 +125,89 @@ class TestDependencyLockAuthority:
             "pip-compile independently resolves dependencies and must not be a lock validator"
         )
 
-    def test_deployment_lock_identifies_uv_as_generator(self) -> None:
-        header = "\n".join(REQUIREMENTS_LOCK_PATH.read_text().splitlines()[:8])
-        assert "uv export" in header, (
-            "requirements.lock must be a frozen export from uv.lock, not an independent lock"
+
+@pytest.mark.skipif(not CI_PATH.exists(), reason="CI config not present")
+class TestLockfileHasSingleAuthority:
+    """uv.lock is the only committed lockfile; requirements.lock is generated (#546, #589).
+
+    Dependabot's uv ecosystem updates pyproject.toml and uv.lock only.  While
+    requirements.lock was committed *and* diffed by CI, nothing regenerated it,
+    so every Dependabot bump failed the security job and could never merge.
+    Generating it at build time makes that drift structurally impossible.
+    """
+
+    def test_requirements_lock_is_not_committed(self) -> None:
+        """Assert it is untracked, not merely absent — a local build generates it."""
+        tracked = subprocess.run(
+            ["git", "ls-files", "--error-unmatch", str(REQUIREMENTS_LOCK_PATH)],
+            capture_output=True,
+            check=False,
+        )
+        assert tracked.returncode != 0, (
+            "requirements.lock is a derived export of uv.lock and must be generated "
+            "at build time, not committed — a committed copy deadlocks Dependabot (#589)"
+        )
+
+    def test_requirements_lock_is_gitignored(self) -> None:
+        assert "requirements.lock" in GITIGNORE_PATH.read_text(), (
+            "the generated requirements.lock must be gitignored so it cannot be "
+            "re-committed and drift from uv.lock"
+        )
+
+    def test_uv_lock_is_the_committed_authority(self) -> None:
+        assert UV_LOCK_PATH.exists(), "uv.lock is the sole committed resolution authority"
+
+    def test_publish_generates_lock_before_building_image(self) -> None:
+        """The export must live in the publish job itself, ahead of every image build.
+
+        Checking raw file order would be satisfied by the unrelated export in the
+        security job, so this walks the publish job's own step list.
+        """
+        publish_steps = yaml.safe_load(CI_PATH.read_text())["jobs"]["publish"]["steps"]
+
+        export_at = next(
+            (
+                i
+                for i, step in enumerate(publish_steps)
+                if "--output-file requirements.lock" in step.get("run", "")
+            ),
+            None,
+        )
+        assert export_at is not None, (
+            "the publish job must export requirements.lock from uv.lock before "
+            "building the image — the Dockerfile COPYs it from the build context"
+        )
+
+        build_indexes = [
+            i
+            for i, step in enumerate(publish_steps)
+            if "docker/build-push-action" in str(step.get("uses", ""))
+        ]
+        assert build_indexes, "publish job has no docker build step"
+        assert export_at < min(build_indexes), (
+            "requirements.lock must be exported before docker build, or the image "
+            "installs a stale dependency set"
+        )
+
+    def test_ci_no_longer_diffs_a_committed_lock(self) -> None:
+        assert "requirements.lock is out of date" not in CI_PATH.read_text(), (
+            "the drift guard is obsolete once the lockfile is generated — keeping it "
+            "would re-create the Dependabot deadlock (#589)"
+        )
+
+    def test_publish_rebuild_filter_watches_uv_lock(self) -> None:
+        """The paths-filter must watch the committed lockfile, not the generated one."""
+        ci = CI_PATH.read_text()
+        assert '- "uv.lock"' in ci, (
+            "a uv.lock change alters the image contents and must trigger a rebuild"
+        )
+        assert '- "requirements.lock"' not in ci, (
+            "requirements.lock is never committed, so it can never trigger a rebuild"
+        )
+
+    def test_release_workflow_does_not_read_a_committed_lock(self) -> None:
+        assert "pip install -r requirements.lock" not in RELEASE_PATH.read_text(), (
+            "release.yml must install from uv.lock — requirements.lock is not committed"
         )
 
 
