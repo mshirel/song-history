@@ -182,18 +182,11 @@ jobs:
       - name: Install dependencies
         run: uv sync --frozen --extra dev --extra web --extra ocr
 
+      # uv.lock is the sole committed resolution authority (#546).  requirements.lock
+      # is a generated export consumed only by the image build, so there is no
+      # second committed file to drift — nothing to diff here (#589).
       - name: Verify frozen dependency graph (#174, #546)
-        run: |
-          uv lock --check
-          uv export --frozen --no-dev --extra web --extra ocr \
-            --no-emit-project --no-hashes --output-file /tmp/requirements.lock
-          # The header records a different output path; package lines must be identical.
-          grep -v '^#' requirements.lock > /tmp/lock-current.txt
-          grep -v '^#' /tmp/requirements.lock > /tmp/lock-fresh.txt
-          diff /tmp/lock-current.txt /tmp/lock-fresh.txt || {
-            echo "::error::requirements.lock is out of date — run: uv export --frozen --no-dev --extra web --extra ocr --no-emit-project --no-hashes --output-file requirements.lock"
-            exit 1
-          }
+        run: uv lock --check
 
       - name: Dependency audit (pip-audit)
         # CVE-2026-3219 affects pip itself; no fix released upstream yet.
@@ -249,10 +242,24 @@ jobs:
             app:
               - "Dockerfile"
               - "pyproject.toml"
-              - "requirements.lock"
+              - "uv.lock"
               - "src/**"
               - "config/**"
               - "scripts/**"
+
+      # requirements.lock is a generated export of uv.lock, not a committed file
+      # (#589).  The Dockerfile COPYs it from the build context, so it must be
+      # materialised here before any build step runs.  Deliberately unconditional:
+      # if this were gated on the same expression as the build steps, the two
+      # could drift and a build would COPY a file that was never generated.
+      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990  # v8.3.2
+        with:
+          version: "0.11.7"
+
+      - name: Export deployment lockfile from uv.lock
+        run: |
+          uv export --frozen --no-dev --extra web --extra ocr \
+            --no-emit-project --no-hashes --output-file requirements.lock
 
       - name: Set up QEMU
         if: startsWith(github.ref, 'refs/tags/v') || steps.changes.outputs.app == 'true' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'

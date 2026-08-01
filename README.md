@@ -266,7 +266,14 @@ docker pull ghcr.io/mshirel/song-history:sha-<commit>
 
 ### Build locally
 
+`requirements.lock` is generated from `uv.lock` rather than committed, so export it
+before building (`make build` does both):
+
 ```bash
+make build
+# or, by hand:
+uv export --frozen --no-dev --extra web --extra ocr \
+  --no-emit-project --no-hashes --output-file requirements.lock
 docker build -t worship-catalog .
 # or: podman build -t worship-catalog .
 ```
