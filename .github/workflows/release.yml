@@ -8,6 +8,7 @@ on:
 
 permissions:
   contents: write
+  actions: write   # required to dispatch ci.yml for the new tag (#583)
 
 jobs:
   release:
@@ -70,6 +71,18 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git tag "v${{ steps.version.outputs.version }}"
           git push origin "v${{ steps.version.outputs.version }}"
+
+      # GitHub deliberately does not trigger workflows from events created with
+      # GITHUB_TOKEN, so the tag push above fires nothing and `publish` never
+      # runs on refs/tags/v* — v1.3.1 shipped with no container image (#583).
+      # ci.yml's publish job accepts workflow_dispatch ("Manual trigger — always
+      # runs full publish pipeline"), so dispatch it explicitly for the new tag.
+      - name: Build and publish the image for the new tag
+        if: steps.version.outputs.release == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh workflow run ci.yml --ref "v${{ steps.version.outputs.version }}"
 
       - name: Publish GitHub Release
         if: steps.version.outputs.release == 'true'
