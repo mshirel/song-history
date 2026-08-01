@@ -22,6 +22,41 @@ class TestNoMaliciousFastapi:
         )
 
 
+class TestRuntimeImageHasNoPip:
+    """pip is removed from the runtime image (#595).
+
+    pip vendors its own dependencies under `pip/_vendor` — msgpack 1.1.2 and
+    setuptools 70.3.0 at the time of writing, both carrying advisories.  They
+    do not appear in `pip list` (vendored code is not an installed
+    distribution) and are not in uv.lock, but they are real files in the image
+    and Trivy fails the publish job on them, so nothing can ship.
+    """
+
+    def test_dockerfile_removes_pip_from_the_runtime_image(self):
+        dockerfile = (_PROJECT_ROOT / "Dockerfile").read_text()
+        assert "pip uninstall" in dockerfile, (
+            "the runtime image must not ship pip — its vendored dependencies "
+            "carry CVEs and nothing needs pip at runtime (#595)"
+        )
+
+    def test_pip_is_removed_after_dependencies_are_installed(self):
+        """Removing pip before the install step would break the build."""
+        lines = (_PROJECT_ROOT / "Dockerfile").read_text().splitlines()
+        install_at = next(
+            i for i, line in enumerate(lines) if "-r requirements.lock" in line
+        )
+        remove_at = next(i for i, line in enumerate(lines) if "pip uninstall" in line)
+        assert install_at < remove_at, "pip must be removed only after it has installed everything"
+
+    def test_removal_is_verified_in_the_same_layer(self):
+        """A silent no-op removal would let the vendored CVEs ship anyway."""
+        dockerfile = (_PROJECT_ROOT / "Dockerfile").read_text()
+        assert "! command -v pip" in dockerfile, (
+            "the build must assert pip is actually gone, or a failed removal "
+            "ships the vulnerable vendored packages while the build stays green"
+        )
+
+
 class TestDependencyReproducibility:
     """A lockfile must exist and be used in the Dockerfile (#174)."""
 
