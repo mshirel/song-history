@@ -72,6 +72,63 @@ class TestReleaseWorkflow:
         assert "push origin" in text
 
 
+@pytest.mark.skipif(not RELEASE_WORKFLOW_PATH.exists(), reason="release workflow not present")
+class TestReleaseTriggersPublish:
+    """A cut release must actually build and push a container image (#583).
+
+    `release.yml` tags with the default GITHUB_TOKEN, and GitHub deliberately
+    does not trigger workflows from GITHUB_TOKEN-created events.  So the tag
+    push fires nothing, `publish` never runs on `refs/tags/v*`, and the release
+    ships no image — v1.3.1 was cut with no container.  The workflow must
+    therefore dispatch CI itself for the new tag.
+    """
+
+    def _release_steps(self) -> list[dict]:
+        return yaml.safe_load(RELEASE_WORKFLOW_PATH.read_text())["jobs"]["release"]["steps"]
+
+    def _dispatch_step(self) -> dict | None:
+        for step in self._release_steps():
+            if "workflow run" in step.get("run", "").replace("gh workflow run", "workflow run"):
+                return step
+        return None
+
+    def test_release_dispatches_ci_for_the_new_tag(self) -> None:
+        step = self._dispatch_step()
+        assert step is not None, (
+            "release.yml must dispatch ci.yml for the tag it just created — a "
+            "GITHUB_TOKEN tag push triggers no workflow, so nothing builds the image (#583)"
+        )
+        run = step["run"]
+        assert "ci.yml" in run, "the dispatch must target the CI workflow that owns `publish`"
+        assert "--ref" in run and "steps.version.outputs.version" in run, (
+            "the dispatch must target the newly created tag ref, not a branch"
+        )
+
+    def test_dispatch_runs_only_when_a_release_was_cut(self) -> None:
+        step = self._dispatch_step()
+        assert step is not None
+        assert step.get("if") == "steps.version.outputs.release == 'true'", (
+            "dispatching CI when no tag was cut would rebuild main under a bogus version"
+        )
+
+    def test_dispatch_happens_after_the_tag_exists(self) -> None:
+        """Dispatching a ref that has not been pushed yet fails with 'no ref found'."""
+        steps = self._release_steps()
+        tag_at = next(i for i, s in enumerate(steps) if "git tag" in s.get("run", ""))
+        dispatch_at = next(
+            i for i, s in enumerate(steps) if "gh workflow run" in s.get("run", "")
+        )
+        assert tag_at < dispatch_at, "the tag must be pushed before CI is dispatched for it"
+
+    def test_workflow_has_permission_to_dispatch(self) -> None:
+        workflow = yaml.safe_load(RELEASE_WORKFLOW_PATH.read_text())
+        permissions = workflow.get("permissions", {})
+        assert permissions.get("actions") == "write", (
+            "`gh workflow run` needs actions: write; without it the dispatch 403s "
+            "and the release silently ships no image again (#583)"
+        )
+
+
 @pytest.mark.skipif(not CI_WORKFLOW_PATH.exists(), reason="ci workflow not present")
 class TestPublishWorkflowVersionSource:
     """Publish builds should use release tags, not branch names, as the version source."""
