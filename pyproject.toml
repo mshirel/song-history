@@ -23,7 +23,7 @@ dependencies = [
 
 [project.optional-dependencies]
 ocr = [
-    "anthropic>=0.40,<1",
+    "anthropic>=0.120.0,<1",
 ]
 web = [
     "fastapi!=0.136.3,>=0.140.7,<1",  # 0.136.3 is malicious (MAL-2026-4750)
@@ -43,7 +43,7 @@ library = [
 dev = [
     "pytest>=9.0.3,<10",
     "pytest-cov>=4.0,<8",
-    "ruff>=0.1,<1",
+    "ruff>=0.16.0,<1",
     "mypy>=1.0,<3",
     "types-PyYAML>=6.0,<7",
     "fastapi!=0.136.3,>=0.140.7,<1",  # 0.136.3 is malicious (MAL-2026-4750)
