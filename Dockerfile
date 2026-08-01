@@ -38,6 +38,23 @@ RUN chmod +x scripts/import-new.sh
 # then install the package itself (--no-deps: deps already in lockfile) (#294).
 RUN pip install --no-cache-dir -r requirements.lock && pip install --no-cache-dir --no-deps .
 
+# Remove pip from the runtime image (#595).  pip bundles its own dependencies
+# under pip/_vendor — currently msgpack 1.1.2 (GHSA-6v7p-g79w-8964) and
+# setuptools 70.3.0 (CVE-2025-47273, CVE-2026-59890).  They are invisible to
+# `pip list` because vendored code is not an installed distribution, but they
+# are real files in the image and Trivy flags them, blocking every push.
+#
+# `pip install --upgrade pip` above means the vendored set changes with
+# whatever pip is newest at build time, so pinning would only defer this.
+# Nothing needs pip at runtime — every dependency is installed above, and the
+# HEALTHCHECK uses urllib from the stdlib — so drop it entirely.  This also
+# removes the ability to install packages into a running container.
+RUN python -m pip uninstall --yes pip \
+    && rm -rf /usr/local/lib/python3.12/site-packages/pip \
+              /usr/local/lib/python3.12/site-packages/pip-*.dist-info \
+              /usr/local/bin/pip /usr/local/bin/pip3 /usr/local/bin/pip3.12 \
+    && ! command -v pip
+
 # Bake version and build date so the About page shows real values (#261, #262)
 RUN echo "${APP_VERSION}" > /app/.version \
     && echo "${BUILD_DATE}" > /app/.build-date
