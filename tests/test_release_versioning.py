@@ -120,6 +120,42 @@ class TestReleaseTriggersPublish:
         )
         assert tag_at < dispatch_at, "the tag must be pushed before CI is dispatched for it"
 
+    def test_dispatch_is_the_last_step(self) -> None:
+        """A dispatch failure must not suppress the GitHub Release.
+
+        The tag is already pushed by then, so if the Release step never runs the
+        version is stranded for good: the next run computes an empty
+        `v<new>..HEAD` range, resolves release=false, and never retries.
+        """
+        steps = self._release_steps()
+        release_at = next(
+            i for i, s in enumerate(steps) if "gh release create" in s.get("run", "")
+        )
+        dispatch_at = next(
+            i for i, s in enumerate(steps) if "gh workflow run" in s.get("run", "")
+        )
+        assert release_at < dispatch_at, (
+            "publish the GitHub Release before dispatching CI, so a dispatch "
+            "failure leaves only the image missing and recoverable by hand"
+        )
+
+    def test_job_requires_first_party_provenance(self) -> None:
+        """`workflow_run` alone would run untrusted fork code with a write token.
+
+        The `branches:` filter matches the *triggering run's* head branch, so a
+        fork PR raised from a branch named `main` passes it — and this job
+        checks out that run's head_sha and executes it.
+        """
+        condition = yaml.safe_load(RELEASE_WORKFLOW_PATH.read_text())["jobs"]["release"]["if"]
+        assert "workflow_run.event == 'push'" in condition, (
+            "only a push-triggered CI run may cut a release; a pull_request run "
+            "carries untrusted code"
+        )
+        assert "head_repository.full_name == github.repository" in condition, (
+            "only a first-party run may cut a release — a fork's head_sha must "
+            "never be checked out into a job with contents/actions write"
+        )
+
     def test_workflow_has_permission_to_dispatch(self) -> None:
         workflow = yaml.safe_load(RELEASE_WORKFLOW_PATH.read_text())
         permissions = workflow.get("permissions", {})
