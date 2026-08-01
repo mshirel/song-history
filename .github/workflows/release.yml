@@ -8,10 +8,20 @@ on:
 
 permissions:
   contents: write
+  actions: write   # required to dispatch ci.yml for the new tag (#583)
 
 jobs:
   release:
-    if: github.event.workflow_run.conclusion == 'success'
+    # Provenance guard.  `workflow_run`'s `branches:` filter matches the
+    # triggering run's HEAD branch, so a fork PR raised from a branch literally
+    # named `main` satisfies it — and this job checks out that run's head_sha
+    # and executes it (`uv sync` builds the checked-out project; the version
+    # step imports from its `src/`).  Require a first-party push so untrusted
+    # code can never reach a job holding contents: write + actions: write.
+    if: >-
+      github.event.workflow_run.conclusion == 'success'
+      && github.event.workflow_run.event == 'push'
+      && github.event.workflow_run.head_repository.full_name == github.repository
     runs-on: ubuntu-latest
 
     steps:
@@ -25,15 +35,18 @@ jobs:
         with:
           python-version: "3.12"
 
+      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990  # v8.3.2
+        with:
+          version: "0.11.7"
+
+      # Installs from uv.lock, the sole committed lockfile (#546, #589).
       - name: Install release helper dependencies
-        run: |
-          pip install -r requirements.lock
-          pip install -e .
+        run: uv sync --frozen --extra web --extra ocr
 
       - name: Determine next release version
         id: version
         run: |
-          python3 - <<'PY'
+          uv run --frozen python3 - <<'PY'
           from pathlib import Path
           import os
           import subprocess
@@ -76,3 +89,22 @@ jobs:
           gh release create "v${{ steps.version.outputs.version }}" \
             --title "v${{ steps.version.outputs.version }}" \
             --generate-notes
+
+      # GitHub deliberately does not trigger workflows from events created with
+      # GITHUB_TOKEN, so the tag push above fires nothing and `publish` never
+      # runs on refs/tags/v* — v1.3.1 shipped with no container image (#583).
+      # ci.yml's publish job accepts workflow_dispatch ("Manual trigger — always
+      # runs full publish pipeline"), so dispatch it explicitly for the new tag.
+      #
+      # Deliberately LAST.  If this step fails, the tag and the GitHub Release
+      # already exist, so only the image is missing and `gh workflow run ci.yml
+      # --ref vX.Y.Z` recovers it by hand.  Ordered before the Release step, a
+      # dispatch failure would strand the version permanently: the tag is
+      # already pushed, so the next run computes an empty `v<new>..HEAD` range,
+      # resolves release=false, and never retries.
+      - name: Build and publish the image for the new tag
+        if: steps.version.outputs.release == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh workflow run ci.yml --ref "v${{ steps.version.outputs.version }}"

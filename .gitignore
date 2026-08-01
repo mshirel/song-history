@@ -239,3 +239,8 @@ graphify-out/
 
 # mutation testing output
 mutants/
+
+# Generated deployment lockfile — exported from uv.lock at build time (#589).
+# uv.lock is the sole committed resolution authority (#546); a committed copy of
+# this export deadlocks every Dependabot bump.
+requirements.lock
