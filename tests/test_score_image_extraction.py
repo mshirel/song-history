@@ -232,3 +232,105 @@ class TestScoreOccurrenceMetadata:
                 "model": "google/gemini-2.5-flash-lite",
             }
         ]
+
+
+class TestScoreGroupingAfterBudgetExhaustion:
+    """The tail of a confirmed score is retained past the budget — say so (#554).
+
+    #553 deliberately keeps appending image-only slides to a confirmed score once
+    the shared OCR budget runs out, because the known 30-page Goodness of God
+    score needs more pages than the default 25-call web budget allows. That is the
+    right trade, and these tests do not change it.
+
+    What it costs is a boundary the classifier can no longer see. Every following
+    image-only slide joins the current song until a text-bearing slide appears —
+    so a score followed immediately by another score, or by an image-only
+    non-song, silently inflates the first song's range and can hide the second
+    song entirely. Nothing in the output said so, which made an inflated range
+    indistinguishable from a genuinely long one.
+    """
+
+    def test_unverified_tail_is_reported_as_an_anomaly(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The issue's reproduction: budget covers only the first two slides, and
+        # the run continues with an unclassifiable image and a second score.
+        slides = [_slide(i, blob=f"score-{i}".encode()) for i in range(5)]
+        vision = MagicMock(side_effect=[_header("Goodness Of God"), _header(None)])
+        monkeypatch.setattr(extractor, "extract_score_header_via_vision", vision)
+
+        result = extractor._group_song_slides_with_score_ocr(
+            slides, OcrBudget(max_calls=2)
+        )
+
+        # Grouping is unchanged: the tail is still retained, on purpose.
+        assert [(title, len(group)) for title, group in result.groups] == [
+            ("goodness of god", 5)
+        ]
+        assert vision.call_count == 2
+
+        budget_anomalies = [
+            a for a in result.anomalies if a["type"] == "score_image_ocr_budget_exhausted"
+        ]
+        assert budget_anomalies, (
+            "a score group whose tail was assembled without OCR must say so — "
+            f"got only {[a['type'] for a in result.anomalies]}"
+        )
+        anomaly = budget_anomalies[0]
+        assert anomaly["title"] == "Goodness Of God"
+        assert anomaly["first_unverified_slide_index"] == 2
+        assert anomaly["unverified_slides"] == 3
+
+    def test_no_anomaly_when_the_budget_covered_every_slide(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The negative case, or the assertion above proves nothing.
+
+        Every slide classified means every boundary was observed, so there is
+        nothing to warn about and a warning here would be noise on every import.
+        """
+        slides = [_slide(i, blob=f"score-{i}".encode()) for i in range(4)]
+        vision = MagicMock(
+            side_effect=[_header(), _header(None), _header(None), _header(None)]
+        )
+        monkeypatch.setattr(extractor, "extract_score_header_via_vision", vision)
+
+        result = extractor._group_song_slides_with_score_ocr(
+            slides, OcrBudget(max_calls=10)
+        )
+
+        assert [(title, len(group)) for title, group in result.groups] == [
+            ("goodness of god", 4)
+        ]
+        assert not [
+            a for a in result.anomalies if a["type"] == "score_image_ocr_budget_exhausted"
+        ]
+
+    def test_a_text_slide_ends_the_unverified_tail_and_bounds_the_count(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The count must be the tail actually taken, not everything after the budget.
+
+        A text-bearing slide flushes the score group, so slides beyond it were
+        never at risk of being swallowed. Reporting them would overstate the
+        problem and train the reader to ignore the anomaly.
+        """
+        slides = [
+            _slide(0, blob=b"score-0"),
+            _slide(1, blob=b"score-1"),
+            _slide(2, blob=b"score-2"),
+            _slide(3, lines=["Amazing Grace", "how sweet the sound"]),
+            _slide(4, blob=b"score-4"),
+        ]
+        vision = MagicMock(side_effect=[_header("Goodness Of God"), _header(None)])
+        monkeypatch.setattr(extractor, "extract_score_header_via_vision", vision)
+
+        result = extractor._group_song_slides_with_score_ocr(
+            slides, OcrBudget(max_calls=2)
+        )
+
+        anomaly = next(
+            a for a in result.anomalies if a["type"] == "score_image_ocr_budget_exhausted"
+        )
+        assert anomaly["first_unverified_slide_index"] == 2
+        assert anomaly["unverified_slides"] == 1
