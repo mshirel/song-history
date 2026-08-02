@@ -1333,3 +1333,112 @@ class TestUploadJsErrorHandling:
         )
         # On a 403 it must recover (auto-retry once) rather than surface a raw parse error.
         assert "403" in js, "upload.js must special-case the CSRF 403 for recovery"
+
+
+class TestSetlistDeleteRedirectIsNotAttackerSteerable:
+    """CodeQL alert #12 (`py/url-redirection`) is a false positive — this keeps it one.
+
+    The delete route ends with:
+
+        return RedirectResponse(url=f"/services/{service_id}", status_code=303)
+
+    CodeQL sees a path parameter interpolated into a redirect target and reports
+    "untrusted URL redirection depends on a user-provided value". It does not
+    model FastAPI's path-parameter coercion, so it cannot see that the value is
+    already an `int` by the time the handler runs.
+
+    Two independent barriers stand between the request and that f-string, and the
+    alert is dismissed on the strength of BOTH:
+
+    1. `service_id: int` — anything non-integer is rejected 422 by validation, and
+       anything containing a `/` fails to match the route at all (404). An
+       open-redirect payload needs a scheme, `//`, or a backslash; none survive.
+    2. Even a well-formed integer must resolve to a real service — the handler
+       raises 404 before redirecting otherwise.
+
+    So the target is always `/services/<int>`: a same-origin relative path with no
+    attacker-controlled surface. **The dismissal is only valid while that stays
+    true.** Widening the annotation to `str`, or dropping the existence check,
+    would make the alert real — and this class is what fails when someone does.
+    """
+
+    _CREDS = ("highland", "s3cret")
+
+    @pytest.fixture
+    def auth_client(self, db_with_songs, tmp_path, monkeypatch):
+        inbox = tmp_path / "inbox"
+        inbox.mkdir()
+        monkeypatch.setenv("DB_PATH", str(db_with_songs))
+        monkeypatch.setenv("INBOX_DIR", str(inbox))
+        monkeypatch.setenv("UPLOAD_PASSWORD", "s3cret")
+        from importlib import reload
+
+        import worship_catalog.web.app as app_module
+
+        reload(app_module)
+        return CsrfAwareClient(TestClient(app_module.app))
+
+    # Each needs a scheme, a leading `//`, a backslash, or a CRLF to steer a
+    # browser off-origin. All of them must die before the handler.
+    _PAYLOADS = [
+        "//evil.example.com",
+        "https://evil.example.com",
+        "1/../../evil",
+        "1%0d%0aLocation:%20https://evil.example.com",
+        "1;@evil.example.com",
+        "\\\\evil.example.com",
+        "1@evil.example.com",
+    ]
+
+    def test_the_legitimate_redirect_is_a_same_origin_relative_path(self, auth_client):
+        """The control. Without it, the payload tests below could pass because the
+        harness never reaches the route at all — which is exactly what a first
+        attempt at this test did, with CSRF returning 403 for every case."""
+        auth_client._csrf_token = auth_client._inner.cookies.get("csrftoken")
+        r = auth_client.post(
+            "/services/1/setlist/2/delete", auth=self._CREDS, follow_redirects=False
+        )
+        assert r.status_code == 303, r.status_code
+        location = r.headers["location"]
+        assert location == "/services/1", location
+        assert "//" not in location and ":" not in location, (
+            f"the redirect target is not a bare relative path: {location!r}"
+        )
+
+    @pytest.mark.parametrize("payload", _PAYLOADS)
+    def test_no_payload_can_steer_the_redirect(self, auth_client, payload):
+        auth_client._csrf_token = auth_client._inner.cookies.get("csrftoken")
+        r = auth_client.post(
+            f"/services/{payload}/setlist/1/delete",
+            auth=self._CREDS,
+            follow_redirects=False,
+        )
+        assert r.status_code in (404, 422), (
+            f"{payload!r} reached the handler with {r.status_code} — it should have "
+            "been rejected by route matching or int coercion"
+        )
+        assert "evil" not in r.headers.get("location", ""), (
+            f"OPEN REDIRECT: {payload!r} steered the response to "
+            f"{r.headers.get('location')!r} — CodeQL alert #12 is real after all "
+            "and the dismissal must be reversed"
+        )
+
+    def test_the_route_still_declares_service_id_as_an_int(self):
+        """The barrier itself, asserted directly.
+
+        The parametrized cases above would keep passing if the annotation were
+        widened to `str` but every payload happened to 404 on a missing service.
+        This pins the coercion rather than its side effect.
+        """
+        import typing
+
+        import worship_catalog.web.app as app_module
+
+        # `eval_str`/get_type_hints, not the raw annotation: app.py uses
+        # `from __future__ import annotations`, so the raw value is the STRING
+        # "int" and an `is int` check fails against correct code.
+        hints = typing.get_type_hints(app_module.setlist_entry_delete)
+        assert hints["service_id"] is int, (
+            "service_id is no longer an int — the redirect target is now "
+            "attacker-shaped and CodeQL alert #12 must be reopened"
+        )
