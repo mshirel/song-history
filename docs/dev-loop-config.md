@@ -180,10 +180,10 @@ is for the ESPN fantasy football connector.
 
 Each of these has cost a wake or would have. One line, plus how to tell environmental from real.
 
-- **11 tests fail on any host without the `sqlite3` CLI.** `tests/test_backup_sh.py`,
+- **12 tests fail on any host without the `sqlite3` CLI.** `tests/test_backup_sh.py`,
   `tests/test_backup_restore.py`, `tests/test_seed_pi_db_sh.py` shell out to `sqlite3` and report
   `FAIL: integrity check failed`. CI has the binary; the WSL/vm-ai-dev workstations do not. Baseline
-  is **1417 passed, 11 failed**. To tell environmental from real: run the same file in the canonical
+  is **1426 passed, 12 failed** (it moves as the suite grows — the invariant is that every failure is in those three files). To tell environmental from real: run the same file in the canonical
   checkout on `main` — identical failures mean it is the host, not your diff. Never "fix" these.
 
 - **`publish` never runs on a PR.** Its gate is `refs/tags/v*` / `schedule` / `workflow_dispatch`,
