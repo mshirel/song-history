@@ -4107,6 +4107,121 @@ class TestUploadRateLimiterPersistence:
 
 
 # ---------------------------------------------------------------------------
+# Rate limiter under write contention (#541)
+# ---------------------------------------------------------------------------
+
+
+class TestUploadRateLimiterContention:
+    """rate_limits.db must survive concurrent writers (#541).
+
+    Two limiters (upload + report) share one file through two separate
+    connections, and the app can run multi-worker, so contention is the normal
+    case here rather than the exceptional one.
+
+    A note on what was actually broken, because #541 got half of it wrong: the
+    busy timeout was never 0. ``sqlite3.connect`` defaults to ``timeout=5.0``,
+    which sets ``PRAGMA busy_timeout=5000``, so a contended write already waited
+    rather than failing. The real defect was the journal mode — the default
+    rollback journal is deleted and recreated on every commit, readers and
+    writers block each other, and a worker killed mid-write can leave the file
+    needing recovery. The tests below are split accordingly: the WAL ones fail
+    without the fix, the timeout one is a regression guard for a property that
+    currently holds only by library default.
+    """
+
+    def test_journal_mode_is_wal(self, tmp_path):
+        from worship_catalog.web.app import _UploadRateLimiter
+
+        limiter = _UploadRateLimiter(db_path=tmp_path / "rate_limits.db")
+        mode = limiter._conn.execute("PRAGMA journal_mode").fetchone()[0]
+        assert mode.lower() == "wal", (
+            f"expected WAL, got {mode!r} — the rollback journal truncates on every "
+            "commit and a worker killed mid-write can leave the file corrupt"
+        )
+
+    def test_wal_is_actually_in_use_on_disk(self, tmp_path):
+        """PRAGMA reporting 'wal' is not the same as WAL being used.
+
+        The mode is persisted in the file header, so a stale pre-WAL file could
+        report one thing while the write path did another. The -wal sidecar
+        appearing after a real write is the observable difference.
+        """
+        from worship_catalog.web.app import _UploadRateLimiter
+
+        db_path = tmp_path / "rate_limits.db"
+        limiter = _UploadRateLimiter(db_path=db_path)
+        assert limiter.is_allowed("10.0.0.5")[0]
+        assert db_path.with_name(db_path.name + "-wal").exists(), (
+            "no -wal sidecar after a committed write, so the write did not go "
+            "through the write-ahead log"
+        )
+
+    def test_busy_timeout_is_set(self, tmp_path):
+        """Regression guard, not a bug fix — see the class docstring.
+
+        This passes before the change too, because Python's default supplies it.
+        It is pinned so that an explicit ``timeout=0``, or a driver whose default
+        differs, cannot silently reintroduce immediate ``database is locked``
+        failures in a request path.
+        """
+        from worship_catalog.web.app import _UploadRateLimiter
+
+        limiter = _UploadRateLimiter(db_path=tmp_path / "rate_limits.db")
+        timeout_ms = limiter._conn.execute("PRAGMA busy_timeout").fetchone()[0]
+        assert timeout_ms >= 5000, (
+            f"busy_timeout is {timeout_ms}ms — a contended write should wait for "
+            "the other writer, not raise OperationalError immediately"
+        )
+
+    def test_write_waits_out_a_competing_writer(self, tmp_path):
+        """Behavioural counterpart to the timeout pragma, and also a guard.
+
+        Hold the write lock from a second connection, then let the limiter try
+        to record a request. With a busy timeout it blocks and then succeeds;
+        without one it raises ``sqlite3.OperationalError: database is locked``
+        the moment it touches the table.
+        """
+        import sqlite3
+        import threading
+
+        from worship_catalog.web.app import _UploadRateLimiter
+
+        db_path = tmp_path / "rate_limits.db"
+        limiter = _UploadRateLimiter(db_path=db_path)
+        # Seed the table so the schema exists before the blocker takes the lock.
+        assert limiter.is_allowed("10.0.0.1")[0]
+
+        blocker = sqlite3.connect(db_path)
+        blocker.execute("BEGIN IMMEDIATE")  # RESERVED lock: no other writer may commit
+        blocker.execute(
+            "INSERT INTO rate_limit_events (client_ip, timestamp) VALUES (?, ?)",
+            ("10.0.0.99", 0.0),
+        )
+
+        result: list[object] = []
+
+        def _attempt() -> None:
+            try:
+                result.append(limiter.is_allowed("10.0.0.2"))
+            except Exception as exc:  # noqa: BLE001 - the failure mode under test
+                result.append(exc)
+
+        worker = threading.Thread(target=_attempt)
+        worker.start()
+        # Long enough that a zero busy_timeout has certainly already failed.
+        worker.join(timeout=0.5)
+        blocker.rollback()
+        blocker.close()
+        worker.join(timeout=5)
+
+        assert result, "limiter never returned"
+        assert not isinstance(result[0], Exception), (
+            f"contended write failed instead of waiting: {result[0]!r}"
+        )
+        assert result[0] == (True, 0)
+
+
+# ---------------------------------------------------------------------------
 # Proxy-aware rate limiter (#283)
 # ---------------------------------------------------------------------------
 
