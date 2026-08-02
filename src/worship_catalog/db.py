@@ -1169,12 +1169,24 @@ class Database:
         the occurrences; deleting them while another entry survives would erase
         that song's reporting for the service it is still in.
 
-        Two things this deliberately does NOT do:
+        The ``songs`` row goes only when the deleted entry was its LAST
+        appearance anywhere (#618). Songs are shared across services, so
+        deleting one to fix a single misread slide would erase its history
+        everywhere it legitimately appears — but a song with no appearances at
+        all is not shared with anyone. Left behind it stays listed in the public
+        catalogue with zero performances, and clearing it needs the CLI access
+        this whole feature exists to avoid: #313/#314 are a scripture reference
+        and two sermon-outline slides, each appearing exactly once, and they are
+        the reason the delete exists.
 
-        * It does not touch the ``songs`` row. Songs are shared across services;
-          deleting it would erase the song's history everywhere it legitimately
-          appears, to fix one slide that was misread. A song left with no
-          appearances at all is tracked separately (#618).
+        THE COUNT IS GLOBAL, NOT PER-SERVICE — the one place this is easy to get
+        wrong, because the copy-events count directly above it is correctly
+        scoped to ``service_id`` and this one must not be. Scoped, it would
+        delete a song another service is still performing, taking that service's
+        setlist row and CCLI reporting with it.
+
+        One thing this deliberately does NOT do:
+
         * It does not renumber the remaining ``ordinal`` values. They are unique
           per service but need not be contiguous, and a gap is honest — it says a
           slide was removed. (A later re-import is unaffected: ``run_import``
@@ -1222,10 +1234,39 @@ class Database:
                     "DELETE FROM copy_events WHERE service_id = ? AND song_id = ?",
                     (service_id, song_id),
                 )
+
+            # NO service_id predicate here, unlike every query above it (#618).
+            # This asks "does this song appear ANYWHERE any more", and only a
+            # song that appears nowhere may be deleted.
+            appearances = cursor.execute(
+                "SELECT COUNT(*) AS n FROM service_songs WHERE song_id = ?",
+                (song_id,),
+            ).fetchone()["n"]
+            if appearances == 0:
+                self._delete_song_rows(cursor, song_id)
         # sqlite3 runs at its default isolation_level, so these statements share
         # one implicit transaction: a process death between them cannot half-commit.
         self._maybe_commit()
         return removed
+
+    @staticmethod
+    def _delete_song_rows(cursor: sqlite3.Cursor, song_id: int) -> None:
+        """Delete a song and everything keyed on it, without committing.
+
+        Shared by ``delete_song`` (the CLI's ``cleanup orphaned-songs``) and
+        ``delete_setlist_entry`` so there is one definition of what "remove a
+        song" means. Neither ``song_editions`` nor ``copy_events`` is reachable
+        from ``songs`` by a database constraint, so a partial delete leaves rows
+        nothing will ever notice — and a surviving copy event keeps the phantom
+        song in the CCLI report, which is where a misidentified song does its
+        real harm.
+
+        Does not commit: the caller owns the transaction.
+        """
+        cursor.execute("DELETE FROM copy_events WHERE song_id = ?", (song_id,))
+        cursor.execute("DELETE FROM service_songs WHERE song_id = ?", (song_id,))
+        cursor.execute("DELETE FROM song_editions WHERE song_id = ?", (song_id,))
+        cursor.execute("DELETE FROM songs WHERE id = ?", (song_id,))
 
     # ------------------------------------------------------------------
     # Import job methods (#45)
@@ -1707,10 +1748,7 @@ class Database:
     def delete_song(self, song_id: int) -> None:
         """Delete a song, its editions, and any related copy_events."""
         cursor = self._conn.cursor()
-        cursor.execute("DELETE FROM copy_events WHERE song_id = ?", (song_id,))
-        cursor.execute("DELETE FROM service_songs WHERE song_id = ?", (song_id,))
-        cursor.execute("DELETE FROM song_editions WHERE song_id = ?", (song_id,))
-        cursor.execute("DELETE FROM songs WHERE id = ?", (song_id,))
+        self._delete_song_rows(cursor, song_id)
         self._maybe_commit()
 
     def query_song_by_id(self, song_id: int) -> dict[str, Any] | None:
