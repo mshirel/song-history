@@ -1244,6 +1244,16 @@ class Database:
             ).fetchone()["n"]
             if appearances == 0:
                 self._delete_song_rows(cursor, song_id)
+                # The one destructive step here that reaches beyond the service
+                # the admin was looking at, so it leaves a record. Without it the
+                # only trace of a song's disappearance is its absence, and
+                # "where did that song go?" has no answer short of a backup diff.
+                _log.info(
+                    "deleted orphaned song song_id=%d after its last appearance "
+                    "was removed from service_id=%d",
+                    song_id,
+                    service_id,
+                )
         # sqlite3 runs at its default isolation_level, so these statements share
         # one implicit transaction: a process death between them cannot half-commit.
         self._maybe_commit()
