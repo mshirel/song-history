@@ -64,6 +64,9 @@
         <th scope="col">Arranger</th>
         <th scope="col">Publisher</th>
         <th scope="col">Reproductions</th>
+        {% if can_edit %}
+        <th scope="col" style="width:5rem;">Actions</th>
+        {% endif %}
       </tr>
     </thead>
     <tbody>
@@ -81,6 +84,24 @@
         <td style="font-size:0.85rem;">{{ song.arranger or '' }}</td>
         <td style="font-size:0.85rem;color:#495057;">{{ song.publisher or '' }}</td>
         <td style="font-size:0.85rem;color:#495057;">{{ song.copy_types or '—' }}</td>
+        {% if can_edit %}
+        {# Removing a misidentified song (#323). Irreversible without a re-import,
+           and the uploaded deck is deleted after import (#138), so a misclick has
+           no cheap undo -- hence the confirm. #}
+        <td style="text-align:center;">
+          <form method="post"
+                action="/services/{{ service.id }}/songs/{{ song.song_id }}/delete"
+                onsubmit="return confirm('Remove &quot;{{ song.display_title }}&quot; from this service?\n\nThis also removes it from the CCLI report. It cannot be undone without re-uploading the slide deck.');"
+                style="display:inline;">
+            <button type="submit"
+                    class="btn-link-danger"
+                    aria-label="Remove {{ song.display_title }} from this service"
+                    style="background:none;border:none;color:#b02a37;cursor:pointer;font-size:0.85rem;padding:0;">
+              Remove
+            </button>
+          </form>
+        </td>
+        {% endif %}
       </tr>
       {% endfor %}
     </tbody>

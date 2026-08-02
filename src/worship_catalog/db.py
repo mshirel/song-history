@@ -1147,6 +1147,41 @@ class Database:
 
         self._maybe_commit()
 
+    def delete_service_song(self, service_id: int, song_id: int) -> bool:
+        """Remove one song from one service, and its copy events with it (#323).
+
+        Returns True if a setlist row was removed, False if that song was not in
+        that service — so a caller can 404 rather than report a success that did
+        nothing.
+
+        Two things this deliberately does NOT do:
+
+        * It does not touch the ``songs`` row. Songs are shared across services;
+          deleting it would erase the song's history everywhere it legitimately
+          appears, to fix one slide that was misread.
+        * It does not renumber the remaining ``ordinal`` values. They are unique
+          per service but need not be contiguous, and a gap is honest — it says a
+          slide was removed. Renumbering would also have to happen inside this
+          transaction to avoid violating UNIQUE(service_id, ordinal) halfway.
+
+        Copy events go first and are not optional. A copy event that outlives its
+        setlist row keeps the phantom song in the CCLI report, which is the one
+        place a misidentified song does real harm — it would be submitted to a
+        licensing body.
+        """
+        cursor = self._conn.cursor()
+        cursor.execute(
+            "DELETE FROM copy_events WHERE service_id = ? AND song_id = ?",
+            (service_id, song_id),
+        )
+        cursor.execute(
+            "DELETE FROM service_songs WHERE service_id = ? AND song_id = ?",
+            (service_id, song_id),
+        )
+        removed = cursor.rowcount > 0
+        self._maybe_commit()
+        return removed
+
     # ------------------------------------------------------------------
     # Import job methods (#45)
     # ------------------------------------------------------------------

@@ -3549,3 +3549,96 @@ class TestServiceExclusions:
         temp_db.insert_or_update_service("2026-05-31", "Morning Worship", "f.pptx", "h3")
         rows = temp_db.query_exclusions("2026-05-01", "2026-05-31")
         assert len(rows) == 1 and rows[0]["service_slot"] == "evening"
+
+
+class TestDeleteServiceSong:
+    """Remove one misidentified song from a service, not the whole service (#323).
+
+    The extractor classifies slides, and it gets things wrong: service 36
+    (2026-03-15 PM) carried three non-song entries — a scripture reference and
+    two sermon-outline slides (#313, #314). Before this, the only remedy was
+    `cleanup delete-service` plus a full re-import, which needs CLI access the
+    church admin does not have.
+
+    The delete has to be surgical in two directions. It must remove the copy
+    events as well as the setlist row, because a copy event that outlives its
+    setlist entry keeps the phantom song in the CCLI report — the one place it
+    does real harm. And it must leave the `songs` row alone: songs are shared
+    across services, so deleting the row would erase the song's history
+    everywhere it legitimately appears.
+    """
+
+    def test_removes_the_setlist_row_and_its_copy_events(self, tmp_path):
+        from worship_catalog.db import Database
+
+        db = Database(tmp_path / "t.db")
+        db.connect()
+        db.init_schema()
+        song_a = db.insert_or_get_song("amazing grace", "Amazing Grace")
+        song_b = db.insert_or_get_song("micah 6 6 8", "MICAH 6:6 – 8")
+        svc = db.insert_or_update_service(
+            service_date="2026-03-15",
+            service_name="PM Worship",
+            source_file="t.pptx",
+            source_hash="h",
+        )
+        db.insert_service_song(svc, song_a, ordinal=1)
+        db.insert_service_song(svc, song_b, ordinal=2)
+        db.insert_or_get_copy_event(svc, song_a, "projection")
+        db.insert_or_get_copy_event(svc, song_b, "projection")
+        db.insert_or_get_copy_event(svc, song_b, "recording")
+
+        assert db.delete_service_song(svc, song_b) is True
+
+        remaining = {s["song_id"] for s in db.query_service_songs(svc)}
+        assert remaining == {song_a}, "the misidentified song is still in the setlist"
+
+        events = db.query_copy_events("2020-01-01", "2030-12-31")
+        assert not [e for e in events if e["display_title"] == "MICAH 6:6 – 8"], (
+            "copy events outlived the setlist row — the phantom song would still "
+            "appear in the CCLI report, which is where it actually does harm"
+        )
+        db.close()
+
+    def test_leaves_the_song_row_alone_because_songs_are_shared(self, tmp_path):
+        """Deleting from one service must not erase the song's other appearances."""
+        from worship_catalog.db import Database
+
+        db = Database(tmp_path / "t.db")
+        db.connect()
+        db.init_schema()
+        song = db.insert_or_get_song("amazing grace", "Amazing Grace")
+        svc1 = db.insert_or_update_service(
+            service_date="2026-03-15", service_name="AM", source_file="a", source_hash="a"
+        )
+        svc2 = db.insert_or_update_service(
+            service_date="2026-03-22", service_name="AM", source_file="b", source_hash="b"
+        )
+        db.insert_service_song(svc1, song, ordinal=1)
+        db.insert_service_song(svc2, song, ordinal=1)
+        db.insert_or_get_copy_event(svc1, song, "projection")
+        db.insert_or_get_copy_event(svc2, song, "projection")
+
+        db.delete_service_song(svc1, song)
+
+        assert [s["song_id"] for s in db.query_service_songs(svc2)] == [song], (
+            "the other service lost the song too"
+        )
+        assert db.query_song_by_id(song) is not None, "the shared song row was deleted"
+        db.close()
+
+    def test_returns_false_when_the_song_is_not_in_that_service(self, tmp_path):
+        """So the route can 404 instead of silently reporting success."""
+        from worship_catalog.db import Database
+
+        db = Database(tmp_path / "t.db")
+        db.connect()
+        db.init_schema()
+        song = db.insert_or_get_song("amazing grace", "Amazing Grace")
+        svc = db.insert_or_update_service(
+            service_date="2026-03-15", service_name="AM", source_file="a", source_hash="a"
+        )
+
+        assert db.delete_service_song(svc, song) is False
+        assert db.delete_service_song(9999, song) is False
+        db.close()
