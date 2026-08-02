@@ -4766,3 +4766,94 @@ class TestServiceSongDeletion:
         after upload (#138) — so a misclick has no cheap undo."""
         body = auth_client.get("/services/1", auth=self._CREDS).text
         assert "confirm" in body.lower()
+
+
+class TestServiceSongDeleteControlEscaping:
+    """Song titles are untrusted, and the delete control must survive them (#323).
+
+    Titles come from OCR and from PowerPoint decks, so they carry whatever the
+    slide carried. The confirm() message originally interpolated the title
+    straight into a JavaScript string inside an HTML attribute, which does not
+    work: Jinja autoescaping is HTML escaping, so an apostrophe becomes `&#39;`,
+    the HTML parser decodes it back to `'` BEFORE the attribute is parsed as
+    JavaScript, and the string literal terminates early.
+
+    That is not a theoretical title. "I'll Fly Away" is a standard hymn — it
+    would have broken the handler, so the confirm never fires and the form
+    submits unconfirmed, on the one control in the app that destroys data.
+    """
+
+    _CREDS = ("highland", "s3cret")
+
+    @pytest.fixture
+    def hostile_client(self, tmp_path, monkeypatch):
+        from worship_catalog.db import Database
+
+        db_path = tmp_path / "t.db"
+        db = Database(db_path)
+        db.connect()
+        db.init_schema()
+        a = db.insert_or_get_song("ill fly away", "I'll Fly Away")
+        b = db.insert_or_get_song("hostile", "');alert(1);//")
+        svc = db.insert_or_update_service(
+            service_date="2026-02-15",
+            service_name="AM Worship",
+            source_file="t.pptx",
+            source_hash="h",
+        )
+        db.insert_service_song(svc, a, ordinal=1)
+        db.insert_service_song(svc, b, ordinal=2)
+        db.close()
+
+        inbox = tmp_path / "inbox"
+        inbox.mkdir()
+        monkeypatch.setenv("DB_PATH", str(db_path))
+        monkeypatch.setenv("INBOX_DIR", str(inbox))
+        monkeypatch.setenv("UPLOAD_PASSWORD", "s3cret")
+        from importlib import reload
+
+        import worship_catalog.web.app as app_module
+
+        reload(app_module)
+        return CsrfAwareClient(TestClient(app_module.app))
+
+    def _onsubmit_lines(self, client):
+        body = client.get("/services/1", auth=self._CREDS).text
+        return [ln for ln in body.splitlines() if "onsubmit" in ln]
+
+    def test_an_apostrophe_title_does_not_break_out_of_the_js_string(
+        self, hostile_client
+    ):
+        lines = self._onsubmit_lines(hostile_client)
+        assert len(lines) == 2, lines
+        for line in lines:
+            assert "&#39;" not in line, (
+                "the title is being interpolated into the onsubmit JavaScript; "
+                "the HTML parser decodes &#39; to an apostrophe before the "
+                f"attribute is parsed as JS, terminating the string: {line}"
+            )
+
+    def test_a_hostile_title_cannot_reach_the_js_source(self, hostile_client):
+        body = hostile_client.get("/services/1", auth=self._CREDS).text
+        # Unescaped anywhere on the page would be the plain XSS.
+        assert "');alert(1);//" not in body, (
+            "an unescaped hostile title reached the page source"
+        )
+        # And it must not appear in the JS attribute even escaped: the HTML parser
+        # decodes entities before the attribute is parsed as JavaScript, so an
+        # escaped payload there still executes.
+        for line in self._onsubmit_lines(hostile_client):
+            assert "alert" not in line, f"title reached the onsubmit JS: {line}"
+        # It IS present, HTML-escaped, in the data attribute — which is inert.
+        assert "data-song-title=\"&#39;);alert(1);//\"" in body
+
+    def test_the_title_is_still_shown_to_the_user_in_the_confirm(self, hostile_client):
+        """The escaping fix must not silently drop the title from the message —
+        'Remove this song?' with no name is how the wrong row gets deleted."""
+        lines = self._onsubmit_lines(hostile_client)
+        for line in lines:
+            assert "dataset.songTitle" in line, (
+                f"confirm no longer names the song being removed: {line}"
+            )
+        body = hostile_client.get("/services/1", auth=self._CREDS).text
+        assert 'data-song-title="I&#39;ll Fly Away"' in body

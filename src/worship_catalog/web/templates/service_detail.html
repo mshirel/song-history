@@ -89,9 +89,17 @@
            and the uploaded deck is deleted after import (#138), so a misclick has
            no cheap undo -- hence the confirm. #}
         <td style="text-align:center;">
+          {# The title goes in a DATA ATTRIBUTE and is read back with dataset, never
+             interpolated into the JS string. Jinja autoescaping is HTML escaping: an
+             apostrophe becomes &#39;, the HTML parser decodes it back to ' BEFORE the
+             attribute is parsed as JavaScript, and the string literal terminates early.
+             "I'll Fly Away" alone would break the handler so the confirm never runs and
+             the form submits unconfirmed; a title of ');alert(1);// would execute. Titles
+             come from OCR and PowerPoint decks, so they are not trusted input. #}
           <form method="post"
                 action="/services/{{ service.id }}/songs/{{ song.song_id }}/delete"
-                onsubmit="return confirm('Remove &quot;{{ song.display_title }}&quot; from this service?\n\nThis also removes it from the CCLI report. It cannot be undone without re-uploading the slide deck.');"
+                data-song-title="{{ song.display_title }}"
+                onsubmit="return confirm('Remove \u0022' + this.dataset.songTitle + '\u0022 from this service?\n\nThis also removes it from the CCLI report. It cannot be undone without re-uploading the slide deck.');"
                 style="display:inline;">
             <button type="submit"
                     class="btn-link-danger"
