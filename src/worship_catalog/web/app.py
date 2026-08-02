@@ -524,6 +524,11 @@ _PPTX_MIME = (
 # Per-client upload rate limiting (#173)
 _UPLOAD_RATE_LIMIT: int = 10  # max uploads per window
 _UPLOAD_RATE_WINDOW_SECONDS: int = 3600  # 1 hour
+# How long a limiter write waits for a competing writer before giving up (#541).
+# The limiters share one SQLite file across connections and workers, so a
+# contended write is routine; failing it fast would 500 a request whose entire
+# purpose is to keep the site standing.
+_RATE_LIMIT_BUSY_TIMEOUT_MS: int = 5000
 # Env-configurable trusted proxy support (#283, #404).  When TRUSTED_PROXY=1 the
 # rate limiter identifies clients via Cloudflare's unspoofable CF-Connecting-IP
 # (or, failing that, the proxy-appended rightmost X-Forwarded-For entry) instead
@@ -599,7 +604,27 @@ class _UploadRateLimiter:
     def _init_db(self) -> None:
         import sqlite3
 
-        self._conn = sqlite3.connect(self._db_path, check_same_thread=False)  # type: ignore[arg-type]
+        self._conn = sqlite3.connect(
+            self._db_path,  # type: ignore[arg-type]
+            check_same_thread=False,
+            timeout=_RATE_LIMIT_BUSY_TIMEOUT_MS / 1000,
+        )
+        # Two limiters (upload + report) share this one file through two separate
+        # connections, and the app can run multi-worker, so write contention is
+        # the normal case here (#541).
+        #
+        # WAL: the default rollback journal is created and deleted on every
+        # commit, makes readers and writers block each other, and can leave the
+        # file needing recovery if a worker is killed mid-write. Under WAL a
+        # reader never blocks a writer, and a torn write is replayed from the
+        # log rather than losing the database.
+        #
+        # busy_timeout is set explicitly even though sqlite3.connect's own
+        # `timeout` already produces the same 5s: it is set from ONE constant
+        # here so the two cannot drift, and so the value is visible to anyone
+        # reading this method rather than being an implicit library default.
+        self._conn.execute("PRAGMA journal_mode=WAL")
+        self._conn.execute(f"PRAGMA busy_timeout={_RATE_LIMIT_BUSY_TIMEOUT_MS}")
         self._conn.execute(
             f"CREATE TABLE IF NOT EXISTS {self._table} "
             "(client_ip TEXT NOT NULL, timestamp REAL NOT NULL)"
