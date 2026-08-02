@@ -4659,3 +4659,110 @@ class TestCcliCsvContract:
         rows = list(csv.reader(io.StringIO(resp.text)))
         assert len(rows) == 1, f"expected header row only, got {rows}"
         assert rows[0][0] == "Date"
+
+
+class TestServiceSongDeletion:
+    """The church admin can remove a misidentified song without the CLI (#323).
+
+    The extractor gets things wrong — service 36 (2026-03-15 PM) carried three
+    non-song entries, a scripture reference and two sermon-outline slides
+    (#313, #314). Until now the only remedy was `cleanup delete-service` plus a
+    full re-import, which needs SSH access the primary user does not have. Every
+    extraction error therefore required developer intervention.
+    """
+
+    _CREDS = ("highland", "s3cret")
+
+    @pytest.fixture
+    def auth_client(self, db_with_songs, tmp_path, monkeypatch):
+        inbox = tmp_path / "inbox"
+        inbox.mkdir()
+        monkeypatch.setenv("DB_PATH", str(db_with_songs))
+        monkeypatch.setenv("INBOX_DIR", str(inbox))
+        monkeypatch.setenv("UPLOAD_PASSWORD", "s3cret")
+        from importlib import reload
+
+        import worship_catalog.web.app as app_module
+
+        reload(app_module)
+        return CsrfAwareClient(TestClient(app_module.app))
+
+    def _song_ids(self, client):
+        """Authenticated on purpose — the controls only render for an editor."""
+        import re
+
+        body = client.get("/services/1", auth=self._CREDS).text
+        return re.findall(r"/services/1/songs/(\d+)/delete", body)
+
+    def test_delete_removes_the_song_from_the_service_page(self, auth_client):
+        before = auth_client.get("/services/1").text
+        assert "How Great Thou Art" in before
+
+        ids = self._song_ids(auth_client)
+        assert len(ids) == 2, f"expected a delete control per song, found {ids}"
+
+        # Harness detail, not behaviour under test: CsrfAwareClient caches the
+        # token it read from the FIRST response's Set-Cookie, and the page fetch
+        # above rotated the cookie. Re-read it from the jar — clearing the cache
+        # would be worse, because the re-fetch sends no Set-Cookie when the client
+        # already holds a valid cookie, and the wrapper would cache an empty token.
+        auth_client._csrf_token = auth_client._inner.cookies.get("csrftoken")
+
+        resp = auth_client.post(
+            "/services/1/songs/2/delete", auth=self._CREDS, follow_redirects=False
+        )
+        assert resp.status_code in (302, 303), resp.status_code
+        assert resp.headers["location"].endswith("/services/1")
+
+        after = auth_client.get("/services/1").text
+        assert "How Great Thou Art" not in after
+        assert "Amazing Grace" in after, "the wrong song was removed"
+
+    def test_deleted_song_no_longer_reaches_the_ccli_report(self, auth_client):
+        """The point of the feature. A phantom song in a licensing report is the
+        harm; removing it from a page the admin looks at is only the symptom."""
+        import csv
+        import io
+
+        auth_client.post("/services/1/songs/2/delete", auth=self._CREDS)
+        resp = auth_client.post(
+            "/reports/ccli", data={"start_date": "2020-01-01", "end_date": "2030-12-31"}
+        )
+        titles = {r["Title"] for r in csv.DictReader(io.StringIO(resp.text))}
+        assert "How Great Thou Art" not in titles
+        assert "Amazing Grace" in titles
+
+    def test_delete_requires_auth(self, auth_client):
+        """A destructive write on a publicly reachable site. Same gate as /upload."""
+        assert auth_client.post("/services/1/songs/2/delete").status_code == 401
+        assert "How Great Thou Art" in auth_client.get("/services/1").text
+
+    def test_delete_of_a_song_not_in_the_service_is_404(self, auth_client):
+        assert (
+            auth_client.post(
+                "/services/1/songs/9999/delete", auth=self._CREDS
+            ).status_code
+            == 404
+        )
+
+    def test_delete_on_an_unknown_service_is_404(self, auth_client):
+        assert (
+            auth_client.post(
+                "/services/9999/songs/1/delete", auth=self._CREDS
+            ).status_code
+            == 404
+        )
+
+    def test_controls_are_hidden_from_an_unauthenticated_viewer(self, auth_client):
+        """Same doctrine as the missing-services report (#483): the page stays
+        publicly readable, the edit controls do not appear."""
+        body = auth_client.get("/services/1").text
+        assert "/songs/2/delete" not in body
+        body_authed = auth_client.get("/services/1", auth=self._CREDS).text
+        assert "/songs/2/delete" in body_authed
+
+    def test_delete_control_asks_for_confirmation(self, auth_client):
+        """It is irreversible without a re-import, and the source file is gone
+        after upload (#138) — so a misclick has no cheap undo."""
+        body = auth_client.get("/services/1", auth=self._CREDS).text
+        assert "confirm" in body.lower()

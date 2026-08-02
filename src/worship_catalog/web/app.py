@@ -1308,8 +1308,54 @@ async def service_detail(
         raise HTTPException(status_code=404, detail="Service not found")
     songs = db.query_service_songs(service_id)
     return templates.TemplateResponse(
-        request, "service_detail.html", {"service": service, "songs": songs}
+        request,
+        "service_detail.html",
+        {
+            "service": service,
+            "songs": songs,
+            # Same doctrine as the missing-services report (#483): the page stays
+            # publicly readable, the destructive controls only render for a viewer
+            # who is already authenticated. Hiding them is presentation, not
+            # security -- the route enforces auth itself.
+            "can_edit": _upload_credentials_valid(request),
+        },
     )
+
+
+@app.post("/services/{service_id}/songs/{song_id}/delete")
+async def service_song_delete(
+    request: Request,
+    service_id: int,
+    song_id: int,
+    db: Database = Depends(get_db),  # noqa: B008
+) -> RedirectResponse:
+    """Remove one misidentified song from a service (#323).
+
+    The extractor classifies slides and gets things wrong -- service 36 carried a
+    scripture reference and two sermon-outline slides as songs (#313, #314).
+    Until now the only remedy was `cleanup delete-service` plus a full re-import,
+    which needs CLI access the church admin does not have, so every extraction
+    error required a developer.
+
+    Gated by the same upload auth that protects /upload and the missing-services
+    edits (#483): this is a destructive write on a publicly reachable site.
+
+    303 rather than 200 so a refresh after the delete re-issues the GET instead of
+    re-posting a delete that would now 404.
+    """
+    require_upload_auth(request)
+    if not db.query_service_by_id(service_id):
+        raise HTTPException(status_code=404, detail="Service not found")
+    if not db.delete_service_song(service_id, song_id):
+        # Distinguishes "no such song in this service" from a silent no-op, so a
+        # stale page's delete button reports something rather than appearing to
+        # succeed.
+        raise HTTPException(status_code=404, detail="Song not found in this service")
+    _log.info(
+        "service song deleted",
+        extra={"service_id": service_id, "song_id": song_id},
+    )
+    return RedirectResponse(url=f"/services/{service_id}", status_code=303)
 
 
 _LEADER_MIN_SONG_COUNT = 2
