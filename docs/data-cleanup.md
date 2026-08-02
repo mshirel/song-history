@@ -62,7 +62,27 @@ docker compose run --rm cli worship-catalog cleanup orphaned-songs --db /data/wo
 
 ## Re-import Workflow
 
-After fixing a bug that caused bad data, follow this workflow:
+### For the church admin: just upload the deck again
+
+**There is no re-import button, and none is needed** (#616). Uploading the same service's deck
+through `/upload` replaces that service rather than duplicating it: `run_import` matches an existing
+service on `(service_date, service_name)`, calls `delete_service_data`, and re-inserts — all inside
+one `IMMEDIATE` transaction. A corrected deck therefore removes whatever the previous extraction got
+wrong, including phantom songs.
+
+This is the whole answer for the common case, it needs no CLI access, and the service page links to
+it. The CLI workflow below is for a developer cleaning up after a *bug*, where several services are
+affected at once and the decks may not be to hand.
+
+> **Why not a button wired to the stored path?** #323 proposed re-running the import against
+> `services.source_file`. That cannot work: `web/app.py` deletes the uploaded file in the `finally`
+> of every import (#138), so `source_file` is a dangling path for every web-uploaded service — which
+> is all of them. It would appear to work for a developer importing from the CLI and fail for the
+> actual user. `tests/test_web.py::TestReimportByReuploadingTheDeck` pins both halves: that
+> re-upload replaces, and that the deck really is deleted. If the second ever starts failing,
+> re-import from the stored path has become buildable and #616 is worth revisiting.
+
+### For a developer: after fixing a bug that caused bad data
 
 ```bash
 # 1. ALWAYS backup before cleanup

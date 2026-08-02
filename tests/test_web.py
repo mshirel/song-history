@@ -4993,3 +4993,243 @@ class TestOrphanedSongIsNotLeftInThePublicCatalogue:
             "a song still performed in another service was removed from the catalogue"
         )
         assert auth_client.get("/songs/2").status_code == 200
+
+
+@pytest.mark.slow
+@pytest.mark.integration
+class TestReimportByReuploadingTheDeck:
+    """Re-uploading the same service's deck replaces it rather than duplicating (#616).
+
+    #323 proposed a "re-import service" button wired to `services.source_file`.
+    It cannot be built that way: `web/app.py` deletes the uploaded deck in the
+    `finally` of every import (#138), so `source_file` is a dangling path for
+    every web-uploaded service — which is all of them, since the web UI is what
+    the church admin uses. A button wired to it would fail for the actual user
+    while appearing to work for a developer importing from the CLI.
+
+    #616 offers re-upload as the option that costs nothing because it is claimed
+    to already work. THIS CLASS IS THAT CLAIM'S ONLY EVIDENCE. If these fail,
+    re-upload is not a workaround and the card is a real build — retaining decks
+    on the Pi, or storing the extracted intermediate, each with their own costs.
+    So they are written to fail loudly rather than to pass easily.
+
+    `run_import` matches an existing service on (service_date, service_name) and
+    calls `delete_service_data` before re-inserting, all inside one IMMEDIATE
+    transaction. These tests pin that behaviour through the real HTTP upload
+    path, because that is the path the admin uses and the one that deletes the
+    file afterwards.
+    """
+
+    def _deck(self, *, songs, date="2026-01-04", service="AM Worship", leader="Alice"):
+        """Build a Paperless-Hymnal-shaped PPTX in memory and return its bytes."""
+        from pptx import Presentation
+        from pptx.util import Inches
+
+        prs = Presentation()
+        blank = prs.slide_layouts[6]
+
+        meta = prs.slides.add_slide(blank)
+        table = meta.shapes.add_table(3, 2, Inches(1), Inches(1), Inches(8), Inches(1.2)).table
+        for r, (k, v) in enumerate(
+            [("Date", date), ("Service", service), ("Song Leader", leader)]
+        ):
+            table.cell(r, 0).text = k
+            table.cell(r, 1).text = v
+
+        for title, body in songs:
+            slide = prs.slides.add_slide(blank)
+            box = slide.shapes.add_textbox(Inches(0.5), Inches(0.5), Inches(9), Inches(2))
+            tf = box.text_frame
+            tf.paragraphs[0].text = title
+            tf.add_paragraph().text = body
+            tf.add_paragraph().text = "PaperlessHymnal.com"
+
+        buf = io.BytesIO()
+        prs.save(buf)
+        return buf.getvalue()
+
+    def _client(self, tmp_path, monkeypatch):
+        db_path = tmp_path / "reimport.db"
+        _db = Database(db_path)
+        _db.connect()
+        _db.init_schema()
+        _db.close()
+
+        inbox = tmp_path / "inbox"
+        inbox.mkdir()
+        monkeypatch.setenv("DB_PATH", str(db_path))
+        monkeypatch.setenv("INBOX_DIR", str(inbox))
+
+        from importlib import reload
+
+        import worship_catalog.web.app as app_module
+
+        reload(app_module)
+        return CsrfAwareClient(TestClient(app_module.app)), db_path, inbox
+
+    def _upload(self, client, deck_bytes, filename="AM Worship 2026.01.04.pptx"):
+        import time
+
+        resp = client.post(
+            "/upload",
+            files={"file": (filename, io.BytesIO(deck_bytes), VALID_PPTX_MIME)},
+        )
+        assert resp.status_code == 202, resp.text
+        job_id = resp.json()["job_id"]
+
+        deadline = time.monotonic() + 15.0
+        status = "pending"
+        while time.monotonic() < deadline and status not in ("complete", "failed"):
+            status = client.get(f"/jobs/{job_id}").json()["status"]
+            time.sleep(0.05)
+        job = client.get(f"/jobs/{job_id}").json()
+        assert status == "complete", f"import did not complete: {job}"
+        return job
+
+    def _services(self, db_path):
+        db = Database(db_path)
+        db.connect()
+        rows = db.cursor().execute(
+            "SELECT id, service_date, service_name FROM services ORDER BY id"
+        ).fetchall()
+        out = [dict(r) for r in rows]
+        db.close()
+        return out
+
+    def _titles(self, db_path, service_id):
+        db = Database(db_path)
+        db.connect()
+        titles = [s["display_title"] for s in db.query_service_songs(service_id)]
+        db.close()
+        return titles
+
+    def test_reuploading_the_same_deck_replaces_rather_than_duplicates(
+        self, tmp_path, monkeypatch
+    ):
+        """Option 2's whole premise — if this fails, re-upload is not a workaround."""
+        client, db_path, _ = self._client(tmp_path, monkeypatch)
+        deck = self._deck(
+            songs=[("Amazing Grace", "How sweet the sound"), ("Be Thou My Vision", "O Lord of my heart")]
+        )
+
+        self._upload(client, deck)
+        first = self._services(db_path)
+        assert len(first) == 1, f"expected one service after the first import, got {first}"
+
+        self._upload(client, deck)
+        second = self._services(db_path)
+
+        assert len(second) == 1, (
+            f"the same deck imported twice produced {len(second)} services — re-upload "
+            f"duplicates rather than replaces, so it is NOT a re-import workaround: {second}"
+        )
+        titles = self._titles(db_path, second[0]["id"])
+        assert len(titles) == len(set(titles)), (
+            f"the setlist gained duplicate entries on re-upload: {titles}"
+        )
+
+    def test_reuploading_a_corrected_deck_removes_the_misidentified_song(
+        self, tmp_path, monkeypatch
+    ):
+        """The reason anyone re-imports at all.
+
+        A deck whose extraction produced a phantom song is corrected and
+        re-uploaded. Replacement is only useful if the phantom actually goes —
+        an append-only import would leave it behind and the admin would be no
+        better off than before.
+        """
+        client, db_path, _ = self._client(tmp_path, monkeypatch)
+
+        wrong = self._deck(
+            songs=[
+                ("Amazing Grace", "How sweet the sound"),
+                ("Be Thou My Vision", "O Lord of my heart"),
+            ]
+        )
+        self._upload(client, wrong)
+        service_id = self._services(db_path)[0]["id"]
+        before = self._titles(db_path, service_id)
+        # Assert on what the extractor actually produced rather than on a
+        # hardcoded title: a slide's title is the extractor's decision, and
+        # pinning a guess here would fail as a "finding" when only the fixture
+        # was wrong. (It did, on the first run: a scripture reference used as the
+        # phantom was read as a body line and the title came out as the lyric.)
+        assert len(before) == 2, f"fixture problem, not a finding: imported {before}"
+        phantom = before[1]
+
+        corrected = self._deck(songs=[("Amazing Grace", "How sweet the sound")])
+        self._upload(client, corrected)
+
+        services = self._services(db_path)
+        assert len(services) == 1, f"the corrected re-upload forked the service: {services}"
+        after = self._titles(db_path, services[0]["id"])
+        assert phantom not in after, (
+            f"{phantom!r} survived the corrected re-upload — re-import does not "
+            f"correct anything: {after}"
+        )
+        assert before[0] in after, f"the real song was lost: {after}"
+
+    def test_the_uploaded_deck_is_deleted_after_import(self, tmp_path, monkeypatch):
+        """Pins WHY the #323 design cannot work, so the docs stay honest.
+
+        `services.source_file` records a path the app itself removes (#138). If
+        this ever stops being true, re-import from the stored path becomes
+        buildable and #616's premise should be revisited.
+        """
+        client, db_path, inbox = self._client(tmp_path, monkeypatch)
+        self._upload(client, self._deck(songs=[("Amazing Grace", "How sweet the sound")]))
+
+        assert list(inbox.iterdir()) == [], (
+            f"the inbox still holds the uploaded deck: {list(inbox.iterdir())}"
+        )
+        db = Database(db_path)
+        db.connect()
+        source = db.cursor().execute("SELECT source_file FROM services").fetchone()[0]
+        db.close()
+        assert not Path(source).exists(), (
+            f"services.source_file still resolves ({source}) — re-import from the "
+            "stored path may now be buildable; revisit #616"
+        )
+
+
+class TestReimportGuidanceOnTheServicePage:
+    """The service page tells the admin how to re-import (#616).
+
+    The guidance IS the feature. #616 is closed by saying the right thing in the
+    right place, not by shipping a button — so if this text stops rendering, the
+    feature is gone even though nothing else fails.
+
+    Editor-only on purpose: it points at `/upload`, which needs the upload
+    password, and it is operator guidance rather than something a visitor
+    browsing the catalogue should see.
+    """
+
+    _CREDS = ("highland", "s3cret")
+
+    @pytest.fixture
+    def client(self, db_with_songs, tmp_path, monkeypatch):
+        inbox = tmp_path / "inbox"
+        inbox.mkdir()
+        monkeypatch.setenv("DB_PATH", str(db_with_songs))
+        monkeypatch.setenv("INBOX_DIR", str(inbox))
+        monkeypatch.setenv("UPLOAD_PASSWORD", "s3cret")
+        from importlib import reload
+
+        import worship_catalog.web.app as app_module
+
+        reload(app_module)
+        return CsrfAwareClient(TestClient(app_module.app))
+
+    def test_an_editor_is_told_to_upload_the_deck_again(self, client):
+        body = client.get("/services/1", auth=self._CREDS).text
+        assert "Upload the deck again" in body, (
+            "the service page no longer tells the admin how to re-import — #616 "
+            "is closed by this text existing"
+        )
+        assert 'href="/upload"' in body
+
+    def test_an_anonymous_visitor_is_not(self, client):
+        body = client.get("/services/1").text
+        assert "Upload the deck again" not in body, (
+            "operator guidance is rendering for the public catalogue"
+        )

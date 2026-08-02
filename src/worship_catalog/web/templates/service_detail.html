@@ -119,6 +119,20 @@
       {% endfor %}
     </tbody>
   </table>
+  {% if can_edit %}
+  {# The re-import answer (#616). There is no re-import button and there cannot
+     be one wired the way #323 proposed: `services.source_file` records a path
+     the app deletes in the `finally` of every import (#138), so it is dangling
+     for every web-uploaded service. Uploading the deck again does the whole job
+     — `run_import` matches on (service_date, service_name), deletes the existing
+     service's data and re-inserts, inside one IMMEDIATE transaction. Saying so
+     here is the entire feature; a button would only be a second way to do it. #}
+  <p style="font-size:0.85rem;color:#6c757d;margin-top:0.75rem;">
+    Something else wrong with this service? <a href="/upload">Upload the deck again</a> —
+    re-importing the same date and service name replaces this service rather than
+    duplicating it.
+  </p>
+  {% endif %}
   </div>
 </div>
 {% endif %}
