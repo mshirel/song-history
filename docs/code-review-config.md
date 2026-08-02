@@ -131,6 +131,40 @@ to `0.0.0.0` on pi-songs that the tunnel forwards is publicly reachable. Sensiti
 token, tunnel token, CSRF secret, upload password (all must be `600` at rest). Per-client rate
 limiting depends on `TRUSTED_PROXY`. Upload endpoint accepts user files → validate type/size/path.
 
+## Secret-scanning posture  (#593, recorded 2026-08-02)
+
+So a future review can tell **"unavailable on this account type"** from **"never considered"**. Do not
+re-file a card asking for the two disabled settings without reading this first.
+
+| Control | State | What it covers |
+|---|---|---|
+| Secret scanning | **on** | Known **provider** tokens, across existing history |
+| Push protection | **on** | Blocks those **at push time**, before they land |
+| Secret Protection | **on** | The product the two below belong to |
+| Non-provider patterns | **off — cannot be enabled** | Would add generic secrets: private keys, connection strings, auth headers |
+| Validity checks | **off — cannot be enabled** | Would flag whether a leaked **provider** token is still live |
+| gitleaks (CI `security` job) | **on** | Default ruleset (`useDefault = true`) — includes generic patterns — plus two repo rules: hardcoded `DB_PATH`, Anthropic `sk-ant-` keys |
+
+**Why the two are off, and why that is not a backlog item.** Non-provider patterns require an
+**organization-owned** repository on GitHub Team with Secret Protection. This repo is owned by a
+**personal account** (`owner.type: User`), so the toggle does not exist in its Settings UI at all.
+The REST API is worse than absent: `PATCH /repos/{o}/{r}` with
+`security_and_analysis.secret_scanning_non_provider_patterns` is **accepted with HTTP 200 and
+silently ignored** — no 403, no "not available on your plan". Verified three times across 2026-08-01
+and 2026-08-02, including after Secret Protection was enabled, in case that was the gate. It was not.
+Anyone automating this would reasonably conclude it had worked.
+
+**The residual risk is timing, not coverage.** Generic-secret detection *is* present through gitleaks,
+so the gap is not that these secrets go unfound. It is that gitleaks runs in CI **after** the push,
+whereas push protection refuses **before** it. On a public repo that difference is material: a private
+key or tunnel token caught by CI is already in public history and must be treated as compromised and
+rotated, not merely removed. That is exactly the #446 shape — a world-readable `.env` on the Pi
+holding tunnel tokens, the CSRF secret and the upload password, most of which no provider pattern
+would have matched.
+
+**What would change this:** transferring the repo to an organization on GitHub Team. Nothing else.
+Not a plan upgrade on the personal account, and not the API.
+
 ## Review tuning (full-code-review challenger pass)
 
 - **Challenger:** on — run the Phase 1.5 adversarial refutation pass and tier findings.
