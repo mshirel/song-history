@@ -280,6 +280,18 @@ class TestChorusRepeatGoldenExtraction:
             assert actual.slide_count == exp.get("slide_count")
 
 
+@pytest.mark.integration
+class TestSelfTitledNonSongExtraction:
+    """A repeated title-only service unit must not become a song (#527)."""
+
+    def test_self_titled_nonsong_unit_not_extracted_as_song(self):
+        result = extract_songs(FIXTURES / "self_titled_nonsong_service.pptx")
+        titles = [song.canonical_title for song in result.songs]
+
+        assert "what the lord has done" not in titles
+        assert titles == ["amazing grace", "doxology"]
+
+
 # Real worship decks (dev machines only — never committed; these are real service
 # files). Each previously produced spurious "songs" from sermon/scripture/lyric
 # slides. Regression guard for the non-song output filter.

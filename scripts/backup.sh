@@ -20,9 +20,13 @@
 set -eu
 
 # Trap EXIT to guarantee temp file cleanup and Pushover failure notifications.
+_DUMPFILE=""
 _TMPFILE=""
 _cleanup() {
     _rc=$?
+    if [ -n "$_DUMPFILE" ]; then
+        rm -f "$_DUMPFILE"
+    fi
     if [ -n "$_TMPFILE" ]; then
         rm -f "$_TMPFILE"
     fi
@@ -56,13 +60,22 @@ if [ ! -f "$DB_PATH" ]; then
 fi
 
 STAMP="$(date +%Y%m%d-%H%M%S)"
+_DUMPFILE="$(mktemp /tmp/backup-XXXXXX.sql)"
 _TMPFILE="$(mktemp /tmp/backup-XXXXXX.sql.gz)"
 
-# Dump + compress into a temp file so a partial write is never mistaken for valid
-if ! sqlite3 "$DB_PATH" '.dump' | gzip > "$_TMPFILE"; then
-    echo "[backup] ERROR: dump/compress failed for $DB_PATH" >&2
+# Keep dump and compression separate: POSIX pipelines report only the final
+# command's status, which can hide a failed sqlite3 behind a successful gzip.
+if ! sqlite3 "$DB_PATH" '.dump' > "$_DUMPFILE"; then
+    echo "[backup] ERROR: SQLite dump failed for $DB_PATH" >&2
     exit 1
 fi
+
+if ! gzip -c "$_DUMPFILE" > "$_TMPFILE"; then
+    echo "[backup] ERROR: compression failed for $DB_PATH" >&2
+    exit 1
+fi
+rm -f "$_DUMPFILE"
+_DUMPFILE=""
 
 # Integrity check before promoting to the final location
 if ! gzip -t "$_TMPFILE"; then

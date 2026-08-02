@@ -9,9 +9,9 @@
 ### The Rule
 
 1. **Write tests first.** Before writing any implementation code, write failing tests that define the expected behavior.
-2. **Confirm tests fail.** Run `python3 -m pytest <new_test_file>` and verify the new tests fail for the right reason (not import errors — the behavior is missing).
+2. **Confirm tests fail.** Run `uv run --frozen pytest <new_test_file>` and verify the new tests fail for the right reason (not import errors — the behavior is missing).
 3. **Write the minimum implementation** to make the tests pass.
-4. **Confirm all tests pass.** Run the full suite: `python3 -m pytest`. No regressions allowed.
+4. **Confirm all tests pass.** Run the full suite: `uv run --frozen pytest`. No regressions allowed.
 5. **Only then commit.**
 
 ### Issues Must Have Tests
@@ -41,9 +41,9 @@ CI config changes and documentation-only changes are exempt, but any change touc
 1. Read the issue — understand the test cases defined there
 2. Write tests → run → confirm they FAIL
 3. Write implementation → run → confirm they PASS
-4. Run full suite: python3 -m pytest
-5. Run linter: python3 -m ruff check src/
-6. Run type check: python3 -m mypy src/
+4. Run full suite: uv run --frozen pytest
+5. Run linter: uv run --frozen ruff check src/
+6. Run type check: uv run --frozen mypy src/
 7. Run QA agents (see below)
 8. Commit and push to the agent branch, then open a PR
 9. Confirm CI passes (test, e2e, security), then merge the PR — auto-merge is OK
@@ -82,7 +82,7 @@ Specialized QA agents (invoke when relevant):
 - **CLI:** Click
 - **Web:** FastAPI + HTMX + Jinja2
 - **DB:** SQLite via custom `Database` class (`src/worship_catalog/db.py`)
-- **Testing:** pytest with coverage (`python3 -m pytest`)
+- **Testing:** pytest with coverage (`uv run --frozen pytest`)
 - **Linting:** ruff + mypy (strict)
 - **Security:** bandit + pip-audit + gitleaks (all in CI)
 - **Container:** Docker + Docker Compose
@@ -125,9 +125,9 @@ Specialized QA agents (invoke when relevant):
 | Security-specific | `tests/test_web_security.py` |
 | Bash scripts | `tests/test_scripts.bats` (bats-core) |
 
-Run a specific file: `python3 -m pytest tests/test_web.py -v`
-Run with coverage: `python3 -m pytest --cov=worship_catalog`
-Run only fast tests: `python3 -m pytest -m "unit and not slow"`
+Run a specific file: `uv run --frozen pytest tests/test_web.py -v`
+Run with coverage: `uv run --frozen pytest --cov=worship_catalog`
+Run only fast tests: `uv run --frozen pytest -m "unit and not slow"`
 
 ---
 

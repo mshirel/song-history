@@ -17,7 +17,11 @@ from worship_catalog.normalize import (
     select_best_title,
     strip_title_prefix,
 )
-from worship_catalog.ocr import extract_credits_via_vision
+from worship_catalog.ocr import (
+    ScoreHeader,
+    extract_credits_via_vision,
+    extract_score_header_via_vision,
+)
 from worship_catalog.pptx_reader import (
     Slide,
     compute_file_hash,
@@ -34,6 +38,13 @@ _MAX_SLIDE_COUNT: int = 500
 
 # Wall-clock timeout for a single file extraction (#73 — prevents runaway on adversarial PPTX)
 _MAX_EXTRACT_SECONDS: int = 120
+# Keep abandoned timed-out workers bounded to the web import pool's concurrency.
+# Queued futures are canceled on timeout before they begin (#498).
+_MAX_CONCURRENT_EXTRACTIONS: int = 4
+_extract_executor = concurrent.futures.ThreadPoolExecutor(
+    max_workers=_MAX_CONCURRENT_EXTRACTIONS,
+    thread_name_prefix="song-extract",
+)
 
 # Consecutive slides with no text after which the current song group is closed
 _NO_TEXT_STREAK_THRESHOLD: int = 5
@@ -45,6 +56,10 @@ _NO_TEXT_STREAK_THRESHOLD: int = 5
 # two halves of the SAME song. Only spans this short qualify as bracketed refrains
 # (#471) — keeps genuine back-to-back distinct songs untouched.
 _MAX_BRACKETED_REFRAIN_SLIDES: int = 1
+
+# A repeated self-titled unit needs multiple slides before it can be classified
+# as an empty service placeholder rather than an ordinary one-slide title card.
+_MIN_SELF_TITLED_NON_SONG_SLIDES: int = 2
 
 # SFP (Songs For Praise) catalog numbers — Paperless Hymnal reference IDs, not song titles (#264)
 _SFP_CATALOG_RE = re.compile(r"^SFP\s+\d{3,4}$", re.IGNORECASE)
@@ -95,7 +110,7 @@ _FOOTER_MARKERS: tuple[str, ...] = (
 
 @dataclass
 class OcrBudget:
-    """Call cap for the Claude Vision API during a single extraction run.
+    """Call cap for the configured Vision API during a single extraction run.
 
     Pass an instance to :func:`extract_songs` so that the number of
     Vision API calls is bounded.  ``max_calls=None`` means unlimited.
@@ -248,6 +263,29 @@ class ExtractionResult:
     songs: list[SongOccurrence] = field(default_factory=list)
     anomalies: list[dict[str, Any]] = field(default_factory=list)
     """List of extraction anomalies and low-confidence items."""
+    ocr_model: str | None = None
+    """Vision model used to recover score-image titles, if any."""
+    ocr_calls: int = 0
+    """Number of billed vision calls made during this extraction."""
+
+
+@dataclass
+class ScoreGroupInfo:
+    """OCR metadata attached to a recovered score-image song group."""
+
+    display_title: str
+    credits: str | None
+    model: str
+
+
+@dataclass
+class ScoreGroupingResult:
+    """OCR-aware groups plus metadata keyed by each group's first slide."""
+
+    groups: list[tuple[str, list[Slide]]] = field(default_factory=list)
+    score_groups: dict[int, ScoreGroupInfo] = field(default_factory=dict)
+    anomalies: list[dict[str, Any]] = field(default_factory=list)
+    models_used: set[str] = field(default_factory=set)
 
 
 def extract_songs(
@@ -266,15 +304,19 @@ def extract_songs(
         TimeoutError: If extraction exceeds _MAX_EXTRACT_SECONDS.
         ValueError: If file exceeds size/slide-count limits.
     """
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(_extract_songs_impl, file_path, use_ocr, ocr_budget, library_index)
-        try:
-            return future.result(timeout=_MAX_EXTRACT_SECONDS)
-        except concurrent.futures.TimeoutError as exc:
-            raise TimeoutError(
-                f"extract_songs exceeded {_MAX_EXTRACT_SECONDS}s time limit for "
-                f"{Path(file_path).name}"
-            ) from exc
+    future = _extract_executor.submit(
+        _extract_songs_impl, file_path, use_ocr, ocr_budget, library_index
+    )
+    try:
+        return future.result(timeout=_MAX_EXTRACT_SECONDS)
+    except concurrent.futures.TimeoutError as exc:
+        # A running Python thread cannot be killed safely.  Crucially, do not
+        # wait for it here: that would defeat the caller-visible timeout (#498).
+        future.cancel()
+        raise TimeoutError(
+            f"extract_songs exceeded {_MAX_EXTRACT_SECONDS}s time limit for "
+            f"{Path(file_path).name}"
+        ) from exc
 
 
 def _extract_songs_impl(
@@ -351,7 +393,17 @@ def _extract_songs_impl(
         s for i, s in enumerate(slides)
         if i != metadata_slide_idx and not s.hidden
     ]
-    song_groups = _group_song_slides(song_slides)
+    score_grouping: ScoreGroupingResult | None = None
+    effective_budget = ocr_budget
+    if use_ocr:
+        # Preserve ``None`` as unlimited while still counting calls for audit.
+        effective_budget = ocr_budget or OcrBudget(max_calls=None)
+        score_grouping = _group_song_slides_with_score_ocr(
+            song_slides, effective_budget
+        )
+        song_groups = score_grouping.groups
+    else:
+        song_groups = _group_song_slides(song_slides)
 
     _log.debug(
         "Identified %d song group(s) in %s", len(song_groups), file_path.name
@@ -364,11 +416,32 @@ def _extract_songs_impl(
     # scripture quotes, verse/stanza markers, and lyric fragments that the
     # grouping step mistakenly split out. Filtering on the FINAL title (rather
     # than during candidate selection) avoids perturbing slide grouping.
-    resolver = CreditResolver(library_index=library_index, ocr_budget=ocr_budget, use_ocr=use_ocr)
+    resolver = CreditResolver(
+        library_index=library_index,
+        ocr_budget=effective_budget,
+        use_ocr=use_ocr,
+    )
     songs: list[SongOccurrence] = []
     for canonical, group in song_groups:
+        if _is_self_titled_non_song_unit(canonical, group):
+            _log.debug(
+                "Dropped self-titled non-song unit %r from %s",
+                canonical,
+                file_path.name,
+            )
+            continue
+        score_info = (
+            score_grouping.score_groups.get(group[0].index)
+            if score_grouping and group
+            else None
+        )
         song = _create_song_occurrence(
-            len(songs) + 1, canonical, group, resolver=resolver,
+            len(songs) + 1,
+            canonical,
+            group,
+            resolver=resolver,
+            display_title_override=(score_info.display_title if score_info else None),
+            credits_text_override=(score_info.credits if score_info else None),
         )
         if is_non_song_title(song.display_title):
             _log.debug(
@@ -392,6 +465,13 @@ def _extract_songs_impl(
         preacher=metadata.preacher if metadata else None,
         sermon_title=metadata.sermon_title if metadata else None,
         songs=songs,
+        anomalies=score_grouping.anomalies if score_grouping else [],
+        ocr_model=(
+            ", ".join(sorted(score_grouping.models_used))
+            if score_grouping and score_grouping.models_used
+            else None
+        ),
+        ocr_calls=effective_budget.calls_made if effective_budget else 0,
     )
 
     return result
@@ -491,6 +571,142 @@ def _group_song_slides(slides: list[Slide]) -> list[tuple[str, list[Slide]]]:
     return _merge_bracketed_refrains(groups)
 
 
+def _image_blob_for_ocr(slide: Slide) -> bytes | None:
+    """Return the first usable embedded image from an image-only slide."""
+    for image in slide.images:
+        if image.blob:
+            return image.blob
+    return None
+
+
+def _try_ocr_score_header(slide: Slide) -> ScoreHeader | None:
+    """Classify one slide without allowing provider failures to abort an import."""
+    blob = _image_blob_for_ocr(slide)
+    if blob is None:
+        return None
+    try:
+        return extract_score_header_via_vision(blob)
+    except (OSError, ImportError) as exc:
+        _log.warning("Score OCR unavailable: %s", exc)
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("Score OCR failed (%s): %s", type(exc).__name__, exc)
+    return None
+
+
+def _group_song_slides_with_score_ocr(
+    slides: list[Slide],
+    ocr_budget: OcrBudget,
+) -> ScoreGroupingResult:
+    """Classify image-only slides and segment score songs by title transitions.
+
+    Text-bearing spans continue to use the established grouping algorithm. Each
+    image-only slide is classified independently while budget remains. A new
+    validated title starts a score group; title-less score pages continue the
+    current group. Non-score images form hard boundaries and are excluded.
+    """
+    result = ScoreGroupingResult()
+    ordinary: list[Slide] = []
+    pending_score: list[Slide] = []
+    score_canonical: str | None = None
+    score_slides: list[Slide] = []
+    score_info: ScoreGroupInfo | None = None
+
+    def flush_ordinary() -> None:
+        nonlocal ordinary
+        if ordinary:
+            result.groups.extend(_group_song_slides(ordinary))
+            ordinary = []
+
+    def flush_score() -> None:
+        nonlocal score_canonical, score_slides, score_info
+        if score_canonical and score_slides and score_info:
+            result.groups.append((score_canonical, score_slides))
+            first_index = score_slides[0].index
+            result.score_groups[first_index] = score_info
+            result.anomalies.append(
+                {
+                    "type": "score_image_ocr",
+                    "message": "title recovered from score image via OCR",
+                    "title": score_info.display_title,
+                    "first_slide_index": first_index,
+                    "model": score_info.model,
+                }
+            )
+        score_canonical = None
+        score_slides = []
+        score_info = None
+
+    for slide in slides:
+        is_image_only = bool(slide.images) and not any(
+            line.strip() for line in slide.text.text_lines
+        )
+        if not is_image_only:
+            flush_score()
+            pending_score = []
+            ordinary.append(slide)
+            continue
+
+        if not ocr_budget.consume():
+            # Once a score is confirmed, retain its tail even if a conservative
+            # cap is reached mid-song. Otherwise preserve legacy gap handling.
+            if score_canonical:
+                score_slides.append(slide)
+            elif pending_score:
+                pending_score.append(slide)
+            else:
+                ordinary.append(slide)
+            continue
+
+        header = _try_ocr_score_header(slide)
+        if header is None:
+            if score_canonical:
+                score_slides.append(slide)
+            elif pending_score:
+                pending_score.append(slide)
+            continue
+
+        result.models_used.add(header.model)
+        if not header.is_score:
+            flush_ordinary()
+            flush_score()
+            pending_score = []
+            continue
+
+        flush_ordinary()
+        if header.title is None:
+            if score_canonical:
+                score_slides.append(slide)
+                if header.credits and score_info and not score_info.credits:
+                    score_info.credits = header.credits
+            else:
+                pending_score.append(slide)
+            continue
+
+        canonical = canonicalize_title(header.title)
+        if not canonical:
+            pending_score.append(slide)
+            continue
+        if score_canonical and canonical != score_canonical:
+            flush_score()
+        if score_canonical is None:
+            score_canonical = canonical
+            score_slides = pending_score + [slide]
+            pending_score = []
+            score_info = ScoreGroupInfo(
+                display_title=header.title,
+                credits=header.credits,
+                model=header.model,
+            )
+        else:
+            score_slides.append(slide)
+            if header.credits and score_info and not score_info.credits:
+                score_info.credits = header.credits
+
+    flush_score()
+    flush_ordinary()
+    return result
+
+
 def _slides_reference_song(slides: list[Slide], canonical: str) -> bool:
     """Return True if any slide carries a SECTION line naming the song *canonical* (#471).
 
@@ -571,6 +787,38 @@ def _merge_bracketed_refrains(
     return merged
 
 
+def _is_self_titled_non_song_unit(canonical: str, slides: list[Slide]) -> bool:
+    """Return True for a repeated unit containing labels but no song content.
+
+    Some Paperless Hymnal service exports contain multi-slide placeholders where
+    every slide repeats only the unit title: once with a section prefix
+    (``1-1 Title``, ``C-1 Title``) and once bare.  With no lyric, credit, or
+    publisher line, those slides prove only that the placeholder is internally
+    labelled—not that a song was projected.  Requiring multiple slides, a
+    section prefix on every slide, and no text resolving to anything except the
+    same canonical title keeps the rule structural and conservative (#527).
+    """
+    if len(slides) < _MIN_SELF_TITLED_NON_SONG_SLIDES:
+        return False
+
+    for slide in slides:
+        lines = [line.strip() for line in slide.text.text_lines if line.strip()]
+        if not lines:
+            return False
+        has_section_prefix = False
+        for line in lines:
+            collapsed = " ".join(line.split())
+            stripped = strip_title_prefix(line)
+            if stripped != collapsed:
+                has_section_prefix = True
+            if canonicalize_title(stripped) != canonical:
+                return False
+        if not has_section_prefix:
+            return False
+
+    return True
+
+
 def _is_song_title_slide(slide: Slide) -> bool:
     """
     Return True if this slide is allowed to start a new song group.
@@ -644,6 +892,8 @@ def _create_song_occurrence(
     canonical_title: str,
     slides: list[Slide],
     resolver: CreditResolver | None = None,
+    display_title_override: str | None = None,
+    credits_text_override: str | None = None,
 ) -> SongOccurrence:
     """
     Create a song occurrence from grouped slides.
@@ -652,7 +902,7 @@ def _create_song_occurrence(
     Uses the provided *resolver* for library + OCR fallback (#291).
     """
     # Extract display title from first slide with text
-    display_title = ""
+    display_title = display_title_override or ""
     for slide in slides:
         candidates = _extract_title_candidates(slide)
         if candidates:
@@ -662,9 +912,23 @@ def _create_song_occurrence(
                 break
 
     # Combine all text from group to extract credits
-    all_text = "\n".join(
-        "\n".join(slide.text.text_lines) for slide in slides
-    )
+    all_text_parts = ["\n".join(slide.text.text_lines) for slide in slides]
+    if credits_text_override:
+        # Printed score headers commonly omit the colon expected by the
+        # text-slide parser ("Words and Music by JENN ..."). Normalize only
+        # this structured OCR field, leaving ordinary slide text untouched.
+        normalized_credits = re.sub(
+            r"(?i)\bWords\s+(and|&)\s+Music\s+by\s*:?[ \t]*",
+            lambda match: f"Words {match.group(1)} Music by: ",
+            credits_text_override,
+        )
+        normalized_credits = re.sub(
+            r"(?i)\bArranged\s+by\s*:?[ \t]*",
+            "Arrangement by: ",
+            normalized_credits,
+        )
+        all_text_parts.append(normalized_credits)
+    all_text = "\n".join(all_text_parts)
 
     # Extract credits from text
     parsed = parse_credits(all_text)
@@ -710,7 +974,7 @@ def _create_song_occurrence(
 def _try_ocr_credits(slides: list[Slide]) -> str | None:
     """
     Attempt to extract credits text from the first image on the first slide
-    using Claude Vision API.
+    using the configured Vision provider.
 
     Returns raw credits text string, or None if OCR fails or yields nothing.
     """

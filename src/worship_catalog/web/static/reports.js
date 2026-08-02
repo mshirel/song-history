@@ -21,17 +21,14 @@
   }
 
   /**
-   * Configure htmx to include the CSRF header on every AJAX request.
-   * This covers hx-post forms like the stats "Generate" button.
+   * Source the CSRF header from the current cookie immediately before every
+   * htmx request. The middleware can replace this cookie after a secret
+   * rotation, so caching it in hx-headers would keep replaying a stale token.
    */
   function configureHtmxCsrf() {
-    var token = getCsrfToken();
-    if (token) {
-      document.body.setAttribute(
-        "hx-headers",
-        JSON.stringify({ "X-CSRFToken": token })
-      );
-    }
+    document.body.addEventListener("htmx:configRequest", function (evt) {
+      evt.detail.headers["X-CSRFToken"] = getCsrfToken();
+    });
   }
 
   /**

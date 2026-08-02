@@ -639,6 +639,45 @@ class TestQueryOperations:
         assert len(results) == 1
         assert results[0]["service_id"] == service_id_1
 
+    def test_copy_event_service_filter_survives_low_sqlite_variable_limit(
+        self, temp_db
+    ):
+        """Large service filters fall back without exceeding SQLite's bind cap (#511)."""
+        service_id_1 = temp_db.insert_or_update_service(
+            service_date="2026-02-15",
+            service_name="Morning Worship",
+            source_file="file1.pptx",
+            source_hash="hash1",
+        )
+        service_id_2 = temp_db.insert_or_update_service(
+            service_date="2026-02-22",
+            service_name="Evening Worship",
+            source_file="file2.pptx",
+            source_hash="hash2",
+        )
+        song_id = temp_db.insert_or_get_song("majesty", "Majesty")
+        temp_db.insert_or_get_copy_event(service_id_1, song_id, "projection")
+        temp_db.insert_or_get_copy_event(service_id_2, song_id, "projection")
+
+        # Include one real ID and enough absent IDs to exceed the forced legacy
+        # SQLite limit.  The second real service must still be excluded.
+        service_ids = [service_id_1, *range(10_000, 11_000)]
+        previous_limit = temp_db.conn.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 100)
+        try:
+            queried = temp_db.query_copy_events(
+                "2026-01-01", "2026-12-31", service_ids=service_ids
+            )
+            streamed = list(
+                temp_db.iter_copy_events(
+                    "2026-01-01", "2026-12-31", service_ids=service_ids
+                )
+            )
+        finally:
+            temp_db.conn.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, previous_limit)
+
+        assert [event["service_id"] for event in queried] == [service_id_1]
+        assert [event["service_id"] for event in streamed] == [service_id_1]
+
 
 @pytest.mark.integration
 class TestMissingCredits:
@@ -1370,6 +1409,36 @@ class TestUpdateImportJobSQLSafety:
         songs = json.loads(row["songs_json"])
         assert songs == ["Amazing Grace", "How Great Thou Art", "Holy Holy Holy"]
 
+    def test_update_with_ocr_audit_metadata_persists(self, temp_db: Database) -> None:
+        import json
+
+        job_id = "ocr-audit-job-001"
+        anomalies = [
+            {
+                "type": "score_image_ocr",
+                "message": "title recovered from score image via OCR",
+                "title": "Goodness of God",
+                "first_slide_index": 38,
+                "model": "google/gemini-2.5-flash-lite",
+            }
+        ]
+        temp_db.create_import_job(job_id, filename="score.pptx")
+        temp_db.update_import_job(
+            job_id,
+            status="complete",
+            anomalies_json=json.dumps(anomalies),
+            ocr_model="google/gemini-2.5-flash-lite",
+            ocr_calls=25,
+        )
+
+        row = temp_db.get_import_job(job_id)
+        temp_db.close()
+
+        assert row is not None
+        assert json.loads(row["anomalies_json"]) == anomalies
+        assert row["ocr_model"] == "google/gemini-2.5-flash-lite"
+        assert row["ocr_calls"] == 25
+
     def test_new_metadata_fields_present_as_none_when_not_set(self, temp_db: Database) -> None:
         job_id = "meta-job-002"
         temp_db.create_import_job(job_id, filename="test.pptx")
@@ -1801,6 +1870,42 @@ class TestSchemaMigration:
         assert 1 in versions
         db.close()
 
+    def test_fresh_services_schema_skips_legacy_table_rebuild(self, tmp_path: Path) -> None:
+        """Fresh databases start at the v3 service identity without rebuilding."""
+        db = Database(tmp_path / "fresh.db")
+        db.connect()
+        statements: list[str] = []
+        db.conn.set_trace_callback(statements.append)
+
+        db.init_schema()
+
+        schema_sql = db.conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='services'"
+        ).fetchone()[0]
+        normalized_schema = " ".join(schema_sql.split())
+        assert "UNIQUE(service_date, service_name)" in normalized_schema
+        assert "UNIQUE(service_date, service_name, source_hash)" not in normalized_schema
+        columns = [
+            row["name"]
+            for row in db.conn.execute("PRAGMA table_info(services)").fetchall()
+        ]
+        assert columns == [
+            "id",
+            "service_date",
+            "service_name",
+            "source_file",
+            "source_hash",
+            "song_leader",
+            "preacher",
+            "sermon_title",
+            "imported_at",
+        ]
+        assert not any("SERVICES_NEW" in statement.upper() for statement in statements)
+        assert db.conn.execute(
+            "SELECT COUNT(*) FROM schema_migrations WHERE version = 3"
+        ).fetchone()[0] == 1
+        db.close()
+
     def test_migrations_are_idempotent(self, tmp_path: Path) -> None:
         """Calling init_schema() twice does not duplicate migration records."""
         db_path = tmp_path / "fresh.db"
@@ -1973,6 +2078,90 @@ class TestQuerySongsPaginated:
         temp_db.insert_or_get_song_edition(song_id, words_by="John Newton")
         rows, total = temp_db.query_songs_paginated(search="Newton")
         assert total == 1
+
+    def test_credits_use_most_recently_used_edition(self, temp_db):
+        song_id = temp_db.insert_or_get_song("amazing grace", "Amazing Grace")
+        bob_edition = temp_db.insert_or_get_song_edition(
+            song_id, publisher="Z Publisher", words_by="Bob"
+        )
+        alice_edition = temp_db.insert_or_get_song_edition(
+            song_id, publisher="A Publisher", words_by="Alice"
+        )
+        old_service = temp_db.insert_or_update_service(
+            "2026-01-01", "AM Worship", "old.pptx", "old"
+        )
+        new_service = temp_db.insert_or_update_service(
+            "2026-02-01", "AM Worship", "new.pptx", "new"
+        )
+        temp_db.insert_service_song(
+            old_service, song_id, ordinal=1, song_edition_id=alice_edition
+        )
+        temp_db.insert_service_song(
+            new_service, song_id, ordinal=1, song_edition_id=bob_edition
+        )
+
+        rows, total = temp_db.query_songs_paginated()
+
+        assert total == 1
+        assert len(rows) == 1
+        assert rows[0]["words_by"] == "Bob"
+
+    def test_credit_sort_uses_displayed_edition(self, temp_db):
+        song_a = temp_db.insert_or_get_song("song a", "Song A")
+        selected_a = temp_db.insert_or_get_song_edition(
+            song_a, publisher="Z Publisher", words_by="Zulu"
+        )
+        temp_db.insert_or_get_song_edition(
+            song_a, publisher="A Publisher", words_by="Aaron"
+        )
+        song_b = temp_db.insert_or_get_song("song b", "Song B")
+        selected_b = temp_db.insert_or_get_song_edition(song_b, words_by="Mike")
+        service_id = temp_db.insert_or_update_service(
+            "2026-02-01", "AM Worship", "service.pptx", "hash"
+        )
+        temp_db.insert_service_song(
+            service_id, song_a, ordinal=1, song_edition_id=selected_a
+        )
+        temp_db.insert_service_song(
+            service_id, song_b, ordinal=2, song_edition_id=selected_b
+        )
+
+        rows, _ = temp_db.query_songs_paginated(sort="words_by", sort_dir="asc")
+
+        assert [(row["display_title"], row["words_by"]) for row in rows] == [
+            ("Song B", "Mike"),
+            ("Song A", "Zulu"),
+        ]
+
+    def test_unperformed_song_uses_newest_edition_as_fallback(self, temp_db):
+        song_id = temp_db.insert_or_get_song("song a", "Song A")
+        temp_db.insert_or_get_song_edition(song_id, words_by="Older Credits")
+        newest_edition = temp_db.insert_or_get_song_edition(
+            song_id, words_by="Newest Credits"
+        )
+
+        rows, _ = temp_db.query_songs_paginated()
+
+        assert rows[0]["words_by"] == "Newest Credits"
+        assert temp_db.query_song_editions(song_id)[-1]["id"] == newest_edition
+
+    def test_search_finds_alternate_edition_but_displays_recent_use(self, temp_db):
+        song_id = temp_db.insert_or_get_song("song a", "Song A")
+        selected_edition = temp_db.insert_or_get_song_edition(
+            song_id, words_by="Recent Writer"
+        )
+        temp_db.insert_or_get_song_edition(song_id, words_by="Historical Writer")
+        service_id = temp_db.insert_or_update_service(
+            "2026-02-01", "AM Worship", "service.pptx", "hash"
+        )
+        temp_db.insert_service_song(
+            service_id, song_id, ordinal=1, song_edition_id=selected_edition
+        )
+
+        rows, total = temp_db.query_songs_paginated(search="Historical Writer")
+
+        assert total == 1
+        assert rows[0]["words_by"] == "Recent Writer"
 
     def test_pagination(self, temp_db):
         for i in range(5):
@@ -2358,7 +2547,7 @@ class TestDatabaseIndexes:
         cursor = temp_db.cursor()
         cursor.execute("PRAGMA user_version")
         assert cursor.fetchone()[0] == _SCHEMA_VERSION
-        assert _SCHEMA_VERSION == 6  # bumped for service_exclusions table (#480)
+        assert _SCHEMA_VERSION == 7  # bumped for import-job OCR audit fields (#537)
 
 
 @pytest.mark.integration
@@ -2905,6 +3094,135 @@ class TestConcurrentInsertOrGet:
         db.connect()
         db.conn.execute("PRAGMA busy_timeout=5000")
         return db
+
+    @staticmethod
+    def _connect_cross_thread(db_path):
+        """Create a test connection before its worker thread starts."""
+        db = Database(db_path)
+        db.conn = sqlite3.connect(db_path, check_same_thread=False)
+        db.conn.row_factory = sqlite3.Row
+        db.conn.execute("PRAGMA journal_mode=WAL")
+        db.conn.execute("PRAGMA foreign_keys=ON")
+        db.conn.execute("PRAGMA busy_timeout=5000")
+        return db
+
+    class _BarrierCursor:
+        """Freeze and align two deferred snapshots at their identity read."""
+
+        def __init__(self, cursor, select_prefix, barrier):
+            self._cursor = cursor
+            self._select_prefix = select_prefix
+            self._barrier = barrier
+
+        def execute(self, sql, parameters=()):
+            normalized_sql = " ".join(sql.split())
+            if normalized_sql.startswith(self._select_prefix):
+                if not self._cursor.connection.in_transaction:
+                    self._cursor.execute("BEGIN")
+            result = self._cursor.execute(sql, parameters)
+            if normalized_sql.startswith(self._select_prefix):
+                self._barrier.wait(timeout=5)
+            return result
+
+        def __getattr__(self, name):
+            return getattr(self._cursor, name)
+
+    class _BarrierConnection:
+        def __init__(self, connection, select_prefix, barrier):
+            self._connection = connection
+            self._select_prefix = select_prefix
+            self._barrier = barrier
+
+        def cursor(self):
+            return TestConcurrentInsertOrGet._BarrierCursor(
+                self._connection.cursor(), self._select_prefix, self._barrier
+            )
+
+        def __getattr__(self, name):
+            return getattr(self._connection, name)
+
+    def test_transactional_song_insert_does_not_upgrade_stale_snapshot(self, tmp_path):
+        db_path = tmp_path / "transaction_race_song.db"
+        init = self._connect(db_path)
+        init.init_schema()
+        init.close()
+
+        start_barrier = threading.Barrier(2)
+        select_barrier = threading.Barrier(2)
+        ids: list[int] = []
+        errors: list[Exception] = []
+        databases = [self._connect_cross_thread(db_path) for _ in range(2)]
+        for db in databases:
+            db.conn = self._BarrierConnection(
+                db.conn, "SELECT id FROM songs WHERE canonical_title", select_barrier
+            )
+
+        def worker(db) -> None:
+            try:
+                start_barrier.wait(timeout=5)
+                with db.transaction():
+                    ids.append(
+                        db.insert_or_get_song("amazing grace", "Amazing Grace")
+                    )
+            except Exception as exc:  # noqa: BLE001
+                errors.append(exc)
+            finally:
+                db.close()
+
+        threads = [threading.Thread(target=worker, args=(db,)) for db in databases]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=10)
+
+        assert not any(thread.is_alive() for thread in threads)
+        assert not errors, f"Transactional insert_or_get_song raised: {errors!r}"
+        assert len(ids) == 2
+        assert len(set(ids)) == 1
+
+    def test_transactional_edition_insert_does_not_upgrade_stale_snapshot(
+        self, tmp_path
+    ):
+        db_path = tmp_path / "transaction_race_edition.db"
+        init = self._connect(db_path)
+        init.init_schema()
+        song_id = init.insert_or_get_song("amazing grace", "Amazing Grace")
+        init.close()
+
+        start_barrier = threading.Barrier(2)
+        select_barrier = threading.Barrier(2)
+        ids: list[int] = []
+        errors: list[Exception] = []
+        databases = [self._connect_cross_thread(db_path) for _ in range(2)]
+        for db in databases:
+            db.conn = self._BarrierConnection(
+                db.conn, "SELECT id FROM song_editions WHERE", select_barrier
+            )
+
+        def worker(db) -> None:
+            try:
+                start_barrier.wait(timeout=5)
+                with db.transaction():
+                    ids.append(
+                        db.insert_or_get_song_edition(
+                            song_id, words_by="John Newton"
+                        )
+                    )
+            except Exception as exc:  # noqa: BLE001
+                errors.append(exc)
+            finally:
+                db.close()
+
+        threads = [threading.Thread(target=worker, args=(db,)) for db in databases]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=10)
+
+        assert not any(thread.is_alive() for thread in threads)
+        assert not errors, f"Transactional insert_or_get_song_edition raised: {errors!r}"
+        assert len(ids) == 2
+        assert len(set(ids)) == 1
 
     def test_concurrent_insert_or_get_song_no_error(self, tmp_path):
         db_path = tmp_path / "race_song.db"

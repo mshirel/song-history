@@ -108,6 +108,34 @@ class TestReportService:
             f"Arranger should appear in credits string, got: {credits!r}"
         )
 
+    def test_compute_stats_data_uses_most_recent_edition_credits(self, temp_db):
+        """Stats credits come from the latest credited use in the report range."""
+        song_id = temp_db.insert_or_get_song("amazing grace", "Amazing Grace")
+        alice_edition = temp_db.insert_or_get_song_edition(song_id, words_by="Alice")
+        bob_edition = temp_db.insert_or_get_song_edition(song_id, words_by="Bob")
+        for date, edition_id in (
+            ("2026-01-01", alice_edition),
+            ("2026-02-01", bob_edition),
+        ):
+            service_id = temp_db.insert_or_update_service(
+                date, "Sunday AM", f"{date}.pptx", f"hash-{date}"
+            )
+            temp_db.insert_service_song(
+                service_id, song_id, ordinal=1, song_edition_id=edition_id
+            )
+            temp_db.insert_or_get_copy_event(
+                service_id,
+                song_id,
+                "projection",
+                song_edition_id=edition_id,
+            )
+
+        data = compute_stats_data(
+            temp_db, "2026-01-01", "2026-12-31", None, True
+        )
+
+        assert data["song_credits"]["Amazing Grace"] == "Words: Bob"
+
 
 class TestComputeStatsDataExtended:
     """Extended tests for compute_stats_data (#340)."""

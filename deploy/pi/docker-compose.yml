@@ -18,7 +18,7 @@ services:
   # traefik — reverse proxy + Let's Encrypt DNS-01 via Cloudflare
   # ---------------------------------------------------------------------------
   traefik:
-    image: traefik:v3.7@sha256:d6858791f9e74df44ca4014166647c41cdc2abd3bf2a71b832ca4e1c6a91b257
+    image: traefik:v3.7@sha256:e4d98158c01ad752fc1071d4e9573788747230d902cdde00a772516e692d07c9
     restart: unless-stopped
     ports:
       - "80:80"
@@ -46,8 +46,15 @@ services:
     # :latest silently swaps running app code with no digest record and no
     # rollback target. Pin to the sha- tag + digest CI publishes; Dependabot's
     # `docker` ecosystem entry (#502) bumps this on a reviewed PR.
-    # Tag sha-<commit> = main@b317d78; digest resolved from GHCR 2026-07-04.
-    image: ghcr.io/mshirel/song-history:sha-b317d7848a0c55f9fcab05d8c3a3c6f9c68b94fc@sha256:794df3f856d7383816e88e9e19791d16372196483067eb34550075732d33fad7
+    # Tag sha-<commit> = main@1af1d57, released as v1.6.0. Digest is from the
+    # release build (run 30729704380), which bakes version `1.6.0`.
+    #
+    # The sha- TAG is not immutable in practice: the release workflow (#583)
+    # rebuilds the same commit for the version tags and re-pushes sha-<commit>
+    # along with them, so it moved from sha256:2df310d1 (the main-ref build) to
+    # the digest below for identical source. The digest is what actually pins —
+    # this is the drift #512 was about, observed rather than theorised.
+    image: ghcr.io/mshirel/song-history:sha-1af1d5723fb61ad8a3de59c1458009ad7d65d011@sha256:9266dc8db785cc1553d2e9290d9602e64db62d915634ef80f1df8f2ac28d68dd
     restart: unless-stopped
     init: true
     # The app image ships a HEALTHCHECK that probes :8000 (#402); the watcher
@@ -70,6 +77,10 @@ services:
     environment:
       DB_PATH: /data/worship.db
       INBOX_DIR: /inbox
+      WORSHIP_OCR_PROVIDER: "${WORSHIP_OCR_PROVIDER:-openrouter}"
+      WORSHIP_OCR_MODEL: "${WORSHIP_OCR_MODEL:-google/gemini-2.5-flash-lite}"
+      WORSHIP_MAX_OCR_CALLS: "${WORSHIP_MAX_OCR_CALLS:-25}"
+      OPENROUTER_API_KEY: "${OPENROUTER_API_KEY:-}"
       ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
     volumes:
       - /opt/song-history/data:/data
@@ -84,15 +95,23 @@ services:
   song-history:
     # Immutably pinned (#512) — was the mutable :latest. Keep this in lockstep
     # with the `watcher` service above; Dependabot (#502) bumps both.
-    # Tag sha-<commit> = main@b317d78; digest resolved from GHCR 2026-07-04.
-    image: ghcr.io/mshirel/song-history:sha-b317d7848a0c55f9fcab05d8c3a3c6f9c68b94fc@sha256:794df3f856d7383816e88e9e19791d16372196483067eb34550075732d33fad7
+    # Tag sha-<commit> = main@1af1d57, released as v1.6.0 (see the note above on
+    # why the digest, not the tag, is the pin).
+    image: ghcr.io/mshirel/song-history:sha-1af1d5723fb61ad8a3de59c1458009ad7d65d011@sha256:9266dc8db785cc1553d2e9290d9602e64db62d915634ef80f1df8f2ac28d68dd
     restart: unless-stopped
+    # Bound the public upload process on the 512 MB Pi host (#503). Uploads are
+    # streamed to disk, so even the 200 MB maximum file fits this budget.
+    mem_limit: 512m
     stop_grace_period: 35s
     ports:
       - "8000:8000"  # Prometheus /metrics scraping (internal only — not routed via Traefik)
     environment:
       DB_PATH: /data/worship.db
       INBOX_DIR: /inbox
+      WORSHIP_OCR_PROVIDER: "${WORSHIP_OCR_PROVIDER:-openrouter}"
+      WORSHIP_OCR_MODEL: "${WORSHIP_OCR_MODEL:-google/gemini-2.5-flash-lite}"
+      WORSHIP_MAX_OCR_CALLS: "${WORSHIP_MAX_OCR_CALLS:-25}"
+      OPENROUTER_API_KEY: "${OPENROUTER_API_KEY:-}"
       ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
       CSRF_SECRET: "${CSRF_SECRET}"
       PUSHOVER_USER_KEY: "${PUSHOVER_USER_KEY:-}"
@@ -155,9 +174,9 @@ services:
     # gid 0 (root group) so it can READ the group-readable Docker json logs under
     # /var/lib/docker/containers WITHOUT root. Requires two host-side prep steps
     # (see docs/pi-deploy.md):
-    #   1. Container logs must be group-readable. Docker's default is 0640
-    #      root:root (group can read); if a hardened daemon.json sets 0600, apply
-    #      an ACL:  setfacl -R -m g:0:rX -d -m g:0:rX /var/lib/docker/containers
+    #   1. Container logs must be group-readable. Docker's default 0640
+    #      root:root is sufficient; the host helper grants directory discovery
+    #      without a default ACL (which would break DNS for non-root containers).
     #   2. promtail writes positions.yaml into the mounted /opt/song-history/promtail
     #      dir, so that dir must be writable by uid 10001 (or gid 0):
     #      chown -R 10001:0 /opt/song-history/promtail && chmod -R g+rwX ...

@@ -157,19 +157,19 @@ The project has **741+ tests** with **93%+ coverage**.
 
 ```bash
 # Install dev dependencies
-pip install -e ".[dev,web,ocr]"
+uv sync --frozen --extra dev --extra web --extra ocr
 
 # Run all tests
-python3 -m pytest
+uv run --frozen pytest
 
 # Run a specific test file
-python3 -m pytest tests/test_cli.py -v
+uv run --frozen pytest tests/test_cli.py -v
 
 # Run with coverage report
-python3 -m pytest --cov=worship_catalog
+uv run --frozen pytest --cov=worship_catalog
 
 # Skip slow integration tests
-python3 -m pytest -m "not integration"
+uv run --frozen pytest -m "not integration"
 ```
 
 ### Key test files
@@ -190,20 +190,18 @@ python3 -m pytest -m "not integration"
 ## Development Setup
 
 ```bash
-python3 -m venv venv
-source venv/bin/activate
-pip install -e ".[dev,web,ocr]"
+uv sync --frozen --extra dev --extra web --extra ocr
 
 # Install pre-commit hooks
-pip install pre-commit
+uv tool install pre-commit
 pre-commit install
 ```
 
 ### Code quality checks
 
 ```bash
-python3 -m ruff check src/       # Lint
-python3 -m mypy src/             # Type check (strict)
+uv run --frozen ruff check src/       # Lint
+uv run --frozen mypy src/             # Type check (strict)
 ```
 
 Both must pass with zero errors before any commit.
@@ -211,8 +209,8 @@ Both must pass with zero errors before any commit.
 ### Security checks
 
 ```bash
-python3 -m bandit -r src/ -ll -c pyproject.toml   # Static analysis
-python3 -m pip_audit --skip-editable               # Dependency CVE scan
+uv run --frozen bandit -r src/ -ll -c pyproject.toml   # Static analysis
+uv run --frozen pip-audit --skip-editable              # Dependency CVE scan
 ```
 
 ### CI pipeline
@@ -231,11 +229,10 @@ Every push/PR runs these GitHub Actions jobs:
 
 ### ModuleNotFoundError: No module named 'worship_catalog'
 
-Make sure you installed the package in the active virtual environment:
+Make sure you synchronized the frozen development environment:
 
 ```bash
-source venv/bin/activate
-pip install -e ".[dev]"
+uv sync --frozen --extra dev --extra web --extra ocr
 ```
 
 ### pytest: command not found
@@ -243,7 +240,7 @@ pip install -e ".[dev]"
 Install dev dependencies:
 
 ```bash
-pip install -e ".[dev]"
+uv sync --frozen --extra dev --extra web --extra ocr
 ```
 
 ### Vision OCR not working

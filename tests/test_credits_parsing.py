@@ -31,6 +31,22 @@ class TestCreditsParsing:
         assert result['words_by'] == "James Montgomery"
         assert result['music_by'] == "James Montgomery"
 
+    @pytest.mark.parametrize("arranger_label", ["Arrangement", "Arranged"])
+    def test_parse_words_and_music_stops_at_same_line_arrangement(self, arranger_label):
+        """Keep a same-line arrangement credit out of the composer fields."""
+        composers = "JENN JOHNSON, ED CASH, JASON INGRAM, BEN FIELDING, and BRIAN JOHNSON"
+        text = (
+            f"Words and Music by: {composers} "
+            f"{arranger_label} by: Shane Coffman and Mark Simmons"
+        )
+
+        result = parse_credits(text)
+
+        assert result['words_by'] == composers
+        assert result['music_by'] == composers
+        assert result['arranger'] == "Shane Coffman and Mark Simmons"
+        assert result['other_credits'] is None
+
     def test_parse_words_by_only(self):
         """Parse 'Words by: Name' separately from music."""
         text = "Words by: Samuel Stone\nMusic by: John B. Dykes"

@@ -9,8 +9,8 @@ class TestNoMaliciousFastapi:
     """The lockfile must not pin the malicious fastapi 0.136.3 (MAL-2026-4750, #458)."""
 
     def test_lockfile_excludes_malicious_fastapi(self):
-        lock = (_PROJECT_ROOT / "requirements.lock").read_text()
-        assert "fastapi==0.136.3" not in lock, (
+        lock = (_PROJECT_ROOT / "uv.lock").read_text()
+        assert 'name = "fastapi"\nversion = "0.136.3"' not in lock, (
             "fastapi 0.136.3 is malicious (MAL-2026-4750) — it adds an undocumented "
             "'fastar' dependency. The lockfile must pin a different version."
         )
@@ -18,23 +18,57 @@ class TestNoMaliciousFastapi:
     def test_pyproject_excludes_malicious_fastapi(self):
         pp = (_PROJECT_ROOT / "pyproject.toml").read_text()
         assert "!=0.136.3" in pp, (
-            "pyproject must exclude fastapi 0.136.3 so pip-compile can't re-pin it"
+            "pyproject must exclude fastapi 0.136.3 so uv can't re-pin it"
+        )
+
+
+class TestRuntimeImageHasNoPip:
+    """pip is removed from the runtime image (#595).
+
+    pip vendors its own dependencies under `pip/_vendor` — msgpack 1.1.2 and
+    setuptools 70.3.0 at the time of writing, both carrying advisories.  They
+    do not appear in `pip list` (vendored code is not an installed
+    distribution) and are not in uv.lock, but they are real files in the image
+    and Trivy fails the publish job on them, so nothing can ship.
+    """
+
+    def test_dockerfile_removes_pip_from_the_runtime_image(self):
+        dockerfile = (_PROJECT_ROOT / "Dockerfile").read_text()
+        assert "pip uninstall" in dockerfile, (
+            "the runtime image must not ship pip — its vendored dependencies "
+            "carry CVEs and nothing needs pip at runtime (#595)"
+        )
+
+    def test_pip_is_removed_after_dependencies_are_installed(self):
+        """Removing pip before the install step would break the build."""
+        lines = (_PROJECT_ROOT / "Dockerfile").read_text().splitlines()
+        install_at = next(
+            i for i, line in enumerate(lines) if "-r requirements.lock" in line
+        )
+        remove_at = next(i for i, line in enumerate(lines) if "pip uninstall" in line)
+        assert install_at < remove_at, "pip must be removed only after it has installed everything"
+
+    def test_removal_is_verified_in_the_same_layer(self):
+        """A silent no-op removal would let the vendored CVEs ship anyway."""
+        dockerfile = (_PROJECT_ROOT / "Dockerfile").read_text()
+        assert "! command -v pip" in dockerfile, (
+            "the build must assert pip is actually gone, or a failed removal "
+            "ships the vulnerable vendored packages while the build stays green"
         )
 
 
 class TestDependencyReproducibility:
     """A lockfile must exist and be used in the Dockerfile (#174)."""
 
-    def test_requirements_lock_exists(self):
-        """A lockfile must exist at the project root for reproducible builds."""
-        lockfiles = [
-            _PROJECT_ROOT / "requirements.lock",
-            _PROJECT_ROOT / "requirements.txt",
-            _PROJECT_ROOT / "constraints.txt",
-        ]
-        assert any(f.exists() for f in lockfiles), (
-            "No Python dependency lockfile found. "
-            "Run: pip-compile pyproject.toml --output-file requirements.lock"
+    def test_uv_lock_exists(self):
+        """The committed lockfile must exist at the project root for reproducible builds.
+
+        requirements.lock is a generated export of uv.lock (#589) and is not
+        committed, so uv.lock is the file that must be present.
+        """
+        assert (_PROJECT_ROOT / "uv.lock").exists(), (
+            "No committed Python lockfile found — builds are non-reproducible. "
+            "uv.lock is the sole resolution authority (#546)."
         )
 
     def test_lockfile_is_used_in_dockerfile(self):

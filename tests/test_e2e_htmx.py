@@ -6,19 +6,19 @@ updates in a real browser — something TestClient cannot catch (e.g. broken
 hx-target, malformed partial responses, duplicated tables).
 
 Requires a running server — set E2E_BASE_URL env var or start locally:
-    uvicorn worship_catalog.web.app:app --host 0.0.0.0 --port 8000
+    uv run --frozen uvicorn worship_catalog.web.app:app --host 0.0.0.0 --port 8000
 
 Run with:
-    python3 -m pytest tests/test_e2e_htmx.py -v
+    uv run --frozen pytest tests/test_e2e_htmx.py -v
 
 Skip in CI/normal test runs:
-    python3 -m pytest -m "not e2e"
+    uv run --frozen pytest -m "not e2e"
 """
 
 import pytest
 
 # Skip entire module if playwright is not installed
-pytest.importorskip("playwright", reason="playwright not installed — run: pip install playwright")
+pytest.importorskip("playwright", reason="playwright not installed — run the frozen uv sync")
 
 # browser_page fixture and BASE_URL come from conftest.py
 from conftest import E2E_BASE_URL as BASE_URL

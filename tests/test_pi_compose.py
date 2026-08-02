@@ -95,6 +95,16 @@ class TestTrustedProxy:
         )
 
 
+class TestAppMemoryLimit:
+    """The public app must fit inside the Pi's explicit memory budget (#503)."""
+
+    def test_song_history_has_512_mb_memory_limit(self) -> None:
+        service = yaml.safe_load(COMPOSE_PATH.read_text())["services"]["song-history"]
+        assert str(service.get("mem_limit", "")).lower() == "512m", (
+            "song-history must have an explicit 512 MB Compose memory limit"
+        )
+
+
 @pytest.mark.skipif(not TRAEFIK_PATH.exists(), reason="Pi traefik config not present")
 class TestTraefikDashboard:
     """The Traefik API dashboard must not run in insecure mode (#513).

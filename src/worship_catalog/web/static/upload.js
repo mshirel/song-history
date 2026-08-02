@@ -51,6 +51,8 @@
       ["Song Leader", job.song_leader],
       ["Preacher", job.preacher],
       ["Sermon", job.sermon_title],
+      ["OCR Model", job.ocr_model],
+      ["OCR Calls", job.ocr_calls > 0 ? String(job.ocr_calls) : null],
     ];
     var hasAnyMeta = metaRows.some(function (r) { return r[1]; });
     if (hasAnyMeta) {
@@ -93,6 +95,34 @@
           ol.appendChild(li);
         });
         frag.appendChild(ol);
+      }
+    }
+
+    // OCR recovery flags are intentionally prominent: operators should verify
+    // model-recovered titles before relying on them for reporting.
+    if (job.anomalies_json) {
+      var anomalies;
+      try { anomalies = JSON.parse(job.anomalies_json); } catch (e) { anomalies = []; }
+      if (Array.isArray(anomalies) && anomalies.length > 0) {
+        var anomalyLabel = document.createElement("p");
+        anomalyLabel.style.cssText =
+          "font-size:0.85rem;font-weight:600;color:#856404;margin:0.75rem 0 0.25rem;";
+        anomalyLabel.textContent = "Review flags:";
+        frag.appendChild(anomalyLabel);
+        var anomalyList = document.createElement("ul");
+        anomalyList.style.cssText =
+          "margin:0;padding-left:1.5rem;font-size:0.85rem;color:#856404;";
+        anomalies.forEach(function (anomaly) {
+          var item = document.createElement("li");
+          var message = anomaly && anomaly.message
+            ? anomaly.message
+            : "OCR result requires review";
+          item.textContent = anomaly && anomaly.title
+            ? anomaly.title + " — " + message
+            : message;
+          anomalyList.appendChild(item);
+        });
+        frag.appendChild(anomalyList);
       }
     }
 

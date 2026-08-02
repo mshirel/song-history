@@ -116,12 +116,12 @@ Known sharp edges to look for:
 # worktree + env
 agent-worktree new song-history code-review
 cd ~/projects/.worktrees/highland-song-history/code-review
-uv sync --extra dev
+uv sync --frozen --extra dev --extra web --extra ocr
 
 # test + lint (part of the review); respect markers — skip e2e unless browser setup is available
-uv run pytest -m "not e2e"
-uv run pytest -m e2e            # only with Playwright/browser available
-uv run ruff check .
+uv run --frozen pytest -m "not e2e"
+uv run --frozen pytest -m e2e            # only with Playwright/browser available
+uv run --frozen ruff check .
 ```
 
 ## Threat model / exposure notes

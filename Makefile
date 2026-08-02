@@ -1,4 +1,4 @@
-.PHONY: help test lint typecheck security build scan up down logs backup-verify
+.PHONY: help test lint typecheck security lockfile build scan up down logs backup-verify
 
 REPO   = ghcr.io/mshirel/song-history
 SHA    = $(shell git rev-parse --short HEAD)
@@ -9,19 +9,23 @@ help:  ## Show this help
 	  awk 'BEGIN {FS = ":.*?## "}; {printf "  %-18s %s\n", $$1, $$2}'
 
 test:  ## Run test suite with coverage
-	python3 -m pytest
+	uv run --frozen pytest
 
 lint:  ## Ruff linter
-	python3 -m ruff check src/
+	uv run --frozen ruff check src/
 
 typecheck:  ## Mypy strict type check
-	python3 -m mypy src/
+	uv run --frozen mypy src/
 
 security:  ## bandit + pip-audit
-	python3 -m bandit -r src/ -ll -c pyproject.toml
-	python3 -m pip_audit --skip-editable
+	uv run --frozen bandit -r src/ -ll -c pyproject.toml
+	uv run --frozen pip-audit --skip-editable
 
-build:  ## Build Docker image tagged :sha-<HEAD>
+lockfile:  ## Generate requirements.lock from uv.lock (consumed by the image build)
+	uv export --frozen --no-dev --extra web --extra ocr \
+	  --no-emit-project --no-hashes --output-file requirements.lock
+
+build: lockfile  ## Build Docker image tagged :sha-<HEAD>
 	docker build -t $(IMAGE) .
 
 scan: build  ## Trivy CVE scan on locally built image

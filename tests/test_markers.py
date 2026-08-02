@@ -42,7 +42,7 @@ def test_slow_marker_is_registered() -> None:
     """The 'slow' marker must appear in pyproject.toml markers so that
     ``pytest -m 'not slow'`` works without any UnknownMarkWarning.
 
-    Verification strategy: run ``python3 -m pytest --markers`` and assert
+    Verification strategy: run ``uv run --frozen pytest --markers`` and assert
     'slow' is among the listed markers.  This is CI-safe and does not rely
     on importing private pytest internals.
     """

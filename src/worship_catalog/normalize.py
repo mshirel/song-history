@@ -378,8 +378,9 @@ def parse_credits(text: str) -> dict[str, str | None]:
        both ``words_by`` and ``music_by`` in one pass.  If this pattern were
        checked after the standalone "Words by" / "Music by" patterns it would
        sometimes be skipped because one of those fields would already be populated.
-       The pattern deliberately stops at ``/`` or ``, Arr`` so the arranger is
-       not swallowed into the combined value.
+       The pattern deliberately stops at ``/``, ``, Arr``, or a full
+       ``Arrangement/Arranged by`` clause so the arranger is not swallowed
+       into the combined value.
 
     2. **Standalone "Words by:" / "Words:"** — only attempted when ``words_by``
        is still None after step 1.  Stopping at ``/`` and ``,`` prevents
@@ -389,7 +390,8 @@ def parse_credits(text: str) -> dict[str, str | None]:
        ``music_by`` is still None.
 
     4. **Arranger patterns** — tried in priority order:
-       ``Arrangement by:`` → ``Arr. by`` → ``Arr.:`` / ``Arr:`` → ``Arr. Name``
+       ``Arrangement/Arranged by:`` → ``Arr. by`` → ``Arr.:`` / ``Arr:`` →
+       ``Arr. Name``
        The final pattern excludes ``Arr. Copyright`` lines (copyright notices
        that start with "Arr." but are not arranger credits).
 
@@ -419,9 +421,11 @@ def parse_credits(text: str) -> dict[str, str | None]:
         return result
 
     # Handle "Words and Music by:" / "Words & Music:" / "Music and Words by:"
-    # Stop at "/" or ", Arr" so the arranger isn't swallowed into the combined value.
+    # Stop at "/", ", Arr", or a same-line "Arrangement/Arranged by" so the
+    # arranger isn't swallowed into the combined value.
     match = re.search(
-        r'(?:Words\s+(?:and|&)\s+Music|Music\s+and\s+Words)\s*(?:by)?:\s*([^/\n]+?)(?:,\s*Arr|/|\n|$)',
+        r'(?:Words\s+(?:and|&)\s+Music|Music\s+and\s+Words)\s*(?:by)?:\s*'
+        r'([^/\n]+?)(?:,\s*Arr|\s+Arrang(?:ement|ed)\s+by|/|\n|$)',
         text, re.IGNORECASE
     )
     if match:
@@ -445,10 +449,10 @@ def parse_credits(text: str) -> dict[str, str | None]:
         if match:
             result['music_by'] = match.group(1).strip()
 
-    # Handle arranger: "Arrangement by:", "Arr. by", "Arr.:", "Arr:", "Arr. Name"
+    # Handle arranger: "Arrangement/Arranged by:", "Arr. by", "Arr.:", "Arr:", "Arr. Name"
     # Skip "Arr. Copyright" lines (copyright notices, not arranger credits).
     for pattern in [
-        r'Arrangement\s+by[:\s]\s*([^/\n,]+)',
+        r'Arrang(?:ement|ed)\s+by[:\s]\s*([^/\n,]+)',
         r'Arr\.\s+by\s+([^/\n,]+)',
         r'Arr\.?:\s*([^/\n,]+)',
         r'Arr\.\s+(?!Copyright)([^/\n,]+)',
@@ -469,7 +473,7 @@ def parse_credits(text: str) -> dict[str, str | None]:
             value = re.escape(val)
             pattern = (
                 r'(?i)(words\s+(?:and|&)\s+music|words\s+by|music\s+by|'
-                r'arr(?:angement)?\s+by).*?' + value
+                r'arr(?:angement|anged)?\s+by).*?' + value
             )
             remaining = re.sub(pattern, '', remaining)
 

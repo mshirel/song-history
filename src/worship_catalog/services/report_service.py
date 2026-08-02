@@ -40,19 +40,21 @@ def compute_stats_data(
     # must contribute exactly 1 to its count, not N (#97).
     song_service_ids: dict[str, set[int]] = {}
     song_credits: dict[str, str] = {}
+    song_credit_recency: dict[str, tuple[str, int, int]] = {}
     for e in events:
         title = e["display_title"]
         song_service_ids.setdefault(title, set()).add(e["service_id"])
-        if title not in song_credits:
-            parts: list[str] = []
-            if e.get("words_by"):
-                parts.append(f"Words: {e['words_by']}")
-            if e.get("music_by") and e.get("music_by") != e.get("words_by"):
-                parts.append(f"Music: {e['music_by']}")
-            if e.get("arranger"):
-                parts.append(f"Arr: {e['arranger']}")
-            if parts:
-                song_credits[title] = ", ".join(parts)
+        parts: list[str] = []
+        if e.get("words_by"):
+            parts.append(f"Words: {e['words_by']}")
+        if e.get("music_by") and e.get("music_by") != e.get("words_by"):
+            parts.append(f"Music: {e['music_by']}")
+        if e.get("arranger"):
+            parts.append(f"Arr: {e['arranger']}")
+        recency = (e["service_date"], e["service_id"], e["id"])
+        if parts and recency > song_credit_recency.get(title, ("", 0, 0)):
+            song_credit_recency[title] = recency
+            song_credits[title] = ", ".join(parts)
     song_counts: dict[str, int] = {t: len(sids) for t, sids in song_service_ids.items()}
 
     sorted_songs = sorted(song_counts.items(), key=lambda x: (-x[1], x[0].lower()))

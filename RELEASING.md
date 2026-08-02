@@ -1,86 +1,44 @@
 # Release Process
 
-## Prerequisites
+## Overview
 
-- All changes merged to `main`
-- CI passing on `main`
-- `hatch-vcs` installed: `pip install hatch-vcs`
+Release versioning is automated.
 
----
+When CI completes successfully on `main`, the release workflow:
 
-## Steps
+1. inspects commits since the latest semantic tag
+2. decides the next SemVer bump from conventional commits
+3. creates and pushes the new `vX.Y.Z` tag
+4. creates a GitHub Release from that tag
+5. lets the existing publish workflow build and publish the image from the tag
 
-### 1. Update CHANGELOG.md
+The About page and runtime build metadata read the published version tag, not a
+branch name.
 
-Move items from `[Unreleased]` to a new version section:
+## Version Rules
 
-```markdown
-## [0.2.0] — YYYY-MM-DD
+The automated bump policy is conventional-commit based:
 
-### Added
-- ...
-
-### Fixed
-- ...
-```
-
-Update the comparison links at the bottom:
-
-```markdown
-[Unreleased]: https://github.com/mshirel/song-history/compare/v0.2.0...HEAD
-[0.2.0]: https://github.com/mshirel/song-history/compare/v0.1.0...v0.2.0
-```
-
-### 2. Commit CHANGELOG
-
-```bash
-git add CHANGELOG.md
-git commit -m "chore: update CHANGELOG for v0.2.0"
-git push origin main
-```
-
-### 3. Tag the release
-
-```bash
-git tag v0.2.0
-git push origin v0.2.0
-```
-
-CI automatically triggers the `publish` job, which builds and pushes:
-- `ghcr.io/mshirel/song-history:sha-<full-sha>`
-- `ghcr.io/mshirel/song-history:0.2.0`
-- `ghcr.io/mshirel/song-history:0.2`
-
-### 4. Create a GitHub Release
-
-```bash
-gh release create v0.2.0 --title "v0.2.0" --notes-file <(sed -n '/## \[0.2.0\]/,/## \[/p' CHANGELOG.md | head -n -1)
-```
-
----
-
-## Version Numbers
-
-This project uses [Semantic Versioning](https://semver.org/):
-
-| Version part | When to bump |
+| Commit type | Release impact |
 |---|---|
-| **MAJOR** (x.0.0) | Breaking CLI or API change |
-| **MINOR** (0.x.0) | New feature, backwards-compatible |
-| **PATCH** (0.0.x) | Bug fix, backwards-compatible |
+| `feat` | minor |
+| `fix` / `perf` | patch |
+| breaking change marker (`!:` or `BREAKING CHANGE:`) | major |
+| docs/chore/test-only changes | no release |
 
-The Python package version is derived from git tags via `hatch-vcs`.
-In Docker builds where `.git` is unavailable, it falls back to `0.0.0+unknown`.
-The published image tag (`:0.2.0`) is the authoritative version identifier.
+## Published Artifacts
 
----
+For each release tag `vX.Y.Z`, CI publishes:
 
-## Hotfix Process
+- `ghcr.io/mshirel/song-history:sha-<full-sha>`
+- `ghcr.io/mshirel/song-history:X.Y.Z`
+- `ghcr.io/mshirel/song-history:X.Y`
 
-```bash
-git checkout -b hotfix/v0.1.1 v0.1.0
-# fix + test
-git commit -m "fix: ..."
-git tag v0.1.1
-git push origin v0.1.1
-```
+The Pi deployment should pin one of those immutable release identifiers, never
+`latest`.
+
+## Emergency Hotfixes
+
+If the automated release path needs to be bypassed for a one-off emergency, do
+so deliberately and document the reason in the commit or release notes. The
+normal path remains fully automated and should be preferred.
