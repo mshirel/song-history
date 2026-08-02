@@ -1322,14 +1322,14 @@ async def service_detail(
     )
 
 
-@app.post("/services/{service_id}/songs/{song_id}/delete")
-async def service_song_delete(
+@app.post("/services/{service_id}/setlist/{entry_id}/delete")
+async def setlist_entry_delete(
     request: Request,
     service_id: int,
-    song_id: int,
+    entry_id: int,
     db: Database = Depends(get_db),  # noqa: B008
 ) -> RedirectResponse:
-    """Remove one misidentified song from a service (#323).
+    """Remove one misidentified setlist entry from a service (#323).
 
     The extractor classifies slides and gets things wrong -- service 36 carried a
     scripture reference and two sermon-outline slides as songs (#313, #314).
@@ -1340,20 +1340,26 @@ async def service_song_delete(
     Gated by the same upload auth that protects /upload and the missing-services
     edits (#483): this is a destructive write on a publicly reachable site.
 
+    Addressed by SETLIST ROW, not by song: `service_songs` is
+    UNIQUE(service_id, ordinal), so one song can appear several times in a
+    service -- which is exactly what happens when the extractor splits a song in
+    two, the error class this feature exists to correct. Keying on song_id
+    removed every occurrence at once.
+
     303 rather than 200 so a refresh after the delete re-issues the GET instead of
     re-posting a delete that would now 404.
     """
     require_upload_auth(request)
     if not db.query_service_by_id(service_id):
         raise HTTPException(status_code=404, detail="Service not found")
-    if not db.delete_service_song(service_id, song_id):
-        # Distinguishes "no such song in this service" from a silent no-op, so a
+    if not db.delete_setlist_entry(service_id, entry_id):
+        # Distinguishes "no such entry in this service" from a silent no-op, so a
         # stale page's delete button reports something rather than appearing to
         # succeed.
         raise HTTPException(status_code=404, detail="Song not found in this service")
     _log.info(
-        "service song deleted",
-        extra={"service_id": service_id, "song_id": song_id},
+        "setlist entry deleted",
+        extra={"service_id": service_id, "entry_id": entry_id},
     )
     return RedirectResponse(url=f"/services/{service_id}", status_code=303)
 
