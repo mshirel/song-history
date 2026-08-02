@@ -1055,17 +1055,51 @@ class Database:
         row = cursor.fetchone()
         return row[0] if row else 0
 
-    def query_all_leaders(self) -> list[dict[str, Any]]:
-        """Return all distinct leaders with their service counts."""
+    def query_all_leaders(
+        self,
+        sort: str = "service_count",
+        sort_dir: str = "DESC",
+        min_count: int = 2,
+    ) -> list[dict[str, Any]]:
+        """Return all distinct leaders with service and repeated-song counts.
+
+        ``repeated_song_count`` is the number of distinct songs the leader has
+        repeated — the row count of that leader's Top Songs page (#585).
+
+        The count is derived here, in one grouped query, rather than by calling
+        :meth:`query_leader_top_songs` once per row.  That method matches with
+        ``LIKE '%name%'`` while this one groups on an exact case-folded key, so
+        a per-row derivation would let a leader absorb the songs of anyone whose
+        name contains theirs (``Matt`` vs ``Matt Smith``) and the new column
+        would contradict the ``service_count`` beside it.  Deriving both from
+        the same ``GROUP BY`` key keeps them describing the same services, and
+        avoids an N+1 on a page that lists every leader.
+        """
+        order_col = _safe_order_by(sort, self._LEADERS_SORT_COLS)
+        direction = _safe_sort_dir(sort_dir)
         cursor = self._conn.cursor()
+        # Tie-break on leader so rows do not shuffle between requests — many
+        # leaders share a repeated-song count, especially 0.
         cursor.execute(
-            """
-            SELECT COALESCE(song_leader, 'Unknown') AS leader,
-                   COUNT(DISTINCT id) AS service_count
-            FROM services
-            GROUP BY LOWER(COALESCE(song_leader, 'Unknown'))
-            ORDER BY service_count DESC
-            """,
+            f"""
+            SELECT COALESCE(sv.song_leader, 'Unknown') AS leader,
+                   COUNT(DISTINCT sv.id) AS service_count,
+                   (
+                     SELECT COUNT(*) FROM (
+                       SELECT ss.song_id
+                       FROM service_songs ss
+                       JOIN services sv2 ON ss.service_id = sv2.id
+                       WHERE LOWER(COALESCE(sv2.song_leader, 'Unknown'))
+                             = LOWER(COALESCE(sv.song_leader, 'Unknown'))
+                       GROUP BY ss.song_id
+                       HAVING COUNT(DISTINCT ss.service_id) >= ?
+                     )
+                   ) AS repeated_song_count
+            FROM services sv
+            GROUP BY LOWER(COALESCE(sv.song_leader, 'Unknown'))
+            ORDER BY {order_col} {direction}, leader ASC
+            """,  # noqa: S608 - order_col/direction validated against an allowlist
+            (min_count,),
         )
         return [dict(row) for row in cursor.fetchall()]
 
@@ -1280,6 +1314,9 @@ class Database:
     )
     _SERVICES_SORT_COLS: frozenset[str] = frozenset(
         {"service_date", "service_name", "song_leader", "preacher", "song_count"}
+    )
+    _LEADERS_SORT_COLS: frozenset[str] = frozenset(
+        {"leader", "service_count", "repeated_song_count"}
     )
 
     def count_songs(self) -> int:

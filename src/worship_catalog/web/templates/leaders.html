@@ -3,15 +3,29 @@
 {% block content %}
 <h1>Song Leaders</h1>
 
+{# Mirrors the sort_th macro in _services_results.html rather than inventing a
+   second pattern — clickable header, aria-sort, ▲/▼ on the active column. #}
+{% macro sort_th(label, col, align="left") %}
+{% set next_dir = "asc" if (sort == col and sort_dir == "desc") else "desc" %}
+{% set aria_sort_val = ("ascending" if sort_dir == "asc" else "descending") if sort == col else "none" %}
+<th scope="col" style="text-align:{{ align }};white-space:nowrap;user-select:none;cursor:pointer;" aria-sort="{{ aria_sort_val }}">
+  <a href="/leaders?sort={{ col }}&sort_dir={{ next_dir }}"
+     style="color:inherit;text-decoration:none;">
+    {{ label }}{% if sort == col %}&nbsp;{{ '▲' if sort_dir == 'asc' else '▼' }}{% endif %}
+  </a>
+</th>
+{% endmacro %}
+
 {% if leaders %}
 <div class="card" style="padding:0;">
   <div class="table-wrap">
   <table>
-    <caption class="sr-only">Song leaders with service counts and links to leader-specific top songs</caption>
+    <caption class="sr-only">Song leaders with service counts, repeated-song counts and links to leader-specific top songs</caption>
     <thead>
       <tr>
-        <th scope="col">Leader</th>
-        <th scope="col" style="text-align:right;">Services</th>
+        {{ sort_th("Leader", "leader") }}
+        {{ sort_th("Services", "service_count", "right") }}
+        {{ sort_th("Repeated Songs", "repeated_song_count", "right") }}
         <th scope="col"><span class="sr-only">Actions</span></th>
       </tr>
     </thead>
@@ -20,6 +34,7 @@
       <tr>
         <td>{{ ldr.leader }}</td>
         <td style="text-align:right;">{{ ldr.service_count }}</td>
+        <td style="text-align:right;">{{ ldr.repeated_song_count }}</td>
         <td style="text-align:right;">
           <a href="/leaders/{{ ldr.leader | urlencode }}/top-songs">Top Songs →</a>
         </td>
