@@ -54,7 +54,7 @@ services:
     # along with them, so it moved from sha256:2df310d1 (the main-ref build) to
     # the digest below for identical source. The digest is what actually pins —
     # this is the drift #512 was about, observed rather than theorised.
-    image: ghcr.io/mshirel/song-history:sha-04c98ee0f5b3a7aa8da7bd5e8c7616c1214025f5@sha256:2f93a2c0820544cffd819970d050e7603a7b29c3388dddab5d771263d3dc4661
+    image: ghcr.io/mshirel/song-history:sha-3b05ee23b3a34f511060a2bad7f39ca5843bc820@sha256:2b77de42a72de2054e0514f3ce7fb023cd8d6a6fb058a33c72e04a15445efd9f
     restart: unless-stopped
     init: true
     # The app image ships a HEALTHCHECK that probes :8000 (#402); the watcher
@@ -97,7 +97,7 @@ services:
     # with the `watcher` service above; Dependabot (#502) bumps both.
     # Tag sha-<commit> = main@04c98ee (Sprint 8); see the note above on why the
     # digest, not the tag, is the pin.
-    image: ghcr.io/mshirel/song-history:sha-04c98ee0f5b3a7aa8da7bd5e8c7616c1214025f5@sha256:2f93a2c0820544cffd819970d050e7603a7b29c3388dddab5d771263d3dc4661
+    image: ghcr.io/mshirel/song-history:sha-3b05ee23b3a34f511060a2bad7f39ca5843bc820@sha256:2b77de42a72de2054e0514f3ce7fb023cd8d6a6fb058a33c72e04a15445efd9f
     restart: unless-stopped
     # Bound the public upload process on the 512 MB Pi host (#503). Uploads are
     # streamed to disk, so even the 200 MB maximum file fits this budget.
