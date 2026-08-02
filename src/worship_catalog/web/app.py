@@ -1294,10 +1294,29 @@ _MIN_SERVICES_FOR_MEANINGFUL_TRENDS = 5
 @app.get("/leaders", response_class=HTMLResponse)
 async def leaders_index(
     request: Request,
+    sort: str = "service_count",
+    sort_dir: str = "desc",
     db: Database = Depends(get_db),  # noqa: B008
 ) -> HTMLResponse:
-    leaders = db.query_all_leaders()
-    return templates.TemplateResponse(request, "leaders.html", {"leaders": leaders})
+    # Fall back to the default rather than 500 on a hand-edited query string,
+    # mirroring the songs and services reports.
+    try:
+        leaders = db.query_all_leaders(
+            sort=sort, sort_dir=sort_dir, min_count=_LEADER_MIN_SONG_COUNT
+        )
+    except ValueError:
+        sort, sort_dir = "service_count", "desc"
+        leaders = db.query_all_leaders(min_count=_LEADER_MIN_SONG_COUNT)
+    return templates.TemplateResponse(
+        request,
+        "leaders.html",
+        {
+            "leaders": leaders,
+            "sort": sort,
+            "sort_dir": sort_dir.lower(),
+            "min_count": _LEADER_MIN_SONG_COUNT,
+        },
+    )
 
 
 @app.get("/leaders/{leader_name}/top-songs", response_class=HTMLResponse)
