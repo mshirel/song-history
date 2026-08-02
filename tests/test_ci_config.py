@@ -129,6 +129,70 @@ class TestDependencyLockAuthority:
 
 
 @pytest.mark.skipif(not CI_PATH.exists(), reason="CI config not present")
+class TestScheduledRebuildFailureIsAnnounced:
+    """A failing weekly rebuild must tell someone (#598).
+
+    The Monday cron exists to pick up base-image security patches.  It failed on
+    2026-06-29, 07-06 and 07-13 with nothing raised, and the #595 breakage would
+    have recurred every week unnoticed — it was found only because a build was
+    dispatched by hand for an unrelated reason.  A security-patch job that can
+    fail silently provides the appearance of patching.
+    """
+
+    def _notify_job(self) -> dict:
+        jobs = yaml.safe_load(CI_PATH.read_text())["jobs"]
+        for name, job in jobs.items():
+            if "notify" in name:
+                return job
+        raise AssertionError("no notify job in ci.yml — a silent failure is the bug (#598)")
+
+    def test_a_notify_job_exists(self) -> None:
+        assert self._notify_job()
+
+    def test_it_fires_when_any_job_fails(self) -> None:
+        """`failure()` alone is not enough — a skipped dependency can swallow it."""
+        condition = str(self._notify_job()["if"])
+        assert "needs.*.result" in condition and "failure" in condition, (
+            "gate on contains(needs.*.result, 'failure') so a skipped job "
+            "(publish skips on branch pushes) cannot suppress the alert"
+        )
+        assert "always()" in condition, (
+            "without always() the job is itself skipped when an ancestor fails — "
+            "the alert would never run, which is exactly the bug being fixed"
+        )
+
+    def test_it_is_limited_to_scheduled_runs(self) -> None:
+        """PR and tag failures are already visible; issue-spamming them is noise."""
+        condition = str(self._notify_job()["if"])
+        assert "github.event_name == 'schedule'" in condition, (
+            "only the unattended cron needs an alert — a human is already watching "
+            "a PR or a release"
+        )
+
+    def test_it_can_write_the_alert(self) -> None:
+        permissions = self._notify_job().get("permissions", {})
+        assert permissions.get("issues") == "write", (
+            "opening an issue needs issues: write; without it the notifier 403s "
+            "and the failure stays silent"
+        )
+
+    def test_it_waits_for_the_jobs_it_reports_on(self) -> None:
+        needs = self._notify_job().get("needs", [])
+        for job in ("test", "security", "e2e", "publish"):
+            assert job in needs, f"notify must depend on {job} to observe its result"
+
+    def test_it_does_not_open_a_duplicate_every_week(self) -> None:
+        """An unbounded notifier files 52 issues a year and gets muted."""
+        run = " ".join(
+            step.get("run", "") for step in self._notify_job().get("steps", [])
+        )
+        assert "gh issue list" in run, (
+            "look for an existing open alert before creating one, or a persistent "
+            "failure buries the board and the alert stops being read"
+        )
+
+
+@pytest.mark.skipif(not CI_PATH.exists(), reason="CI config not present")
 class TestVulnerabilitySuppressionsExpire:
     """A suppressed CVE must carry a review date the build enforces (#592).
 
