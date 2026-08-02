@@ -16,6 +16,33 @@ from worship_catalog.db import Database
 
 _log = logging.getLogger(__name__)
 
+# The reproduction-type vocabulary written into copy_events and, from there,
+# straight into the CCLI report (#86). These were bare literals at their only call
+# site, so `reproduction_type="projecton"` would have been written to the database
+# and submitted to a licensing body with nothing to catch it.
+#
+# These are OUR terms, not CCLI's. CCLI's four categories are Print, Digital,
+# Record and Translation: `projection` is their Digital, `recording` is their
+# Record, and custom arrangements fold into Print rather than having a category of
+# their own. Mapping our vocabulary onto theirs on export is a separate change --
+# see docs/ccli-requirements.md, which also records that CCLI publishes no file
+# format at all, so this is a contract with ourselves and not with them.
+#
+# `print` and `translation` are listed because config/reporting.yml already names
+# them as configurable counts (defaulting to 0, not yet wired up -- #6). Leaving
+# them out would make the enum wrong the moment that config is honoured.
+REPRODUCTION_PROJECTION = "projection"
+REPRODUCTION_RECORDING = "recording"
+REPRODUCTION_PRINT = "print"
+REPRODUCTION_TRANSLATION = "translation"
+
+REPRODUCTION_TYPES: tuple[str, ...] = (
+    REPRODUCTION_PROJECTION,
+    REPRODUCTION_RECORDING,
+    REPRODUCTION_PRINT,
+    REPRODUCTION_TRANSLATION,
+)
+
 
 @dataclass
 class ImportedSong:
@@ -146,7 +173,7 @@ def run_import(
                 service_id=service_id,
                 song_id=song_id,
                 song_edition_id=edition_id,
-                reproduction_type="projection",
+                reproduction_type=REPRODUCTION_PROJECTION,
                 count=1,
                 reportable=True,
             )
@@ -155,7 +182,7 @@ def run_import(
                 service_id=service_id,
                 song_id=song_id,
                 song_edition_id=edition_id,
-                reproduction_type="recording",
+                reproduction_type=REPRODUCTION_RECORDING,
                 count=1,
                 reportable=True,
             )

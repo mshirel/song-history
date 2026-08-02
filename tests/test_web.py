@@ -4515,3 +4515,147 @@ class TestBuildDateFormatting:
     def test_format_build_date_invalid(self):
         from worship_catalog.web.app import _format_build_date
         assert _format_build_date("not-a-date") == "not-a-date"
+
+
+class TestCcliCsvContract:
+    """What the CCLI export guarantees — and what it deliberately does not (#86).
+
+    #86 asked for this CSV to be contract-tested "against the CCLI CSV
+    specification". Researched 2026-08-02: **there is no such specification.**
+    CCLI reports usage through a web portal — search a song, click REPORT SONG,
+    enter 0-9 in each of four category boxes — or machine-to-machine through
+    auto-reporting integrations. No published column list, no schema, no sample
+    file, and a third-party vendor states outright that CCLI "does not support or
+    allow a 'file upload' facility for copyright reporting". Full write-up with
+    sources in docs/ccli-requirements.md.
+
+    So these tests assert **this project's own contract**, which is the only thing
+    that can honestly be asserted. A test claiming conformance to an external spec
+    that does not exist would report confidence about legal compliance while
+    proving nothing but self-consistency — worse than no test at all.
+
+    The columns #86 proposed (Words By / Music By / Arranger / Publisher) are song
+    *credits*: CCLI already holds them and never asks a church to report them, and
+    that proposal drops the CCLI song number, which is the one identifier CCLI and
+    every auto-reporting integration key on. Asserting them would have failed
+    immediately and then been "fixed" by changing the export to match an invented
+    format.
+
+    Header names, order and column count are already pinned by
+    TestCsvHeaderContracts above; these cover what that does not.
+    """
+
+    RANGE = {"start_date": "2020-01-01", "end_date": "2030-12-31"}
+
+    def _rows(self, client):
+        import csv
+        import io
+
+        resp = client.post("/reports/ccli", data=self.RANGE)
+        assert resp.status_code == 200
+        return resp, list(csv.DictReader(io.StringIO(resp.text)))
+
+    def test_dates_are_iso_8601(self, client):
+        """A locale-formatted date would be ambiguous in a compliance record.
+
+        03/04/2026 is two different days depending on who reads it. The portal is
+        filled in by hand from this file, so the date has to be unambiguous.
+        """
+        import re
+
+        _, rows = self._rows(client)
+        assert rows, "fixture should yield at least one CCLI row"
+        for row in rows:
+            assert re.fullmatch(r"\d{4}-\d{2}-\d{2}", row["Date"]), (
+                f"Date {row['Date']!r} is not ISO 8601 (YYYY-MM-DD)"
+            )
+
+    def test_filename_carries_the_iso_range(self, client):
+        """The file leaves the app and lands in a downloads folder.
+
+        Without the range in the name, two exports for different periods are
+        indistinguishable — and submitting the wrong period is a reporting error
+        nobody would catch.
+        """
+        resp = client.post("/reports/ccli", data=self.RANGE)
+        cd = resp.headers.get("content-disposition", "")
+        assert "ccli_report_2020-01-01_2030-12-31.csv" in cd, cd
+
+    def test_ccli_number_column_is_always_present_even_when_empty(self, client):
+        """Blank, never missing.
+
+        CCLI's portal keys on the song number, and Planning Center's auto-reporting
+        silently drops songs that lack one. A row that omits the column entirely
+        would shift every later field left; a blank one is honest about what is not
+        known yet. `spec.md` puts the mapping out of scope for v1, so blanks are
+        expected — their absence is not.
+        """
+        _, rows = self._rows(client)
+        for row in rows:
+            assert "CCLI#" in row, f"CCLI# column missing from row: {row}"
+            assert row["CCLI#"] is not None
+
+    def test_reproduction_type_is_drawn_from_the_closed_vocabulary(self, client):
+        """A typo must not reach a licensing document.
+
+        The values were bare string literals at their only call site, so
+        `reproduction_type="projecton"` would have written silently to the database
+        and straight into this report. They are now module constants, and this
+        pins the CSV to that vocabulary.
+
+        Note these are OUR terms, not CCLI's. CCLI's four categories are Print,
+        Digital, Record and Translation — `projection` maps to Digital and
+        `recording` to Record. Mapping on export is a separate change; see
+        docs/ccli-requirements.md.
+        """
+        from worship_catalog.import_service import REPRODUCTION_TYPES
+
+        _, rows = self._rows(client)
+        seen = {row["Reproduction Type"] for row in rows}
+        assert seen, "fixture should yield at least one CCLI row"
+        assert seen <= set(REPRODUCTION_TYPES), (
+            f"CSV contains reproduction types outside the known vocabulary: "
+            f"{seen - set(REPRODUCTION_TYPES)}"
+        )
+
+    def test_title_is_the_display_title_not_the_canonical_form(self, client):
+        """Canonical titles are lowercased, punctuation-stripped matching keys.
+
+        Submitting them would make a licensing report unreadable, and worse, hard
+        to match against CCLI's catalogue during the portal search.
+        """
+        _, rows = self._rows(client)
+        titles = [row["Title"] for row in rows]
+        assert any(t != t.lower() for t in titles), (
+            f"every title is lowercase, which suggests canonical forms leaked "
+            f"into the report: {titles}"
+        )
+
+    def test_response_is_utf8_csv(self, client):
+        """Pinned because song titles carry non-ASCII characters.
+
+        Curly apostrophes and accented names arrive from the source decks; a
+        mis-declared encoding turns them into mojibake in a document that goes to
+        a licensing body.
+        """
+        resp = client.post("/reports/ccli", data=self.RANGE)
+        assert resp.headers["content-type"].startswith("text/csv")
+        resp.text.encode("utf-8").decode("utf-8")
+
+    def test_empty_range_returns_headers_only_not_an_error(self, client):
+        """"Nothing to report" is a real CCLI answer, not a failure.
+
+        CCLI asks churches to confirm nothing was used rather than stay silent, so
+        an empty period must produce a valid, well-formed file with the header row
+        intact — not a 404, a 500, or a zero-byte download.
+        """
+        import csv
+        import io
+
+        resp = client.post(
+            "/reports/ccli", data={"start_date": "1990-01-01", "end_date": "1990-12-31"}
+        )
+        assert resp.status_code == 200
+        rows = list(csv.reader(io.StringIO(resp.text)))
+        assert len(rows) == 1, f"expected header row only, got {rows}"
+        assert rows[0][0] == "Date"
