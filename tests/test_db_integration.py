@@ -3551,8 +3551,8 @@ class TestServiceExclusions:
         assert len(rows) == 1 and rows[0]["service_slot"] == "evening"
 
 
-class TestDeleteServiceSong:
-    """Remove one misidentified song from a service, not the whole service (#323).
+class TestDeleteSetlistEntry:
+    """Remove one misidentified entry from a service, not the whole service (#323).
 
     The extractor classifies slides, and it gets things wrong: service 36
     (2026-03-15 PM) carried three non-song entries — a scripture reference and
@@ -3560,13 +3560,22 @@ class TestDeleteServiceSong:
     `cleanup delete-service` plus a full re-import, which needs CLI access the
     church admin does not have.
 
-    The delete has to be surgical in two directions. It must remove the copy
-    events as well as the setlist row, because a copy event that outlives its
-    setlist entry keeps the phantom song in the CCLI report — the one place it
-    does real harm. And it must leave the `songs` row alone: songs are shared
-    across services, so deleting the row would erase the song's history
-    everywhere it legitimately appears.
+    The delete has to be surgical in three directions. It must remove the copy
+    events, because a copy event that outlives its setlist row keeps the phantom
+    song in the CCLI report — the one place it does real harm. It must leave the
+    `songs` row alone, because songs are shared across services. And it must
+    remove exactly ONE occurrence: `service_songs` is UNIQUE(service_id, ordinal),
+    not UNIQUE(service_id, song_id).
     """
+
+    def _entry_id(self, db, service_id, song_id, ordinal=None):
+        rows = [
+            r
+            for r in db.query_service_songs(service_id)
+            if r["song_id"] == song_id and (ordinal is None or r["ordinal"] == ordinal)
+        ]
+        assert rows, f"no setlist entry for song {song_id} in service {service_id}"
+        return rows[0]["entry_id"]
 
     def test_removes_the_setlist_row_and_its_copy_events(self, tmp_path):
         from worship_catalog.db import Database
@@ -3588,7 +3597,7 @@ class TestDeleteServiceSong:
         db.insert_or_get_copy_event(svc, song_b, "projection")
         db.insert_or_get_copy_event(svc, song_b, "recording")
 
-        assert db.delete_service_song(svc, song_b) is True
+        assert db.delete_setlist_entry(svc, self._entry_id(db, svc, song_b)) is True
 
         remaining = {s["song_id"] for s in db.query_service_songs(svc)}
         assert remaining == {song_a}, "the misidentified song is still in the setlist"
@@ -3600,8 +3609,15 @@ class TestDeleteServiceSong:
         )
         db.close()
 
-    def test_leaves_the_song_row_alone_because_songs_are_shared(self, tmp_path):
-        """Deleting from one service must not erase the song's other appearances."""
+    def test_other_services_keep_the_song_AND_its_copy_events(self, tmp_path):
+        """Both halves matter, and the copy-events half is the one that was missed.
+
+        A review mutation that dropped the `service_id` predicate from the
+        copy-events DELETE survived the whole suite, because the isolation test
+        asserted only on `service_songs`. That mutation would erase a song's
+        reporting in EVERY service it has ever appeared in — the mirror image of
+        the harm this feature exists to prevent, and silent.
+        """
         from worship_catalog.db import Database
 
         db = Database(tmp_path / "t.db")
@@ -3619,15 +3635,59 @@ class TestDeleteServiceSong:
         db.insert_or_get_copy_event(svc1, song, "projection")
         db.insert_or_get_copy_event(svc2, song, "projection")
 
-        db.delete_service_song(svc1, song)
+        db.delete_setlist_entry(svc1, self._entry_id(db, svc1, song))
 
         assert [s["song_id"] for s in db.query_service_songs(svc2)] == [song], (
             "the other service lost the song too"
         )
+        surviving = [
+            e
+            for e in db.query_copy_events("2020-01-01", "2030-12-31")
+            if e["service_date"] == "2026-03-22"
+        ]
+        assert surviving, (
+            "the other service's COPY EVENTS were deleted — its CCLI reporting "
+            "for this song is gone"
+        )
         assert db.query_song_by_id(song) is not None, "the shared song row was deleted"
         db.close()
 
-    def test_returns_false_when_the_song_is_not_in_that_service(self, tmp_path):
+    def test_removes_one_occurrence_only_when_a_song_appears_twice(self, tmp_path):
+        """The case the feature exists for, and the one keying on song_id broke.
+
+        A blank slide mid-song closes a group, so the extractor renders one song
+        as two entries with the same song_id. Deleting by song_id removed BOTH —
+        the admin fixing the spurious half silently lost the real performance,
+        dropping it from the CCLI report.
+        """
+        from worship_catalog.db import Database
+
+        db = Database(tmp_path / "t.db")
+        db.connect()
+        db.init_schema()
+        song = db.insert_or_get_song("amazing grace", "Amazing Grace")
+        svc = db.insert_or_update_service(
+            service_date="2026-03-15", service_name="AM", source_file="a", source_hash="a"
+        )
+        db.insert_service_song(svc, song, ordinal=1)
+        db.insert_service_song(svc, song, ordinal=4)
+        db.insert_or_get_copy_event(svc, song, "projection")
+
+        db.delete_setlist_entry(svc, self._entry_id(db, svc, song, ordinal=4))
+
+        ordinals = [s["ordinal"] for s in db.query_service_songs(svc)]
+        assert ordinals == [1], f"expected only ordinal 4 removed, setlist is {ordinals}"
+        assert [
+            e
+            for e in db.query_copy_events("2020-01-01", "2030-12-31")
+            if e["display_title"] == "Amazing Grace"
+        ], (
+            "the copy events were removed while the song is still in the setlist — "
+            "a real performance would vanish from the CCLI report"
+        )
+        db.close()
+
+    def test_returns_false_when_the_entry_is_not_in_that_service(self, tmp_path):
         """So the route can 404 instead of silently reporting success."""
         from worship_catalog.db import Database
 
@@ -3638,7 +3698,61 @@ class TestDeleteServiceSong:
         svc = db.insert_or_update_service(
             service_date="2026-03-15", service_name="AM", source_file="a", source_hash="a"
         )
+        other = db.insert_or_update_service(
+            service_date="2026-03-22", service_name="AM", source_file="b", source_hash="b"
+        )
+        db.insert_service_song(svc, song, ordinal=1)
+        entry = self._entry_id(db, svc, song)
 
-        assert db.delete_service_song(svc, song) is False
-        assert db.delete_service_song(9999, song) is False
+        assert db.delete_setlist_entry(svc, 9999) is False
+        # A real entry id, but belonging to a different service — the service_id
+        # predicate is what stops one service deleting another's rows.
+        assert db.delete_setlist_entry(other, entry) is False
+        assert len(db.query_service_songs(svc)) == 1
+        db.close()
+
+    def test_a_false_return_has_not_already_deleted_the_copy_events(self, tmp_path):
+        """A 404 must never follow a committed destructive write (#617 review)."""
+        from worship_catalog.db import Database
+
+        db = Database(tmp_path / "t.db")
+        db.connect()
+        db.init_schema()
+        song = db.insert_or_get_song("amazing grace", "Amazing Grace")
+        svc = db.insert_or_update_service(
+            service_date="2026-03-15", service_name="AM", source_file="a", source_hash="a"
+        )
+        db.insert_or_get_copy_event(svc, song, "projection")
+
+        assert db.delete_setlist_entry(svc, 12345) is False
+
+        events = db.query_copy_events("2020-01-01", "2030-12-31")
+        assert [e for e in events if e["display_title"] == "Amazing Grace"], (
+            "the copy events were deleted even though the method reported that "
+            "the entry was not in this service"
+        )
+        db.close()
+
+    def test_an_entry_with_no_copy_events_still_reports_success(self, tmp_path):
+        """Pins WHICH statement the return value comes from.
+
+        Every other fixture gives each setlist row a copy event, so nothing
+        distinguished rowcount read from the service_songs DELETE (correct) from
+        the copy_events DELETE (wrong). Under the wrong reading this row would be
+        deleted and then reported as False, and the route would answer 404 while
+        the data was gone.
+        """
+        from worship_catalog.db import Database
+
+        db = Database(tmp_path / "t.db")
+        db.connect()
+        db.init_schema()
+        song = db.insert_or_get_song("amazing grace", "Amazing Grace")
+        svc = db.insert_or_update_service(
+            service_date="2026-03-15", service_name="AM", source_file="a", source_hash="a"
+        )
+        db.insert_service_song(svc, song, ordinal=1)  # no copy event at all
+
+        assert db.delete_setlist_entry(svc, self._entry_id(db, svc, song)) is True
+        assert db.query_service_songs(svc) == []
         db.close()

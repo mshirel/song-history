@@ -4692,7 +4692,7 @@ class TestServiceSongDeletion:
         import re
 
         body = client.get("/services/1", auth=self._CREDS).text
-        return re.findall(r"/services/1/songs/(\d+)/delete", body)
+        return re.findall(r"/services/1/setlist/(\d+)/delete", body)
 
     def test_delete_removes_the_song_from_the_service_page(self, auth_client):
         before = auth_client.get("/services/1").text
@@ -4709,7 +4709,7 @@ class TestServiceSongDeletion:
         auth_client._csrf_token = auth_client._inner.cookies.get("csrftoken")
 
         resp = auth_client.post(
-            "/services/1/songs/2/delete", auth=self._CREDS, follow_redirects=False
+            "/services/1/setlist/2/delete", auth=self._CREDS, follow_redirects=False
         )
         assert resp.status_code in (302, 303), resp.status_code
         assert resp.headers["location"].endswith("/services/1")
@@ -4724,7 +4724,7 @@ class TestServiceSongDeletion:
         import csv
         import io
 
-        auth_client.post("/services/1/songs/2/delete", auth=self._CREDS)
+        auth_client.post("/services/1/setlist/2/delete", auth=self._CREDS)
         resp = auth_client.post(
             "/reports/ccli", data={"start_date": "2020-01-01", "end_date": "2030-12-31"}
         )
@@ -4734,13 +4734,13 @@ class TestServiceSongDeletion:
 
     def test_delete_requires_auth(self, auth_client):
         """A destructive write on a publicly reachable site. Same gate as /upload."""
-        assert auth_client.post("/services/1/songs/2/delete").status_code == 401
+        assert auth_client.post("/services/1/setlist/2/delete").status_code == 401
         assert "How Great Thou Art" in auth_client.get("/services/1").text
 
-    def test_delete_of_a_song_not_in_the_service_is_404(self, auth_client):
+    def test_delete_of_an_entry_not_in_the_service_is_404(self, auth_client):
         assert (
             auth_client.post(
-                "/services/1/songs/9999/delete", auth=self._CREDS
+                "/services/1/setlist/9999/delete", auth=self._CREDS
             ).status_code
             == 404
         )
@@ -4748,7 +4748,7 @@ class TestServiceSongDeletion:
     def test_delete_on_an_unknown_service_is_404(self, auth_client):
         assert (
             auth_client.post(
-                "/services/9999/songs/1/delete", auth=self._CREDS
+                "/services/9999/setlist/1/delete", auth=self._CREDS
             ).status_code
             == 404
         )
@@ -4757,30 +4757,47 @@ class TestServiceSongDeletion:
         """Same doctrine as the missing-services report (#483): the page stays
         publicly readable, the edit controls do not appear."""
         body = auth_client.get("/services/1").text
-        assert "/songs/2/delete" not in body
+        assert "/setlist/2/delete" not in body
         body_authed = auth_client.get("/services/1", auth=self._CREDS).text
-        assert "/songs/2/delete" in body_authed
+        assert "/setlist/2/delete" in body_authed
 
-    def test_delete_control_asks_for_confirmation(self, auth_client):
-        """It is irreversible without a re-import, and the source file is gone
-        after upload (#138) — so a misclick has no cheap undo."""
+    def test_delete_control_is_wired_to_its_confirming_script(self, auth_client):
+        """It is irreversible without a re-import, and the source deck is deleted
+        after upload (#138), so a misclick has no cheap undo.
+
+        This used to assert `"confirm" in body` — which was true of an inline
+        handler that CSP refuses to execute, i.e. it passed while no confirmation
+        could possibly appear. It now asserts the control is bound to the external
+        script that does the confirming; TestServiceSongDeleteControlEscaping
+        covers what that script contains.
+        """
         body = auth_client.get("/services/1", auth=self._CREDS).text
-        assert "confirm" in body.lower()
+        assert "/static/service_detail.js" in body
+        assert "onsubmit" not in body, (
+            "an inline handler is silently blocked by CSP script-src 'self'"
+        )
 
 
 class TestServiceSongDeleteControlEscaping:
-    """Song titles are untrusted, and the delete control must survive them (#323).
+    """The delete control must survive untrusted titles AND actually work (#323).
 
-    Titles come from OCR and from PowerPoint decks, so they carry whatever the
-    slide carried. The confirm() message originally interpolated the title
-    straight into a JavaScript string inside an HTML attribute, which does not
-    work: Jinja autoescaping is HTML escaping, so an apostrophe becomes `&#39;`,
-    the HTML parser decodes it back to `'` BEFORE the attribute is parsed as
-    JavaScript, and the string literal terminates early.
+    Three separate ways this control was silently broken, all found in a real
+    browser and none visible from a passing test suite:
 
-    That is not a theoretical title. "I'll Fly Away" is a standard hymn — it
-    would have broken the handler, so the confirm never fires and the form
-    submits unconfirmed, on the one control in the app that destroys data.
+    1. The confirm() message interpolated the title into a JavaScript string
+       inside an HTML attribute. Jinja autoescaping is HTML escaping, so an
+       apostrophe becomes `&#39;` and the HTML parser decodes it back to `'`
+       BEFORE the attribute is parsed as JS — the string terminates early.
+       "I'll Fly Away" is enough; `');alert(1);//` executes.
+    2. A plain `<form method="post">` sends no `X-CSRFToken` header, and the
+       middleware reads the token from nowhere else. Every browser click was
+       403. A hidden form field would not have helped.
+    3. `script-src 'self'` refuses inline event handlers, so the confirm never
+       ran — meaning once (2) was fixed a misclick would destroy data silently.
+
+    The test client sets the CSRF header itself and executes no JavaScript, so
+    it cannot see (2) or (3). These tests assert the structural properties that
+    make those failures impossible instead.
     """
 
     _CREDS = ("highland", "s3cret")
@@ -4817,43 +4834,75 @@ class TestServiceSongDeleteControlEscaping:
         reload(app_module)
         return CsrfAwareClient(TestClient(app_module.app))
 
-    def _onsubmit_lines(self, client):
-        body = client.get("/services/1", auth=self._CREDS).text
-        return [ln for ln in body.splitlines() if "onsubmit" in ln]
+    def test_no_template_uses_an_inline_event_handler(self):
+        """The guard the repo did not have.
 
-    def test_an_apostrophe_title_does_not_break_out_of_the_js_string(
+        `TestUploadFormCSPCompatible` scans for inline <script> tags, which is why
+        an inline `onsubmit` slipped past it. CSP `script-src 'self'` blocks inline
+        event handlers too, and hashes do not apply to them — only `unsafe-hashes`
+        would, and the app does not send it. Review #247 was the same defect class.
+        """
+        import re
+        from pathlib import Path
+
+        import worship_catalog.web as web_pkg
+
+        templates = Path(web_pkg.__file__).parent / "templates"
+        offenders = []
+        for tpl in templates.glob("*.html"):
+            for i, line in enumerate(tpl.read_text().splitlines(), 1):
+                if re.search(r"\son(?:submit|click|change|input|load|error)\s*=", line):
+                    offenders.append(f"{tpl.name}:{i}: {line.strip()[:90]}")
+        assert not offenders, (
+            "inline event handlers are blocked by CSP script-src 'self' and will "
+            "silently never run:\n" + "\n".join(offenders)
+        )
+
+    def test_the_delete_form_carries_no_inline_handler(self, hostile_client):
+        body = hostile_client.get("/services/1", auth=self._CREDS).text
+        form_lines = [ln for ln in body.splitlines() if "/delete" in ln]
+        assert form_lines, "no delete control rendered for an authenticated viewer"
+        for line in form_lines:
+            assert "onsubmit" not in line, line
+
+    def test_the_editor_page_loads_the_script_that_binds_the_control(
         self, hostile_client
     ):
-        lines = self._onsubmit_lines(hostile_client)
-        assert len(lines) == 2, lines
-        for line in lines:
-            assert "&#39;" not in line, (
-                "the title is being interpolated into the onsubmit JavaScript; "
-                "the HTML parser decodes &#39; to an apostrophe before the "
-                f"attribute is parsed as JS, terminating the string: {line}"
-            )
-
-    def test_a_hostile_title_cannot_reach_the_js_source(self, hostile_client):
+        """Without it there is no confirm and no CSRF header — a dead button."""
         body = hostile_client.get("/services/1", auth=self._CREDS).text
-        # Unescaped anywhere on the page would be the plain XSS.
+        assert "/static/service_detail.js" in body
+        public = hostile_client.get("/services/1").text
+        assert "/static/service_detail.js" not in public, (
+            "the script is only useful to an editor and should not load publicly"
+        )
+
+    def test_the_script_sends_the_csrf_header(self, hostile_client):
+        """The one property that makes the endpoint reachable from a browser.
+
+        The middleware reads the token only from the X-CSRFToken header; a form
+        field is ignored. Asserted on the served asset, not the source tree, so a
+        packaging mistake is caught too.
+        """
+        resp = hostile_client.get("/static/service_detail.js")
+        assert resp.status_code == 200, resp.status_code
+        assert "X-CSRFToken" in resp.text
+        assert "csrftoken" in resp.text
+
+    def test_the_title_travels_in_a_data_attribute_html_escaped(self, hostile_client):
+        body = hostile_client.get("/services/1", auth=self._CREDS).text
+        assert 'data-song-title="I&#39;ll Fly Away"' in body
+        assert 'data-song-title="&#39;);alert(1);//"' in body
         assert "');alert(1);//" not in body, (
             "an unescaped hostile title reached the page source"
         )
-        # And it must not appear in the JS attribute even escaped: the HTML parser
-        # decodes entities before the attribute is parsed as JavaScript, so an
-        # escaped payload there still executes.
-        for line in self._onsubmit_lines(hostile_client):
-            assert "alert" not in line, f"title reached the onsubmit JS: {line}"
-        # It IS present, HTML-escaped, in the data attribute — which is inert.
-        assert "data-song-title=\"&#39;);alert(1);//\"" in body
 
-    def test_the_title_is_still_shown_to_the_user_in_the_confirm(self, hostile_client):
-        """The escaping fix must not silently drop the title from the message —
-        'Remove this song?' with no name is how the wrong row gets deleted."""
-        lines = self._onsubmit_lines(hostile_client)
-        for line in lines:
-            assert "dataset.songTitle" in line, (
-                f"confirm no longer names the song being removed: {line}"
-            )
-        body = hostile_client.get("/services/1", auth=self._CREDS).text
-        assert 'data-song-title="I&#39;ll Fly Away"' in body
+    def test_the_confirm_still_names_the_song(self):
+        """The escaping fix must not solve the problem by dropping the title —
+        "Remove this song?" with no name is how the wrong row gets deleted."""
+        from pathlib import Path
+
+        import worship_catalog.web as web_pkg
+
+        js = (Path(web_pkg.__file__).parent / "static" / "service_detail.js").read_text()
+        assert "data-song-title" in js
+        assert "confirm" in js

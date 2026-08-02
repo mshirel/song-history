@@ -1147,38 +1147,83 @@ class Database:
 
         self._maybe_commit()
 
-    def delete_service_song(self, service_id: int, song_id: int) -> bool:
-        """Remove one song from one service, and its copy events with it (#323).
+    def delete_setlist_entry(self, service_id: int, entry_id: int) -> bool:
+        """Remove ONE setlist entry from a service, and its copy events (#323).
 
-        Returns True if a setlist row was removed, False if that song was not in
-        that service — so a caller can 404 rather than report a success that did
+        Returns True if a row was removed, False if that entry is not in that
+        service — so a caller can 404 rather than report a success that did
         nothing.
+
+        KEYED ON THE SETLIST ROW, NOT ON THE SONG. `service_songs` is
+        UNIQUE(service_id, ordinal), not UNIQUE(service_id, song_id), so one song
+        can legitimately appear several times in one service — and it does exactly
+        when the extractor is wrong in the way this feature exists to correct: a
+        blank slide mid-song closes a group, so one song becomes two entries with
+        the same song_id. Deleting by song_id removed BOTH, so the admin fixing
+        the spurious half silently lost the real one, dropping a genuine
+        performance from the CCLI report. Discovered in review, reproduced
+        directly.
+
+        Copy events are removed only when the LAST entry for that song goes. They
+        are keyed on (service_id, song_id) with no ordinal, so one row covers all
+        the occurrences; deleting them while another entry survives would erase
+        that song's reporting for the service it is still in.
 
         Two things this deliberately does NOT do:
 
         * It does not touch the ``songs`` row. Songs are shared across services;
           deleting it would erase the song's history everywhere it legitimately
-          appears, to fix one slide that was misread.
+          appears, to fix one slide that was misread. A song left with no
+          appearances at all is tracked separately (#618).
         * It does not renumber the remaining ``ordinal`` values. They are unique
           per service but need not be contiguous, and a gap is honest — it says a
-          slide was removed. Renumbering would also have to happen inside this
-          transaction to avoid violating UNIQUE(service_id, ordinal) halfway.
-
-        Copy events go first and are not optional. A copy event that outlives its
-        setlist row keeps the phantom song in the CCLI report, which is the one
-        place a misidentified song does real harm — it would be submitted to a
-        licensing body.
+          slide was removed. (A later re-import is unaffected: ``run_import``
+          calls ``delete_service_data``, which drops the service row entirely and
+          mints a fresh id, so a gap can never collide with the UNIQUE.)
         """
         cursor = self._conn.cursor()
+        row = cursor.execute(
+            "SELECT song_id FROM service_songs WHERE id = ? AND service_id = ?",
+            (entry_id, service_id),
+        ).fetchone()
+        if row is None:
+            return False
+        song_id = row["song_id"]
+
+        # ORDER MATTERS. The setlist row goes FIRST and its rowcount decides
+        # whether anything else happens. Deleting the copy events first would mean
+        # a caller that gets False -- and therefore raises 404 "not in this
+        # service" -- could already have committed the destruction of that song's
+        # CCLI copy events. A 404 that has silently deleted data is the worst
+        # possible signal to an admin correcting records by hand: nothing tells
+        # them a re-import is needed. Nothing at the schema level enforces the
+        # pairing either (copy_events has foreign keys to services, songs and
+        # song_editions, but not to service_songs).
         cursor.execute(
-            "DELETE FROM copy_events WHERE service_id = ? AND song_id = ?",
-            (service_id, song_id),
-        )
-        cursor.execute(
-            "DELETE FROM service_songs WHERE service_id = ? AND song_id = ?",
-            (service_id, song_id),
+            "DELETE FROM service_songs WHERE id = ? AND service_id = ?",
+            (entry_id, service_id),
         )
         removed = cursor.rowcount > 0
+
+        if removed:
+            remaining = cursor.execute(
+                "SELECT COUNT(*) AS n FROM service_songs "
+                "WHERE service_id = ? AND song_id = ?",
+                (service_id, song_id),
+            ).fetchone()["n"]
+            if remaining == 0:
+                # Not optional. A copy event that outlives the last setlist row
+                # keeps the phantom song in the CCLI report, which is where a
+                # misidentified song actually does harm -- it gets submitted to a
+                # licensing body. Both predicates are required: without
+                # service_id this would erase that song's copy events in EVERY
+                # service it has ever appeared in.
+                cursor.execute(
+                    "DELETE FROM copy_events WHERE service_id = ? AND song_id = ?",
+                    (service_id, song_id),
+                )
+        # sqlite3 runs at its default isolation_level, so these statements share
+        # one implicit transaction: a process death between them cannot half-commit.
         self._maybe_commit()
         return removed
 
@@ -1717,7 +1762,7 @@ class Database:
         cursor = self._conn.cursor()
         cursor.execute(
             """
-            SELECT ss.ordinal, ss.occurrences,
+            SELECT ss.id AS entry_id, ss.ordinal, ss.occurrences,
                    s.id AS song_id, s.display_title, s.canonical_title,
                    se.publisher, se.words_by, se.music_by, se.arranger, se.copyright_notice,
                    GROUP_CONCAT(ce.reproduction_type, ', ') AS copy_types

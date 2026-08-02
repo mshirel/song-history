@@ -89,17 +89,22 @@
            and the uploaded deck is deleted after import (#138), so a misclick has
            no cheap undo -- hence the confirm. #}
         <td style="text-align:center;">
-          {# The title goes in a DATA ATTRIBUTE and is read back with dataset, never
-             interpolated into the JS string. Jinja autoescaping is HTML escaping: an
-             apostrophe becomes &#39;, the HTML parser decodes it back to ' BEFORE the
-             attribute is parsed as JavaScript, and the string literal terminates early.
-             "I'll Fly Away" alone would break the handler so the confirm never runs and
-             the form submits unconfirmed; a title of ');alert(1);// would execute. Titles
-             come from OCR and PowerPoint decks, so they are not trusted input. #}
+          {# No inline onsubmit and no fetch here — both live in
+             /static/service_detail.js, which binds the confirm AND attaches the
+             X-CSRFToken header. A plain form POST is rejected 403 (the middleware
+             reads the token only from the header, never a form field) and an inline
+             handler is refused by CSP script-src 'self'. Either one alone breaks
+             this control silently.
+
+             The title travels in a DATA ATTRIBUTE, an HTML context where Jinja's
+             autoescaping is the right escaping. It must never be interpolated into
+             JavaScript: the HTML parser decodes &#39; back to an apostrophe before
+             the attribute is parsed as JS, so "I'll Fly Away" alone broke the
+             handler and a title of ');alert(1);// executed. Titles come from OCR and
+             PowerPoint decks and are not trusted. #}
           <form method="post"
-                action="/services/{{ service.id }}/songs/{{ song.song_id }}/delete"
+                action="/services/{{ service.id }}/setlist/{{ song.entry_id }}/delete"
                 data-song-title="{{ song.display_title }}"
-                onsubmit="return confirm('Remove \u0022' + this.dataset.songTitle + '\u0022 from this service?\n\nThis also removes it from the CCLI report. It cannot be undone without re-uploading the slide deck.');"
                 style="display:inline;">
             <button type="submit"
                     class="btn-link-danger"
@@ -117,5 +122,7 @@
   </div>
 </div>
 {% endif %}
+
+{% if can_edit %}<script src="/static/service_detail.js"></script>{% endif %}
 
 {% endblock %}
