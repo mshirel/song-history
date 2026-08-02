@@ -1,6 +1,8 @@
 """Tests for CI configuration — ensure action pins and steps stay current."""
 
+import re
 import subprocess
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -124,6 +126,68 @@ class TestDependencyLockAuthority:
         assert "pip-compile" not in ci, (
             "pip-compile independently resolves dependencies and must not be a lock validator"
         )
+
+
+@pytest.mark.skipif(not CI_PATH.exists(), reason="CI config not present")
+class TestVulnerabilitySuppressionsExpire:
+    """A suppressed CVE must carry a review date the build enforces (#592).
+
+    `pip-audit --ignore-vuln CVE-2026-3219` was carried indefinitely with the
+    comment "re-evaluate at every Dependabot bump of requirements.lock".  That
+    trigger could never fire: no Dependabot bump had ever merged (#589 shows
+    they were deadlocked), and requirements.lock stopped being a committed file
+    entirely.  A permanently-suppressed CVE whose review trigger cannot fire is
+    indistinguishable from not scanning for it.
+    """
+
+    # Any suppression must carry `review-by=YYYY-MM-DD` in its command or comment.
+    _REVIEW_BY = re.compile(r"review-by=(\d{4}-\d{2}-\d{2})")
+
+    def _ignore_lines(self) -> list[str]:
+        return [ln for ln in CI_PATH.read_text().splitlines() if "--ignore-vuln" in ln]
+
+    def test_cve_2026_3219_suppression_is_gone(self) -> None:
+        """pip-audit reports no vulnerabilities without it — nothing left to suppress.
+
+        Asserts on the *flag*, not the string: the comment above the step still
+        names the CVE to explain why the suppression was dropped, and forbidding
+        that would punish documenting the decision.
+        """
+        assert "--ignore-vuln CVE-2026-3219" not in CI_PATH.read_text(), (
+            "pip-audit is clean without this suppression; carrying it hides any "
+            "future advisory against the same package"
+        )
+
+    def test_every_suppression_carries_a_review_date(self) -> None:
+        for line in self._ignore_lines():
+            assert self._REVIEW_BY.search(line), (
+                f"suppressed CVE has no machine-checkable expiry: {line.strip()}"
+            )
+
+    def test_no_suppression_is_past_its_review_date(self) -> None:
+        """A lapsed suppression fails the build instead of ageing silently."""
+        today = date.today()
+        for line in CI_PATH.read_text().splitlines():
+            match = self._REVIEW_BY.search(line)
+            if match:
+                review_by = date.fromisoformat(match.group(1))
+                assert review_by >= today, (
+                    f"CVE suppression lapsed on {review_by} — re-evaluate it or "
+                    f"re-date it deliberately: {line.strip()}"
+                )
+
+    def test_no_reference_to_the_closed_tracking_issue(self) -> None:
+        """#408 was closed 2026-05-25 while the suppression it tracked stayed."""
+        assert "Tracked by #408" not in CI_PATH.read_text(), (
+            "the suppression's tracking issue is closed — a comment pointing at a "
+            "closed issue is how this went unreviewed for two months"
+        )
+
+    def test_pip_audit_still_runs_and_can_fail(self) -> None:
+        """Removing the suppression must not have removed the scan."""
+        ci = CI_PATH.read_text()
+        assert "pip-audit --skip-editable" in ci, "the dependency audit must still run"
+        assert "--exit-zero" not in ci, "pip-audit must remain able to fail the build"
 
 
 @pytest.mark.skipif(not CI_PATH.exists(), reason="CI config not present")
