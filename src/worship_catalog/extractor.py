@@ -610,6 +610,10 @@ def _group_song_slides_with_score_ocr(
     score_canonical: str | None = None
     score_slides: list[Slide] = []
     score_info: ScoreGroupInfo | None = None
+    # Slides appended to the CURRENT score group without ever being classified,
+    # because the shared budget ran out (#554). Reset with the group, not with the
+    # run: a later group that fits inside the budget must not inherit the warning.
+    unverified_tail: list[Slide] = []
 
     def flush_ordinary() -> None:
         nonlocal ordinary
@@ -618,7 +622,7 @@ def _group_song_slides_with_score_ocr(
             ordinary = []
 
     def flush_score() -> None:
-        nonlocal score_canonical, score_slides, score_info
+        nonlocal score_canonical, score_slides, score_info, unverified_tail
         if score_canonical and score_slides and score_info:
             result.groups.append((score_canonical, score_slides))
             first_index = score_slides[0].index
@@ -632,9 +636,36 @@ def _group_song_slides_with_score_ocr(
                     "model": score_info.model,
                 }
             )
+            # #553 keeps the tail of a confirmed score once the budget is gone,
+            # because the 30-page Goodness of God score needs more pages than the
+            # default 25-call web budget allows. That trade is deliberate and is
+            # not changed here. What it costs is a boundary the classifier can no
+            # longer see: every following image-only slide joins this song until a
+            # text-bearing slide appears, so a score followed by another score
+            # silently inflates this range and can hide the next song entirely.
+            # Nothing said so, which made an inflated range indistinguishable from
+            # a genuinely long one. Now it does.
+            if unverified_tail:
+                result.anomalies.append(
+                    {
+                        "type": "score_image_ocr_budget_exhausted",
+                        "message": (
+                            "OCR budget ran out mid-score: the last "
+                            f"{len(unverified_tail)} slide(s) were added to this song "
+                            "without being classified. The song's range may be too "
+                            "long, and a following song may be hidden inside it. "
+                            "Review these slides, or re-run with a larger OCR budget."
+                        ),
+                        "title": score_info.display_title,
+                        "first_slide_index": first_index,
+                        "first_unverified_slide_index": unverified_tail[0].index,
+                        "unverified_slides": len(unverified_tail),
+                    }
+                )
         score_canonical = None
         score_slides = []
         score_info = None
+        unverified_tail = []
 
     for slide in slides:
         is_image_only = bool(slide.images) and not any(
@@ -651,6 +682,7 @@ def _group_song_slides_with_score_ocr(
             # cap is reached mid-song. Otherwise preserve legacy gap handling.
             if score_canonical:
                 score_slides.append(slide)
+                unverified_tail.append(slide)
             elif pending_score:
                 pending_score.append(slide)
             else:
