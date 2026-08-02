@@ -4906,3 +4906,90 @@ class TestServiceSongDeleteControlEscaping:
         js = (Path(web_pkg.__file__).parent / "static" / "service_detail.js").read_text()
         assert "data-song-title" in js
         assert "confirm" in js
+
+
+class TestOrphanedSongIsNotLeftInThePublicCatalogue:
+    """After the last appearance goes, the song must leave /songs too (#618).
+
+    The delete shipped in #617 fixes the service page. It did not fix the page
+    the church's visitors actually see: `query_songs_paginated` LEFT JOINs
+    `service_songs` with no HAVING guard, so a song with zero performances is
+    still listed. #313/#314 — a scripture reference and two sermon-outline
+    slides misread as songs — would stay visible at songs.highland-coc.com
+    forever, and clearing them would still need the CLI the feature exists to
+    avoid. Reproduced by the #617 reviewer:
+
+        /songs after removing its only appearance: [('MICAH 6:6 - 8', 0)]
+
+    Asserted end-to-end through HTTP on purpose: the DB-level tests pin
+    `delete_setlist_entry`, but only the rendered page proves the public
+    catalogue actually changed.
+    """
+
+    _CREDS = ("highland", "s3cret")
+
+    @pytest.fixture
+    def auth_client(self, db_with_songs, tmp_path, monkeypatch):
+        inbox = tmp_path / "inbox"
+        inbox.mkdir()
+        monkeypatch.setenv("DB_PATH", str(db_with_songs))
+        monkeypatch.setenv("INBOX_DIR", str(inbox))
+        monkeypatch.setenv("UPLOAD_PASSWORD", "s3cret")
+        from importlib import reload
+
+        import worship_catalog.web.app as app_module
+
+        reload(app_module)
+        return CsrfAwareClient(TestClient(app_module.app))
+
+    def test_a_song_with_no_remaining_appearances_leaves_the_public_catalogue(
+        self, auth_client
+    ):
+        assert "How Great Thou Art" in auth_client.get("/songs").text
+        assert auth_client.get("/songs/2").status_code == 200
+
+        # Harness detail, not behaviour: CsrfAwareClient caches the token from
+        # the FIRST response's Set-Cookie and the page fetches above rotated the
+        # cookie. Re-read from the jar — clearing the cache is worse, because a
+        # re-fetch sends no Set-Cookie once the client holds a valid cookie.
+        auth_client._csrf_token = auth_client._inner.cookies.get("csrftoken")
+        resp = auth_client.post(
+            "/services/1/setlist/2/delete", auth=self._CREDS, follow_redirects=False
+        )
+        assert resp.status_code in (302, 303), resp.status_code
+
+        after = auth_client.get("/songs").text
+        assert "How Great Thou Art" not in after, (
+            "the song is still listed publicly with zero performances"
+        )
+        assert "Amazing Grace" in after, "the wrong song left the catalogue"
+        assert auth_client.get("/songs/2").status_code == 404, (
+            "the song page still resolves, so the orphan is reachable by URL "
+            "even when it is not listed"
+        )
+
+    def test_a_song_still_performed_elsewhere_stays_listed(self, auth_client, db_with_songs):
+        """The guard that must not over-reach, exercised through the web stack."""
+        from worship_catalog.db import Database
+
+        db = Database(db_with_songs)
+        db.connect()
+        second = db.insert_or_update_service(
+            service_date="2026-03-01",
+            service_name="PM Worship",
+            source_file="b.pptx",
+            source_hash="def456",
+        )
+        db.insert_service_song(second, 2, ordinal=1)
+        db.close()
+
+        auth_client._csrf_token = auth_client._inner.cookies.get("csrftoken")
+        resp = auth_client.post(
+            "/services/1/setlist/2/delete", auth=self._CREDS, follow_redirects=False
+        )
+        assert resp.status_code in (302, 303), resp.status_code
+
+        assert "How Great Thou Art" in auth_client.get("/songs").text, (
+            "a song still performed in another service was removed from the catalogue"
+        )
+        assert auth_client.get("/songs/2").status_code == 200

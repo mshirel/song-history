@@ -3756,3 +3756,182 @@ class TestDeleteSetlistEntry:
         assert db.delete_setlist_entry(svc, self._entry_id(db, svc, song)) is True
         assert db.query_service_songs(svc) == []
         db.close()
+
+
+class TestOrphanedSongAfterDeletion:
+    """Removing a song's LAST appearance removes the song itself (#618).
+
+    #617 shipped the delete half of #323 and deliberately left the `songs` row
+    alone — songs are shared across services, and erasing one to fix a single
+    misread slide would destroy its history everywhere it legitimately appears.
+    Right call, but it half-fixes the motivating case. #313/#314 are a scripture
+    reference and two sermon-outline slides misread as songs; each appears
+    exactly once. After the admin removes them, the rows survive with zero
+    performances and stay listed publicly at songs.highland-coc.com, and
+    clearing them still needs the CLI access the whole feature exists to avoid.
+
+    So the song goes when — and only when — nothing references it any more. The
+    guard is the whole risk of this change, and it fails in two directions:
+
+    * Count per-service (a copy-paste of the copy-events count directly above
+      it, which IS correctly service-scoped) and a song used in another service
+      is destroyed along with its entire history.
+    * Count only `service_songs` rows in this service while the song appears
+      twice here, and a real performance vanishes from the CCLI report.
+
+    Both are silent. Each test below fails under exactly one of them.
+    """
+
+    def _entry_id(self, db, service_id, song_id, ordinal=None):
+        rows = [
+            r
+            for r in db.query_service_songs(service_id)
+            if r["song_id"] == song_id and (ordinal is None or r["ordinal"] == ordinal)
+        ]
+        assert rows, f"no setlist entry for song {song_id} in service {service_id}"
+        return rows[0]["entry_id"]
+
+    def _db(self, tmp_path):
+        from worship_catalog.db import Database
+
+        db = Database(tmp_path / "t.db")
+        db.connect()
+        db.init_schema()
+        return db
+
+    def test_a_song_with_no_remaining_appearances_is_deleted(self, tmp_path):
+        """The #313/#314 case: one misread slide, one appearance, now gone."""
+        db = self._db(tmp_path)
+        keeper = db.insert_or_get_song("amazing grace", "Amazing Grace")
+        misread = db.insert_or_get_song("micah 6 6 8", "MICAH 6:6 – 8")
+        svc = db.insert_or_update_service(
+            service_date="2026-03-15", service_name="PM", source_file="a", source_hash="a"
+        )
+        db.insert_service_song(svc, keeper, ordinal=1)
+        db.insert_service_song(svc, misread, ordinal=2)
+
+        assert db.delete_setlist_entry(svc, self._entry_id(db, svc, misread)) is True
+
+        assert db.query_song_by_id(misread) is None, (
+            "the song row survived with zero performances — it stays listed in "
+            "the public catalogue and still needs the CLI to clear"
+        )
+        assert [s["song_id"] for s in db.query_orphaned_songs()] == [], (
+            "the delete left an orphan behind for `cleanup orphaned-songs` to sweep"
+        )
+        assert db.query_song_by_id(keeper) is not None, "the wrong song was deleted"
+        db.close()
+
+    def test_a_song_still_used_in_another_service_is_untouched(self, tmp_path):
+        """The guard must count appearances GLOBALLY, not within this service.
+
+        Scoped to `service_id` — the shape of the copy-events count immediately
+        above it — this deletes a song that another service is still using,
+        taking that service's setlist row and CCLI reporting with it.
+        """
+        db = self._db(tmp_path)
+        song = db.insert_or_get_song("amazing grace", "Amazing Grace")
+        svc1 = db.insert_or_update_service(
+            service_date="2026-03-15", service_name="AM", source_file="a", source_hash="a"
+        )
+        svc2 = db.insert_or_update_service(
+            service_date="2026-03-22", service_name="AM", source_file="b", source_hash="b"
+        )
+        db.insert_service_song(svc1, song, ordinal=1)
+        db.insert_service_song(svc2, song, ordinal=1)
+        db.insert_or_get_copy_event(svc2, song, "projection")
+
+        db.delete_setlist_entry(svc1, self._entry_id(db, svc1, song))
+
+        assert db.query_song_by_id(song) is not None, (
+            "a song still performed in another service was deleted"
+        )
+        assert [s["song_id"] for s in db.query_service_songs(svc2)] == [song], (
+            "the other service's setlist row went with the song"
+        )
+        assert [
+            e
+            for e in db.query_copy_events("2020-01-01", "2030-12-31")
+            if e["service_date"] == "2026-03-22"
+        ], "the other service's CCLI reporting for this song is gone"
+        db.close()
+
+    def test_a_second_appearance_in_the_same_service_keeps_the_song(self, tmp_path):
+        """`service_songs` is UNIQUE(service_id, ordinal), not (service_id, song_id).
+
+        A blank slide mid-song closes a group, so the extractor renders one song
+        as two entries with the same song_id — exactly the case this feature is
+        used on. Removing the spurious half must leave the real performance.
+        """
+        db = self._db(tmp_path)
+        song = db.insert_or_get_song("amazing grace", "Amazing Grace")
+        svc = db.insert_or_update_service(
+            service_date="2026-03-15", service_name="AM", source_file="a", source_hash="a"
+        )
+        db.insert_service_song(svc, song, ordinal=1)
+        db.insert_service_song(svc, song, ordinal=4)
+        db.insert_or_get_copy_event(svc, song, "projection")
+
+        db.delete_setlist_entry(svc, self._entry_id(db, svc, song, ordinal=4))
+
+        assert db.query_song_by_id(song) is not None, (
+            "the song was deleted while it is still in this service's setlist"
+        )
+        assert [s["ordinal"] for s in db.query_service_songs(svc)] == [1]
+        db.close()
+
+    def test_the_orphans_editions_and_copy_events_go_with_it(self, tmp_path):
+        """No dangling rows keyed on a song_id that no longer exists.
+
+        `song_editions` and `copy_events` both key on `song_id` with no database
+        constraint that would notice. A leftover edition is invisible; a leftover
+        copy event is not — it keeps the phantom song in the CCLI report, which
+        is the one place a misidentified song does real harm.
+        """
+        db = self._db(tmp_path)
+        misread = db.insert_or_get_song("micah 6 6 8", "MICAH 6:6 – 8")
+        edition = db.insert_or_get_song_edition(
+            misread, words_by="nobody", music_by=None, arranger=None
+        )
+        svc = db.insert_or_update_service(
+            service_date="2026-03-15", service_name="PM", source_file="a", source_hash="a"
+        )
+        db.insert_service_song(svc, misread, ordinal=1, song_edition_id=edition)
+        db.insert_or_get_copy_event(svc, misread, "projection", song_edition_id=edition)
+
+        db.delete_setlist_entry(svc, self._entry_id(db, svc, misread))
+
+        assert db.query_song_by_id(misread) is None
+        assert db.query_song_editions(misread) == [], (
+            "song_editions rows outlived the song they belong to"
+        )
+        assert not [
+            e
+            for e in db.query_copy_events("2020-01-01", "2030-12-31")
+            if e["display_title"] == "MICAH 6:6 – 8"
+        ], "a copy event outlived the song — the phantom is still in the CCLI report"
+        db.close()
+
+    def test_a_missing_entry_deletes_nothing_at_all(self, tmp_path):
+        """A False return must not have destroyed a song on the way out.
+
+        The song-delete is the last statement in the method, so a guard that
+        reads a stale `removed` — or none at all — would answer 404 to the admin
+        while having erased the song. #617's review found this exact shape once
+        already, in the copy-events delete.
+        """
+        db = self._db(tmp_path)
+        song = db.insert_or_get_song("amazing grace", "Amazing Grace")
+        svc = db.insert_or_update_service(
+            service_date="2026-03-15", service_name="AM", source_file="a", source_hash="a"
+        )
+        db.insert_service_song(svc, song, ordinal=1)
+
+        assert db.delete_setlist_entry(svc, 9999) is False
+
+        assert db.query_song_by_id(song) is not None, (
+            "the method reported the entry was not in this service, and deleted "
+            "a song anyway"
+        )
+        assert len(db.query_service_songs(svc)) == 1
+        db.close()
