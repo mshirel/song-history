@@ -5,6 +5,15 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="htmx-config" content='{"historyCacheSize":0,"refreshOnHistoryMiss":true}'>
   <title>{% block title %}Highland Worship Catalog{% endblock %}</title>
+  {# Brand icon (#586). The .ico carries three frames — 16 hinted from its own
+     master, plus 32 and 48. An SVG icon link is deliberately NOT shipped: browsers
+     that honour one prefer it at every size including the 16px tab slot, which
+     would bypass the hinted frame and bring back the greyed-out note stem on 1x
+     displays. See docs/brand-icon.md. #}
+  <link rel="icon" href="/favicon.ico" sizes="16x16 32x32 48x48">
+  <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
+  <link rel="manifest" href="/static/site.webmanifest">
+  <meta name="theme-color" content="#1a1a2e">
   <script src="/static/htmx.min.js"></script>
   <style>
     :root {

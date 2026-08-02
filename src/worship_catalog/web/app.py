@@ -33,7 +33,13 @@ from fastapi import (
     Response,
     UploadFile,
 )
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import (
+    FileResponse,
+    HTMLResponse,
+    JSONResponse,
+    RedirectResponse,
+    StreamingResponse,
+)
 from fastapi.routing import APIRoute
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -304,6 +310,18 @@ _TEMPLATES_DIR = Path(__file__).parent / "templates"
 _STATIC_DIR = Path(__file__).parent / "static"
 templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
 app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
+
+
+@app.get("/favicon.ico", include_in_schema=False)
+async def favicon() -> FileResponse:
+    """Serve the icon from the root path as well as /static/ (#586).
+
+    Browsers request /favicon.ico directly regardless of the <link> markup, and
+    without this the catch-all answers it with a 404.
+    """
+    return FileResponse(
+        _STATIC_DIR / "favicon.ico", media_type="image/vnd.microsoft.icon"
+    )
 
 # ---------------------------------------------------------------------------
 # Render proof (#581) — ported from espn-ff #1093
