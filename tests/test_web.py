@@ -15,6 +15,35 @@ from starlette.testclient import TestClient
 from conftest import CsrfAwareClient
 from worship_catalog.db import Database
 
+# Matches an inline <script> — one with no `src` attribute, which CSP blocks.
+# IGNORECASE is load-bearing: without it the guard silently misses <SCRIPT>,
+# so a page could grow an inline script and the CSP tests would still pass
+# (CodeQL py/bad-tag-filter, #599).  The negative lookahead stays correct under
+# IGNORECASE, so `<SCRIPT SRC=...>` is still treated as external and ignored.
+INLINE_SCRIPT_RE = re.compile(r"<script(?![^>]*\bsrc\b)[^>]*>", re.IGNORECASE)
+
+
+class TestInlineScriptGuard:
+    """The CSP guard used by the tests below must itself be trustworthy (#599)."""
+
+    @pytest.mark.parametrize(
+        "markup",
+        ["<script>x</script>", "<SCRIPT>x</SCRIPT>", "<ScRiPt>x</ScRiPt>"],
+    )
+    def test_detects_inline_script_in_any_case(self, markup: str) -> None:
+        assert INLINE_SCRIPT_RE.findall(markup), (
+            f"guard missed an inline script: {markup} — a page could add one unnoticed"
+        )
+
+    @pytest.mark.parametrize(
+        "markup",
+        ['<script src="/static/nav.js"></script>', '<SCRIPT SRC="/static/nav.js"></SCRIPT>'],
+    )
+    def test_ignores_external_scripts_in_any_case(self, markup: str) -> None:
+        assert not INLINE_SCRIPT_RE.findall(markup), (
+            f"guard wrongly flagged an external script: {markup}"
+        )
+
 
 @pytest.fixture
 def client(db_with_songs, tmp_path, monkeypatch):
@@ -3387,7 +3416,7 @@ class TestResponsiveLayout:
         assert 'aria-expanded="false"' in html, "Nav toggle must expose collapsed state"
         assert "/static/nav.js" in html, "Nav toggle state script must be loaded from /static/"
         # The toggle must not introduce any new inline script (CSP blocks inline JS).
-        inline_scripts = re.findall(r"<script(?![^>]*\bsrc\b)[^>]*>", html)
+        inline_scripts = INLINE_SCRIPT_RE.findall(html)
         assert not inline_scripts, (
             f"Nav added {len(inline_scripts)} inline <script> tag(s) blocked by CSP"
         )
@@ -3461,7 +3490,7 @@ class TestUploadFormCSPCompatible:
         assert resp.status_code == 200
         # All <script> tags must have a src= attribute (external files)
         import re
-        inline_scripts = re.findall(r"<script(?![^>]*\bsrc\b)[^>]*>", resp.text)
+        inline_scripts = INLINE_SCRIPT_RE.findall(resp.text)
         assert not inline_scripts, (
             f"Page has {len(inline_scripts)} inline <script> tag(s) "
             "which are blocked by CSP script-src 'self'"
@@ -3491,7 +3520,7 @@ class TestReportFormsCSPCompatible:
         resp = client.get("/reports")
         assert resp.status_code == 200
         import re
-        inline_scripts = re.findall(r"<script(?![^>]*\bsrc\b)[^>]*>", resp.text)
+        inline_scripts = INLINE_SCRIPT_RE.findall(resp.text)
         assert not inline_scripts, (
             "Reports page has inline scripts blocked by CSP"
         )
