@@ -190,3 +190,69 @@ class TestPublishWorkflowVersionSource:
         assert "github.ref_name" not in text or "APP_VERSION=${{ github.ref_name }}" not in text
         assert "Resolve release version" in text
         assert "steps.version.outputs.version" in text
+
+
+@pytest.mark.skipif(not CI_WORKFLOW_PATH.exists(), reason="ci workflow not present")
+class TestBakedVersionDescribesThisBuild:
+    """The baked version must describe the build it is in (#572, #574).
+
+    The resolver took the highest semver tag in the whole repo, reachable or
+    not, so any non-tag build (schedule, workflow_dispatch, a rebuild of an old
+    commit) baked a release number it was not.  Production showed `/about` =
+    `1.3.3` while running image `sha-8b61c9b`, a commit after that tag — the
+    page claimed a release the build was not.
+    """
+
+    def _version_step_run(self) -> str:
+        workflow = yaml.safe_load(CI_WORKFLOW_PATH.read_text())
+        for step in workflow["jobs"]["publish"]["steps"]:
+            if step.get("id") == "version":
+                return step["run"]
+        raise AssertionError("publish job has no `version` step")
+
+    def _version_step_code(self) -> str:
+        """The step's executable lines, with comments stripped.
+
+        The comment above the resolver quotes the old broken command to explain
+        why it was replaced; asserting against the raw text would forbid
+        documenting that, so reachability is checked against code only.
+        """
+        return "\n".join(
+            line
+            for line in self._version_step_run().splitlines()
+            if not line.strip().startswith("#")
+        )
+
+    def test_tag_builds_use_the_tag_being_built(self) -> None:
+        """On refs/tags/vX.Y.Z the answer is that tag — not a sorted-tags guess."""
+        run = self._version_step_run()
+        assert "refs/tags/v" in run and "GITHUB_REF" in run, (
+            "a tag build must take its version from the ref it is building, so the "
+            "image tag and the baked version cannot disagree"
+        )
+
+    def test_untagged_builds_are_not_passed_off_as_a_release(self) -> None:
+        """A non-tag build must carry a build suffix, never a bare release number."""
+        run = self._version_step_run()
+        assert "GITHUB_SHA" in run, (
+            "a non-tag build must include the commit in its version, or it reports "
+            "a release number for a build that is not that release (#572)"
+        )
+
+    def test_resolver_does_not_use_unreachable_tags(self) -> None:
+        """`git tag --sort=-v:refname | head -1` returns the newest tag in the repo.
+
+        That is wrong for any build that is not at that tag — including a rebuild
+        of an older commit, which would claim a release made after it.
+        """
+        code = self._version_step_code()
+        assert "git tag --sort=-v:refname" not in code, (
+            "sorting all tags ignores reachability; use the ref being built, or "
+            "`git describe` which only considers tags reachable from HEAD"
+        )
+        assert "git describe" in code, "the fallback must be reachability-aware"
+
+    def test_resolver_still_fails_loudly_when_it_cannot_resolve(self) -> None:
+        """Silently emitting an empty version would bake a blank /about."""
+        run = self._version_step_run()
+        assert "exit 1" in run, "the resolver must fail the build rather than bake nothing"
