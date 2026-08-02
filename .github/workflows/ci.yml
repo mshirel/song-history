@@ -189,10 +189,16 @@ jobs:
         run: uv lock --check
 
       - name: Dependency audit (pip-audit)
-        # CVE-2026-3219 affects pip itself; no fix released upstream yet.
-        # Re-evaluate at every Dependabot bump of requirements.lock and remove
-        # this --ignore-vuln once a fixed pip ships. Tracked by #408.
-        run: uv run --frozen pip-audit --skip-editable --ignore-vuln CVE-2026-3219
+        # No suppressions.  CVE-2026-3219 (pip) was ignored here indefinitely;
+        # pip-audit is clean without it now, so the flag is gone rather than
+        # carried forward (#592).
+        #
+        # If a suppression ever becomes necessary it MUST carry an explicit
+        # `review-by=YYYY-MM-DD`, which tests/test_ci_config.py enforces and
+        # which fails the build once the date passes.  The old flag's stated
+        # trigger — "re-evaluate at every Dependabot bump of requirements.lock"
+        # — could never fire, so it aged unreviewed for two months.
+        run: uv run --frozen pip-audit --skip-editable
 
       # --- Static security analysis ----------------------------------------
       - name: Static security scan (bandit)
