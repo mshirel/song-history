@@ -3912,6 +3912,32 @@ class TestOrphanedSongAfterDeletion:
         ], "a copy event outlived the song — the phantom is still in the CCLI report"
         db.close()
 
+    def test_the_song_delete_is_recorded_in_the_log(self, tmp_path, caplog):
+        """A destructive step that reaches past what the admin was looking at.
+
+        The admin's action was "remove this song from this service"; the effect
+        is also "and delete the song". Without a log line the only trace of a
+        song's disappearance is its absence, and "where did that song go?" has
+        no answer short of diffing a backup.
+        """
+        import logging
+
+        db = self._db(tmp_path)
+        misread = db.insert_or_get_song("micah 6 6 8", "MICAH 6:6 - 8")
+        svc = db.insert_or_update_service(
+            service_date="2026-03-15", service_name="PM", source_file="a", source_hash="a"
+        )
+        db.insert_service_song(svc, misread, ordinal=1)
+
+        with caplog.at_level(logging.INFO, logger="worship_catalog.db"):
+            db.delete_setlist_entry(svc, self._entry_id(db, svc, misread))
+
+        messages = [r.getMessage() for r in caplog.records]
+        assert any("deleted orphaned song" in m and f"song_id={misread}" in m for m in messages), (
+            f"the song delete left no record: {messages}"
+        )
+        db.close()
+
     def test_a_missing_entry_deletes_nothing_at_all(self, tmp_path):
         """A False return must not have destroyed a song on the way out.
 
