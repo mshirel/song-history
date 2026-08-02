@@ -21,18 +21,20 @@ CCLI sells permissions separately. Holding one does not imply the others.
 
 | Licence | Covers | Highland |
 |---|---|---|
-| **Church Copyright License** | Reproducing lyrics to support congregational singing — projecting, typing out, copy & paste, printing songsheets/bulletins, and making custom arrangements (without altering melody, lyrics, or the song's fundamental character) | Reported held \* |
-| **CCLI Streaming License** | Extends the above to online worship: live-streaming or uploading services containing songs performed live by your own musicians | Reported held \* |
+| **Church Copyright License** | Reproducing lyrics to support congregational singing — projecting, typing out, copy & paste, printing songsheets/bulletins, and making custom arrangements (without altering melody, lyrics, or the song's fundamental character) | **Unknown** \* |
+| **CCLI Streaming License** | Extends the above to online worship: live-streaming or uploading services containing songs performed live by your own musicians | **Unknown** \* |
 | **CCLI Streaming Plus License** | Additionally covers master recordings — artist tracks, backing tracks, multitracks — from an authorised source during online services | Only needed if pre-recorded tracks are used |
 
-\* **Reported by Matt on 2026-08-01, as his understanding: Highland holds both.** That is the only
-basis for these two cells — nothing in this repository records which licences are held, and no
-certificate was read as part of this work. Kept as *reported*, not *verified*, so a later reader does
-not inherit a stated belief as an established fact about a legal obligation. See
+\* **Unknown — nobody has said, and nothing here records it.** An earlier revision of this file
+attributed to Matt a statement that Highland holds both licences. He never said that; it was
+introduced in error while this document was being drafted and is retracted here. Nothing in this
+repository records which licences are held and no certificate has been read. Left as Unknown on
+purpose: a guess about someone's legal licensing does not belong in a compliance document, and the
+whole point of this file is to separate what is established from what is assumed. See
 [Open questions](#open-questions).
 
 > **The Church Copyright License does not cover streaming** — that needs the separate Streaming
-> License. This still matters even with both reported held, because the two are purchased and
+> License. This matters whichever licences are held, because the two are purchased and
 > renewed independently: a lapse of the Streaming License alone would leave the livestream
 > unlicensed while the copy report carried on looking perfect. `spec.md` records that services are
 > livestreamed (Facebook today, YouTube planned). This application cannot detect, close, or warn
@@ -230,13 +232,12 @@ published rules. The defaults `print=0` and `translation=0` are `spec.md`'s, and
 
 Neither can be answered from the code or from CCLI's public pages:
 
-1. **Does Highland hold a CCLI Streaming License?** *Reported yes* — Matt, 2026-08-01, stating his
-   understanding that Highland holds both licences. Not closed, because that is a stated belief and
-   not a reading of the certificate; nothing in this repository records it either. What remains is
-   cheap: confirm once against the CCLI account, then re-check at renewal. The reason it stays on
-   this list at all is that the two licences renew **independently**, so the Streaming License can
-   lapse on its own — and when it does, this application keeps emitting a flawless copy report while
-   the livestream sits unlicensed. Nothing in software detects that.
+1. **Does Highland hold a CCLI Streaming License?** Open, and genuinely unknown — see the note under
+   §1. `spec.md` records that services are livestreamed, and the Church Copyright License does not
+   cover streaming on its own. Confirming it is cheap: read the certificate once, then re-check at
+   renewal. It stays on this list because the two licences renew **independently**, so the Streaming
+   License can lapse on its own — and when it does, this application keeps emitting a flawless copy
+   report while the livestream sits unlicensed. Nothing in software detects that.
 2. **Will Highland submit through the online portal or the write-in path?** This decides whether the
    CCLI Song Number mapping (currently out of scope for v1) is optional or required. Still open, and
    it is the question that most affects what this application needs to build next.
