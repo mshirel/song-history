@@ -46,8 +46,15 @@ services:
     # :latest silently swaps running app code with no digest record and no
     # rollback target. Pin to the sha- tag + digest CI publishes; Dependabot's
     # `docker` ecosystem entry (#502) bumps this on a reviewed PR.
-    # Tag sha-<commit> = main@042ef75; digest resolved from GHCR 2026-08-02.
-    image: ghcr.io/mshirel/song-history:sha-042ef75ed9d981ac5f4c48b24b51b5bc1f875497@sha256:6250446b861a41f73faa486f7cf582957263a8da1f6ed2844e79d92082c2f3b5
+    # Tag sha-<commit> = main@1af1d57, released as v1.6.0. Digest is from the
+    # release build (run 30729704380), which bakes version `1.6.0`.
+    #
+    # The sha- TAG is not immutable in practice: the release workflow (#583)
+    # rebuilds the same commit for the version tags and re-pushes sha-<commit>
+    # along with them, so it moved from sha256:2df310d1 (the main-ref build) to
+    # the digest below for identical source. The digest is what actually pins —
+    # this is the drift #512 was about, observed rather than theorised.
+    image: ghcr.io/mshirel/song-history:sha-1af1d5723fb61ad8a3de59c1458009ad7d65d011@sha256:9266dc8db785cc1553d2e9290d9602e64db62d915634ef80f1df8f2ac28d68dd
     restart: unless-stopped
     init: true
     # The app image ships a HEALTHCHECK that probes :8000 (#402); the watcher
@@ -88,8 +95,9 @@ services:
   song-history:
     # Immutably pinned (#512) — was the mutable :latest. Keep this in lockstep
     # with the `watcher` service above; Dependabot (#502) bumps both.
-    # Tag sha-<commit> = main@042ef75; digest resolved from GHCR 2026-08-02.
-    image: ghcr.io/mshirel/song-history:sha-042ef75ed9d981ac5f4c48b24b51b5bc1f875497@sha256:6250446b861a41f73faa486f7cf582957263a8da1f6ed2844e79d92082c2f3b5
+    # Tag sha-<commit> = main@1af1d57, released as v1.6.0 (see the note above on
+    # why the digest, not the tag, is the pin).
+    image: ghcr.io/mshirel/song-history:sha-1af1d5723fb61ad8a3de59c1458009ad7d65d011@sha256:9266dc8db785cc1553d2e9290d9602e64db62d915634ef80f1df8f2ac28d68dd
     restart: unless-stopped
     # Bound the public upload process on the 512 MB Pi host (#503). Uploads are
     # streamed to disk, so even the 200 MB maximum file fits this budget.
