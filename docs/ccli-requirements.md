@@ -21,13 +21,13 @@ CCLI sells permissions separately. Holding one does not imply the others.
 
 | Licence | Covers | Highland |
 |---|---|---|
-| **Church Copyright License** | Reproducing lyrics to support congregational singing — projecting, typing out, copy & paste, printing songsheets/bulletins, and making custom arrangements (without altering melody, lyrics, or the song's fundamental character) | Held \* |
-| **CCLI Streaming License** | Extends the above to online worship: live-streaming or uploading services containing songs performed live by your own musicians | Held \* |
+| **Church Copyright License** | Reproducing lyrics to support congregational singing — projecting, typing out, copy & paste, printing songsheets/bulletins, and making custom arrangements (without altering melody, lyrics, or the song's fundamental character) | **Unknown** \* |
+| **CCLI Streaming License** | Extends the above to online worship: live-streaming or uploading services containing songs performed live by your own musicians | **Unknown** \* |
 | **CCLI Streaming Plus License** | Additionally covers master recordings — artist tracks, backing tracks, multitracks — from an authorised source during online services | Only needed if pre-recorded tracks are used |
 
-\* Reported by Matt on 2026-08-01 as his understanding, **not verified against the licence
-certificate**. Recorded as stated rather than promoted to established fact — see
-[Open questions](#open-questions).
+\* **Not established by this research, and not stated by anyone.** Nothing in this repository
+records which licences Highland holds, and no certificate was read. Left as Unknown deliberately:
+guessing here would be a guess about a legal obligation. See [Open questions](#open-questions).
 
 > **The Church Copyright License does not cover streaming** — that needs the separate Streaming
 > License. This still matters even though Highland holds both, because the two are purchased and
@@ -46,20 +46,54 @@ choir anthems, and both carry limits on pre-recorded content outside the service
 Reporting exists so CCLI can distribute royalties to songwriters and publishers. It does **not**
 affect the licence fee, so there is no incentive to under-report.
 
-Four activity categories:
+CCLI's four activity categories, quoted from **CCLI's own** *Online Reporting — a step-by-step
+guide* (September 2017), which is the most explicit statement of the vocabulary I could find:
 
-| Category | CCLI's definition | This app's term |
+| CCLI's category | CCLI's wording | This app's term |
 |---|---|---|
-| **Digital copies** | How many digital copies of the song were shown — this is projection | `projection` |
-| **Print copies** | Printed reproductions — bulletins, songsheets | `print` |
-| **Video or audio streaming** | The service or event is available to view on the internet | `recording` ⚠️ |
-| **Translation** | A translation of a copyrighted song was made | `translation` |
+| **Print** | "When you have reproduced a song using a printed, copied or handwritten source (e.g. service sheets or OHP acetates) **or when you have made a custom musical arrangement** where no published version is available" | `print` |
+| **Digital** | "When you project a song's lyrics onto a big screen using Powerpoint or projection software" | `projection` ⚠️ |
+| **Record** | "When you have recorded (audio or video) a live performance of a song during a service/assembly" | `recording` ⚠️ |
+| **Translation** | "When you make a translation of a song into a different language (where no existing translation is available)" | `translation` |
+
+Two mappings here are not obvious and are easy to get wrong:
+
+- **Projection is `Digital`, not "digital copies".** Our `projection` maps to it correctly, but the
+  name differs, so anyone cross-checking the export against the portal is comparing two vocabularies.
+- **There is no separate "custom arrangement" category — it folds into Print.** A future feature that
+  invents one would be reporting into a bucket CCLI does not have.
+
+The 2017 guide is also explicit about what a "1" means, which is the rule the app's data model
+depends on:
+
+> "Please report one (1) in the appropriate category for **each occasion on which a song was
+> reproduced**, *not* how many copies of a song were made."
+
+> "If you're reporting on a regular basis, the numbers you enter here will be **added to the total
+> reproductions of that song in the current reporting period**."
+
+So CCLI's ingestion model is a **per-song, per-category running total for the period**, built from
+per-occasion increments.
+
+### CCLI does not ask for a date
+
+This is the single most surprising finding, and it changes how the export should be read. The
+Church Copyright License report has **no date field**: you search for a song, enter a number 0–9 in
+each of the four categories, and submit. The only temporal language in CCLI's instructions is
+"since you last reported". The one place CCLI does ask for a date is the **CCS WorshipCast**
+licence, which is a different licence with a different flow.
+
+Our per-event rows carry `Date` and `Service`. That is *more* than CCLI ingests — which is a feature
+for the human doing the typing (an auditable, correctable record of what happened when) and a cost
+at the moment of transcription (they must tally by hand). See [§5.2](#52-the-exports-columns-and-what-a-test-can-honestly-assert).
 
 Two rules that directly constrain this application:
 
-1. **Streaming is one credit per performance, even when streamed to multiple platforms.**
-   When YouTube is added alongside Facebook, that remains **one** streaming credit per song per
-   service, not two. See [§5](#5-implications-for-this-application).
+1. **Streaming may be one credit per performance even across multiple platforms — UNCONFIRMED.**
+   CCLI's US streaming page was re-read on 2026-08-02 and **does not address the question at all**.
+   Treat this as an open question, not a rule: it decides whether adding YouTube alongside Facebook
+   should double the streaming credits or leave them unchanged, and it is exactly the kind of thing
+   to ask CCLI directly rather than infer. See [§5](#5-implications-for-this-application).
 2. **Translation is additive.** A translated song is reported as a translation credit *in addition
    to* the credit for the original-language song, not instead of it.
 
@@ -123,41 +157,70 @@ possible future check.
 ### 5.1 `recording` is misnamed, and the name hides a real bug risk
 
 `config/reporting.yml` and `import_service.py` use `recording` for what CCLI calls
-**video or audio streaming**. The rename matters beyond vocabulary: CCLI's rule is *one credit per
-performance regardless of how many platforms carry it*. The current importer hardcodes
-`recording=1` per song per service, which is correct **today** because there is exactly one
-platform. The moment YouTube is added alongside Facebook, the natural-seeming change — emit an event
-per platform — silently doubles every streaming credit in a legal compliance document.
+**video or audio streaming**. The naming is worth fixing on its own, but the reason to care is the
+counting question behind it. The importer hardcodes `recording=1` per song per service. If CCLI
+counts one credit per *performance*, that stays correct when YouTube joins Facebook and the
+natural-seeming change — emit an event per platform — would silently **double** every streaming
+credit in a compliance document. If CCLI counts per *platform*, the current behaviour is already
+under-reporting once a second platform exists.
 
-This deserves a regression test asserting that N streaming platforms still yield one streaming
-credit per song per service.
+**Which of those is true is not established** — CCLI's US streaming page does not say (re-checked
+2026-08-02). Ask CCLI before adding a second platform, then pin the answer with a regression test.
+Do not write the test first: it would encode a guess as a compliance guarantee.
 
-### 5.2 The export's columns are unverified — and issue #86 would freeze that
+### 5.2 The export's columns, and what a test can honestly assert
 
-Three different column sets are in play:
+Three column sets are in play:
 
 | Source | Columns |
 |---|---|
 | **Emitted today** (`cli.py`, `web/app.py`) | `Date`, `Service`, `Title`, `CCLI#`, `Reproduction Type`, `Count` |
 | **Asserted by issue #86** | `Song Title`, `Words By`, `Music By`, `Arranger`, `Publisher`, `Reproduction Type`, `Times Used` |
-| **CCLI write-in sheet** | `Song Title and/or First Line`, `Author(s)`, `Copyright Information`, `CCLI Song Number (if known)`, `Uses` |
+| **CCLI** | — no published file format exists |
 
-None of the three agree. Issue #86's headers match neither the implementation nor anything CCLI
-publishes, so a contract test hard-coding them would fail immediately and, once "fixed", would lock
-in a specification that appears to be invented. A test that enforces an unverified contract is worse
-than no test: it reports confidence about compliance while proving only self-consistency.
+**Issue #86's columns are wrong on the merits, not merely unsourced.** `Words By`, `Music By`,
+`Arranger` and `Publisher` are song *credits*. CCLI already holds those in its own catalogue and
+identifies songs by **CCLI song number**; it never asks a church to report them. They appear only as
+write-in fallback when a song is not in CCLI's catalogue, and then only as title plus authors.
+Meanwhile that column list **drops the CCLI song number** — the one identifier CCLI and every
+auto-reporting integration actually key on, and the reason Planning Center silently excludes songs
+without one. The proposal reads like a plausible-looking invention.
 
-**No public CCLI CSV column specification was found.** CCLI's supported paths are the online portal
-and auto-reporting integrations — not a published CSV schema for third-party tools. The export is
-best understood as *an aid to a human filling in the portal*, and should be tested against that
-purpose (stable, complete, unambiguous, correctly aggregated) rather than against invented headers.
-See the comment on #86.
+A contract test hard-coding those headers would fail immediately and, once "fixed", would cement an
+invented specification: it would report confidence about legal compliance while proving only
+self-consistency. That is worse than no test.
+
+**What a test can legitimately assert** is this project's own contract, not conformance to an
+external spec that does not exist:
+
+- a stable header row and stable column order (already covered by `TestCsvHeaderContracts`);
+- ISO dates, in the file and in the filename;
+- `CCLI#` present or explicitly blank, never absent;
+- `Reproduction Type` drawn from a **closed enum**, so a typo in `import_service.py` cannot reach a
+  licensing document — and ideally an enum that maps onto CCLI's real four terms;
+- the encoding the file is served with;
+- display title, not canonical title.
+
+### 5.2b Per-event log or per-song aggregate?
+
+Both are defensible and they answer different questions. CCLI ingests a **per-song, per-category
+total for the reporting period**, so an admin transcribing from our per-event log has to tally by
+hand — every other tool surveyed (Planning Center's *CCLI Copy Activity*, SlideGen's worksheet)
+emits the aggregate precisely because it maps 1:1 onto the portal's data entry.
+
+But the per-event log is the faithful underlying record — CCLI's own instruction is to report one
+per *occasion* — and it is what makes the data auditable and correctable, which matters here because
+this app derives its events from OCR and slide classification that can be wrong.
+
+**The useful answer is both, from the same data**: keep the per-event log as the record and the
+audit trail, and add an aggregate view (song, CCLI#, count per category, over the range) as the
+transcription aid. That is a feature, not a test, and it should be its own issue.
 
 ### 5.3 What `spec.md` got right
 
 Recorded so it does not get re-litigated: the six-month assigned window, "Nothing to Report" weeks,
 configurable public-domain exclusion, and the four-category shape are all consistent with CCLI's
-published rules. The defaults `print=0` and `translation=0` match Highland's stated practice.
+published rules. The defaults `print=0` and `translation=0` are `spec.md`'s, and are configurable; whether they match Highland's actual practice is unrecorded anywhere and was not checked.
 
 ---
 
@@ -165,11 +228,12 @@ published rules. The defaults `print=0` and `translation=0` match Highland's sta
 
 Neither can be answered from the code or from CCLI's public pages:
 
-1. ~~**Does Highland hold a CCLI Streaming License?**~~ **Answered 2026-08-01:** Matt's
-   understanding is that Highland holds both the Church Copyright License and the Streaming License.
-   Recorded as reported, not verified — nobody has read the certificate as part of this work. Worth
-   confirming once against the CCLI account, and worth re-checking at renewal, since the two licences
-   renew independently and only the streaming one gates the livestream.
+1. **Does Highland hold a CCLI Streaming License?** Open. `spec.md` records that services are
+   livestreamed, and the Church Copyright License does not cover that on its own. Nothing in this
+   repository says which licences Highland holds. If only the base licence is held, this application
+   can emit a flawless copy report while the stream is unlicensed — a gap no amount of software can
+   detect or close. Worth confirming once against the CCLI account and re-checking at renewal, since
+   the two licences renew independently.
 2. **Will Highland submit through the online portal or the write-in path?** This decides whether the
    CCLI Song Number mapping (currently out of scope for v1) is optional or required. Still open, and
    it is the question that most affects what this application needs to build next.
@@ -178,22 +242,32 @@ Neither can be answered from the code or from CCLI's public pages:
 
 ## Sources and confidence
 
-Verified directly from CCLI's own US pages: the licence split, that streaming needs a separate
-licence, the 2.5-year / six-month reporting cycle, "nothing to report" guidance, and the song-number
-guidance for portal submission.
+**Verified from CCLI's own material** (re-checked 2026-08-02): the licence split and that streaming
+needs its own licence; the four category names and their definitions; "report one (1) for each
+occasion"; period totals accumulating per song; that no date is captured for the Church Copyright
+License; the six-month-every-two-and-a-half-years manual rotation; "nothing to report"; and that
+CCLI song numbers are required for portal submission.
 
-Relied on with lower confidence: the four category names and their definitions, and the public-domain
-exclusion, which come from CCLI's UK/IE reporting material and a third-party summary of it. US portal
-wording may differ in detail, though the underlying obligations are the same.
+**Firm negative finding:** *no published CCLI CSV or file specification exists for Church Copyright
+License usage.* This is the result of searching ccli.com across the US, UK, global, IE, SE and AU
+reporting pages, CCLI's support knowledge base (the full Online Reporting category — twelve
+articles, none about file formats), CCLI's blog, and CCLI-hosted PDFs. No column list, no schema, no
+sample file, no developer or partner API documentation. The single CCLI-sanctioned upload file found
+anywhere is the **CCS WorshipCast** spreadsheet template, which is a different licence and sits
+behind portal authentication.
 
-Checked and set aside: CCLI's downloadable write-in copy report turned out to be the **UK/IE Event
-licence** variant, so its column layout is indicative of CCLI's data model but is not the US church
-report and should not be treated as the target format.
+**Not established:** whether streaming to multiple platforms counts once or once per platform;
+whether `Record` is still a live counter in the current US portal UI (marketing copy says yes, the
+2017 guide marked it UK-only); and the WorshipCast template's actual headers.
 
-- [CCLI Reporting (US)](https://ccli.com/us/en/reporting)
-- [CCLI Streaming and Streaming Plus Licenses (US)](https://ccli.com/us/en/streaming)
-- [CCLI — The 5 Questions We Hear The Most (US)](https://ccli.com/us/en/5-questions)
-- [CCLI FAQ](https://ccli.com/de/en/what-we-provide/faq/?lang=en)
-- [CCLI Church Copyright Licence (Event) Copy Report — PDF](https://ccli.com/pdfs/CCL_Event_Write_In_Sheet_e121d3e1e2.pdf)
-- [CCLI report and song credits — third-party guide](https://brightmorningstar.org/ccli-report-and-song-credits/)
-- [GCFA — Church Copyright Licensing Options](https://www.gcfa.org/resource/church-copyright-licensing-options)
+Primary:
+- [CCLI Reporting (US)](https://ccli.com/us/en/reporting) · [(UK)](https://ccli.com/uk/en/reporting) · [(Global)](https://ccli.com/global/en/reporting)
+- [CCLI — Online Reporting, a step-by-step guide (PDF, Sept 2017)](https://dq5pwpg1q8ru0.cloudfront.net/2020/10/31/03/47/57/8cb63e88-3f5a-4b84-94cc-7786d47d7c7f/online-reporting-guide.pdf) — the category definitions above
+- [CCLI Auto Reporting](https://ccli.com/us/en/auto-reporting) · [Church Copyright License](https://ccli.com/us/en/copyright-license) · [Streaming Licenses](https://ccli.com/us/en/streaming) · [The 5 Questions We Hear The Most](https://ccli.com/us/en/5-questions)
+- CCLI support: [How often do I need to report?](https://support-ccli-us.helpscoutdocs.com/article/411-how-often-do-i-need-to-report) · [How do we report?](https://support-ccli-us.helpscoutdocs.com/article/2089-how-do-we-report) · [OHP acetates → Print](https://support-ccli-us.helpscoutdocs.com/article/2090-we-use-ohp-acetates-which-category-should-we-report-these-under)
+
+Secondary — what other tools emit, as indirect evidence of what churches work from:
+- [Planning Center — CCLI reporting](https://help.planningcenter.com/en/139389-ccli-reporting.html) and [song reports](https://help.planningcenter.com/en/139390-create-song-reports.html): tracks the same four types; its **CCLI Copy Activity** report is a **per-song aggregate over a date range**. Auto-reporting counts a song **once per week regardless of how many campuses or service types used it**, and **excludes songs with no CCLI number**.
+- [WorshipTools Song Usage Report](https://www.worshiptools.com/en-us/docs/77-pl-usage-report): **per-event** — song, CCLI number, date scheduled — and says outright that it cannot track *how* the song was used.
+- [OpenLP Song Usage Tracking](https://manual.openlp.org/song_usage.html): one row per display event, with Displayed/Printed.
+- [SlideGen CCLI Reporting](https://www.psoft.com.au/slidegen/help/doc/ccli_reporting.html): states plainly that "CCLI does not support or allow a 'file upload' facility for copyright reporting", and produces a per-song aggregate worksheet to type from.
