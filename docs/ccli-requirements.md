@@ -19,17 +19,22 @@ See [Open questions](#open-questions) — two of them can only be answered from 
 
 CCLI sells permissions separately. Holding one does not imply the others.
 
-| Licence | Covers | Highland needs it? |
+| Licence | Covers | Highland |
 |---|---|---|
-| **Church Copyright License** | Reproducing lyrics to support congregational singing — projecting, typing out, copy & paste, printing songsheets/bulletins, and making custom arrangements (without altering melody, lyrics, or the song's fundamental character) | Yes — this is the base licence |
-| **CCLI Streaming License** | Extends the above to online worship: live-streaming or uploading services containing songs performed live by your own musicians | **Yes, if services are streamed** |
-| **CCLI Streaming Plus License** | Additionally covers master recordings — artist tracks, backing tracks, multitracks — from an authorised source during online services | Only if pre-recorded tracks are used |
+| **Church Copyright License** | Reproducing lyrics to support congregational singing — projecting, typing out, copy & paste, printing songsheets/bulletins, and making custom arrangements (without altering melody, lyrics, or the song's fundamental character) | Held \* |
+| **CCLI Streaming License** | Extends the above to online worship: live-streaming or uploading services containing songs performed live by your own musicians | Held \* |
+| **CCLI Streaming Plus License** | Additionally covers master recordings — artist tracks, backing tracks, multitracks — from an authorised source during online services | Only needed if pre-recorded tracks are used |
 
-> **The Church Copyright License does not cover streaming.** This is the single most consequential
-> finding for Highland. `spec.md` records that services are livestreamed (Facebook today, YouTube
-> planned). If Highland holds only the Church Copyright License, this application can produce a
-> flawless, fully compliant copy report while the stream itself remains unlicensed. That is a
-> compliance gap the software cannot detect, close, or warn about.
+\* Reported by Matt on 2026-08-01 as his understanding, **not verified against the licence
+certificate**. Recorded as stated rather than promoted to established fact — see
+[Open questions](#open-questions).
+
+> **The Church Copyright License does not cover streaming** — that needs the separate Streaming
+> License. This still matters even though Highland holds both, because the two are purchased and
+> renewed independently: a lapse of the Streaming License alone would leave the livestream
+> unlicensed while the copy report carried on looking perfect. `spec.md` records that services are
+> livestreamed (Facebook today, YouTube planned). This application cannot detect, close, or warn
+> about that gap — it is an account-level concern, not a software one.
 
 Streaming Plus is also required for using master/backing tracks; neither streaming licence covers
 choir anthems, and both carry limits on pre-recorded content outside the service stream.
@@ -160,10 +165,14 @@ published rules. The defaults `print=0` and `translation=0` match Highland's sta
 
 Neither can be answered from the code or from CCLI's public pages:
 
-1. **Does Highland hold a CCLI Streaming License?** If not, the livestream is unlicensed regardless
-   of how good the reporting is. This is the highest-consequence item in this document.
+1. ~~**Does Highland hold a CCLI Streaming License?**~~ **Answered 2026-08-01:** Matt's
+   understanding is that Highland holds both the Church Copyright License and the Streaming License.
+   Recorded as reported, not verified — nobody has read the certificate as part of this work. Worth
+   confirming once against the CCLI account, and worth re-checking at renewal, since the two licences
+   renew independently and only the streaming one gates the livestream.
 2. **Will Highland submit through the online portal or the write-in path?** This decides whether the
-   CCLI Song Number mapping (currently out of scope for v1) is optional or required.
+   CCLI Song Number mapping (currently out of scope for v1) is optional or required. Still open, and
+   it is the question that most affects what this application needs to build next.
 
 ---
 
