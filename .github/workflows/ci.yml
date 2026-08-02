@@ -442,3 +442,55 @@ jobs:
           build-args: |
             APP_VERSION=${{ steps.version.outputs.version }}
             BUILD_DATE=${{ github.event.head_commit.timestamp || github.event.repository.updated_at }}
+
+  # The Monday cron exists to pick up base-image security patches. It failed on
+  # 2026-06-29, 07-06 and 07-13 with nothing raised, and #595 would have
+  # recurred every week unnoticed — a security job that fails silently gives the
+  # appearance of patching, which is worse than not having it (#598).
+  #
+  # Deliberately scoped to `schedule`: a human is already watching a PR or a
+  # release, so alerting on those would be noise that gets muted.
+  notify-scheduled-failure:
+    needs: [test, security, e2e, publish]
+    # always() is load-bearing — without it this job is itself skipped when an
+    # ancestor fails, which is the exact bug being fixed. contains() rather than
+    # failure() because `publish` can be skipped, and a skipped dependency must
+    # not swallow the alert.
+    if: ${{ always() && github.event_name == 'schedule' && contains(needs.*.result, 'failure') }}
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+
+    steps:
+      - name: Open or update the rebuild-failure issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          title="ci: weekly rebuild failed"
+          # Reuse one open issue rather than filing 52 a year — a notifier that
+          # buries the board stops being read.
+          existing="$(gh issue list --state open --label ci-failure \
+                        --search "$title in:title" --json number --jq '.[0].number // empty')"
+
+          body="The scheduled rebuild failed.
+
+          Run: $RUN_URL
+          Commit: \`${GITHUB_SHA}\`
+
+          Job results: test=${{ needs.test.result }}, security=${{ needs.security.result }}, e2e=${{ needs.e2e.result }}, publish=${{ needs.publish.result }}
+
+          This cron rebuilds the image to pick up base-image security patches, so
+          while it is red the published image may be missing them. Nothing else
+          reports this — see #598."
+
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body "$body"
+            echo "commented on existing #$existing"
+          else
+            gh label list --limit 200 | grep -qx 'ci-failure' \
+              || gh label create ci-failure --color B60205 \
+                   --description "An unattended CI run failed and needs attention"
+            gh issue create --title "$title" --label ci-failure --body "$body"
+          fi
