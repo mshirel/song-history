@@ -21,14 +21,17 @@ Church LAN ──HTTPS──> Traefik :80/:443 ───────────
                                                                               ▼
                                                               song-history :8000 (FastAPI)
 
-Raspberry Pi (pi-songs, DMZ VLAN 249, UPS-backed):
+Raspberry Pi (pi-songs, currently DMZ VLAN 249; relocating to church hosting
+network `10.0.250.0/24` as `10.0.250.250`):
   ├── cloudflared        → outbound tunnel to Cloudflare edge (no inbound ports)
   ├── traefik :80/:443   → LAN alias (pi-songs.tanx95.us) + Let's Encrypt DNS-01
   ├── song-history :8000 → app; host port firewalled to the Prometheus scraper
   ├── watcher            → import loop (same image; heartbeat healthcheck, #514)
   └── promtail           → ships container logs to homelab Loki (non-root, #514)
 
-UniFi DNS: pi-songs.tanx95.us → 10.20.249.10 (LAN alias)
+UniFi DNS: `pi-songs.tanx95.us` is split-horizon: church DNS points to
+`10.0.250.250`; home DNS points to the Pi's stable Tailnet address after
+enrollment. The public hostname remains Cloudflare Tunnel-backed.
 Cloudflare: songs.highland-coc.com → tunnel; highland-coc.com zone for DNS-01
 ```
 
@@ -42,10 +45,11 @@ Because the host serves a public tunnel, lock it down. Codified in the repo:
 - **Secrets (`.env`) must be `600`** — it holds the Cloudflare API + tunnel
   tokens, CSRF secret, and upload password. `init.sh` refuses a non-600 `.env`
   (#446). `sudo chmod 600 /opt/song-history/.env`.
-- **Host firewall (ufw)** — deny inbound by default; allow only SSH from the
-  homelab mgmt supernet, 80/443 (Traefik LAN alias + Kuma), and the Prometheus
-  scraper (`10.20.100.245`) to `:9100`. Run `deploy/pi/firewall/ufw-setup.sh`
-  (#447). The public site needs **no** inbound ports (tunnel is outbound).
+- **Host firewall (ufw)** — deny inbound by default; allow only the existing
+  LAN paths plus SSH and node-exporter ingress on `tailscale0`. Tailnet ACLs
+  authorize those overlay paths; church-LAN restrictions belong on the church
+  firewall. Run `deploy/pi/firewall/ufw-setup.sh` (#447). The public site needs
+  **no** inbound ports (tunnel is outbound).
 - **Docker-published `:8000`/`:2000`** bypass ufw's INPUT chain, so they are
   restricted to the Prometheus scraper via the `DOCKER-USER` chain —
   `deploy/pi/firewall/docker-user-firewall.sh` + its systemd unit (#447).
