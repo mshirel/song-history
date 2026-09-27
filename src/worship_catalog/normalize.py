@@ -200,6 +200,20 @@ _SCRIPTURE_RE = re.compile(
 # IDs, never song titles (#264).
 _SFP_CATALOG_RE = re.compile(r"^SFP\s+\d{3,4}$", re.IGNORECASE)
 
+# Chapter:verse (or chapter.verse) numeric pattern found ANYWHERE in a title,
+# not just when the whole title IS a scripture reference (unlike _SCRIPTURE_RE
+# above). Sermon-outline slides misclassified as songs by the score-image OCR
+# path often embed a scripture citation alongside prose or a dotted book
+# abbreviation ("Transfiguration Matt.17:3", "Humble service (2:5-12. Jn. 13)",
+# "Cor. 11:22-29.") — no real song title in the catalog contains a bare
+# "N:N" / "N.N" numeric pair (#645).
+_EMBEDDED_SCRIPTURE_REF_RE = re.compile(r"\b\d{1,3}[:.]\d{1,3}(\s*[-–—]\s*\d{1,3})?\b")
+
+# Word-frequency annotation ("65x's", "379x's") from a Greek/Hebrew lexical word
+# study — a number immediately followed by a lowercase "x" (occurrence count).
+# No real song title contains this pattern (#645).
+_WORD_FREQUENCY_COUNT_RE = re.compile(r"\b\d+x['’]?s?\b")
+
 # Opening / closing quotation marks (straight + curly). A line wrapped in these
 # is a quoted sentence (e.g. scripture), not a title.
 _OPEN_QUOTES = ('"', "“", "‘")  # " “ ‘
@@ -240,12 +254,21 @@ def _looks_like_non_title(stripped: str) -> bool:
     if _SFP_CATALOG_RE.match(stripped):
         return True
 
-    # Leading verse / stanza markers: "(6) ...", "St. 2 ...", leading ". "/": ".
+    # Embedded scripture reference anywhere in the title (#645).
+    if _EMBEDDED_SCRIPTURE_REF_RE.search(stripped):
+        return True
+
+    # Word-frequency annotation from a lexical word study (#645).
+    if _WORD_FREQUENCY_COUNT_RE.search(stripped):
+        return True
+
+    # Leading verse / stanza markers: "(6) ...", "St. 2 ...", leading ". "/": .",
+    # or a numbered-point marker using a dot instead of digit+paren (".) ...").
     if re.match(r"^\(\d+\)", stripped):
         return True
     if re.match(r"^St\.\s*\d", stripped, re.IGNORECASE):
         return True
-    if re.match(r"^[.:]\s", stripped):
+    if re.match(r"^[.:]\)?\s", stripped):
         return True
     if "(vv." in stripped.lower() or "(v." in stripped.lower():
         return True
