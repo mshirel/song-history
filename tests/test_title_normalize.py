@@ -312,6 +312,20 @@ class TestNonSongTitleFilter:
         "SFP 878",
         "",  # empty
         "   ",  # whitespace only
+        # Sermon-outline slides misclassified as songs by the score-image OCR
+        # path (#645) — a "Theories Of Heaven" / scripture-study deck rendered
+        # its outline as image-only slides, so the vision classifier
+        # hallucinated is_score=true and returned the outline text as title.
+        "שְׁאוֹל (65x’s), “hades” in LXX.",  # foreign-script word study
+        ".) Some Deny the Existence of the Spirit Apart From the Body",  # ".) " marker
+        "Greek πνεῦμα 379x’s (“pneumonia”).",  # foreign-script word study
+        "Samuel appearing before Saul, 1Sam.28:11-19",  # embedded scripture ref
+        "Transfiguration Matt.17:3",  # embedded scripture ref, dotted book abbrev.
+        ".) Some Believe Soul Sleep",  # ".) " marker
+        ".) Some Deny the Resurrection of the Old Body",  # ".) " marker
+        "Where is your focus? Mt. 6:25-33",  # embedded scripture ref, dotted book abbrev.
+        "Humble service (2:5-12. Jn. 13)",  # embedded scripture ref, dotted book abbrev.
+        "Cor. 11:22-29.",  # dotted book abbrev. only, no book-name prefix word
     ]
 
     # Real titles from production that must NOT be rejected.
