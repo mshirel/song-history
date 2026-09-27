@@ -50,6 +50,8 @@ dev = [
     "starlette>=0.36,<2",
     "bandit>=1.7,<2",
     "pip-audit>=2.7,<3",
+    # pip-audit pulls in pip-api -> pip; pin explicitly past PYSEC-2026-3721 (#647).
+    "pip>=26.2,<27",
     "olefile>=0.47,<1",
     "openpyxl>=3.1,<4",
     "mutmut>=3.5.0,<4",
