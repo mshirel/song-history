@@ -46,15 +46,15 @@ services:
     # :latest silently swaps running app code with no digest record and no
     # rollback target. Pin to the sha- tag + digest CI publishes; Dependabot's
     # `docker` ecosystem entry (#502) bumps this on a reviewed PR.
-    # Tag sha-<commit> = main@04c98ee (Sprint 8). Digest is from the
-    # workflow_dispatch build of main (run 30736475295).
+    # Tag sha-<commit> = main@57b1dd1 (fixes #645, #647). Digest is from the
+    # workflow_dispatch build of main (run 36292097248).
     #
     # The sha- TAG is not immutable in practice: the release workflow (#583)
     # rebuilds the same commit for the version tags and re-pushes sha-<commit>
     # along with them, so it moved from sha256:2df310d1 (the main-ref build) to
     # the digest below for identical source. The digest is what actually pins —
     # this is the drift #512 was about, observed rather than theorised.
-    image: ghcr.io/mshirel/song-history:sha-3b05ee23b3a34f511060a2bad7f39ca5843bc820@sha256:2b77de42a72de2054e0514f3ce7fb023cd8d6a6fb058a33c72e04a15445efd9f
+    image: ghcr.io/mshirel/song-history:sha-57b1dd1be29a0e18aabf5e99759078735a1b500f@sha256:35f824c3d0d1f7f2fcc6245e2531de2744fbb7bfa9b33a8925e908f05382dcc0
     restart: unless-stopped
     init: true
     # The app image ships a HEALTHCHECK that probes :8000 (#402); the watcher
@@ -95,9 +95,9 @@ services:
   song-history:
     # Immutably pinned (#512) — was the mutable :latest. Keep this in lockstep
     # with the `watcher` service above; Dependabot (#502) bumps both.
-    # Tag sha-<commit> = main@04c98ee (Sprint 8); see the note above on why the
-    # digest, not the tag, is the pin.
-    image: ghcr.io/mshirel/song-history:sha-3b05ee23b3a34f511060a2bad7f39ca5843bc820@sha256:2b77de42a72de2054e0514f3ce7fb023cd8d6a6fb058a33c72e04a15445efd9f
+    # Tag sha-<commit> = main@57b1dd1 (fixes #645, #647); see the note above on
+    # why the digest, not the tag, is the pin.
+    image: ghcr.io/mshirel/song-history:sha-57b1dd1be29a0e18aabf5e99759078735a1b500f@sha256:35f824c3d0d1f7f2fcc6245e2531de2744fbb7bfa9b33a8925e908f05382dcc0
     restart: unless-stopped
     # Bound the public upload process on the 512 MB Pi host (#503). Uploads are
     # streamed to disk, so even the 200 MB maximum file fits this budget.
