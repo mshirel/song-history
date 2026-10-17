@@ -23,7 +23,7 @@ dependencies = [
 
 [project.optional-dependencies]
 ocr = [
-    "anthropic>=0.120.0,<1",
+    "anthropic>=0.120.2,<1",
 ]
 web = [
     "fastapi!=0.136.3,>=0.140.7,<1",  # 0.136.3 is malicious (MAL-2026-4750)
