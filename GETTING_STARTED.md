@@ -7,7 +7,7 @@ see [README.md](README.md).
 
 ## Prerequisites
 
-- **Python 3.10+** (3.12 recommended)
+- **Python 3.11+** (3.12 recommended)
 - **Docker** (optional, for containerized deployment)
 - PowerPoint (`.pptx`) worship slide decks to import
 
