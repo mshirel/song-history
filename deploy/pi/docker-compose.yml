@@ -46,15 +46,16 @@ services:
     # :latest silently swaps running app code with no digest record and no
     # rollback target. Pin to the sha- tag + digest CI publishes; Dependabot's
     # `docker` ecosystem entry (#502) bumps this on a reviewed PR.
-    # Tag sha-<commit> = main@57b1dd1 (fixes #645, #647). Digest is from the
-    # workflow_dispatch build of main (run 36292097248).
+    # Tag sha-<commit> = main@750a83f = v1.9.4 (#652, clears 45 Dependabot
+    # alerts). Digest is the multi-arch manifest list from the v1.9.4 release
+    # build (run 40201069681); the 1.9.4 tag resolves to the same digest.
     #
     # The sha- TAG is not immutable in practice: the release workflow (#583)
     # rebuilds the same commit for the version tags and re-pushes sha-<commit>
     # along with them, so it moved from sha256:2df310d1 (the main-ref build) to
     # the digest below for identical source. The digest is what actually pins —
     # this is the drift #512 was about, observed rather than theorised.
-    image: ghcr.io/mshirel/song-history:sha-57b1dd1be29a0e18aabf5e99759078735a1b500f@sha256:2dee81b4923e04b22f8079d83d15c0e8a1e663055f1076242c535cef9352d852
+    image: ghcr.io/mshirel/song-history:sha-750a83fc4fa2cf21f54075730f55338fca7b77b5@sha256:86e67204b7da894099c4c1f40ade7aa636dd781deaf94126671849777e03df5b
     restart: unless-stopped
     init: true
     # The app image ships a HEALTHCHECK that probes :8000 (#402); the watcher
@@ -95,9 +96,9 @@ services:
   song-history:
     # Immutably pinned (#512) — was the mutable :latest. Keep this in lockstep
     # with the `watcher` service above; Dependabot (#502) bumps both.
-    # Tag sha-<commit> = main@57b1dd1 (fixes #645, #647); see the note above on
+    # Tag sha-<commit> = main@750a83f = v1.9.4 (#652); see the note above on
     # why the digest, not the tag, is the pin.
-    image: ghcr.io/mshirel/song-history:sha-57b1dd1be29a0e18aabf5e99759078735a1b500f@sha256:2dee81b4923e04b22f8079d83d15c0e8a1e663055f1076242c535cef9352d852
+    image: ghcr.io/mshirel/song-history:sha-750a83fc4fa2cf21f54075730f55338fca7b77b5@sha256:86e67204b7da894099c4c1f40ade7aa636dd781deaf94126671849777e03df5b
     restart: unless-stopped
     # Bound the public upload process on the 512 MB Pi host (#503). Uploads are
     # streamed to disk, so even the 200 MB maximum file fits this budget.
