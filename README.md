@@ -463,4 +463,4 @@ The publish job only fires when `Dockerfile`, `pyproject.toml`, `src/`, `config/
 - Taylor Publications / sheet-music slides store credits in images — use `repair-credits` with `--library-index` or `--ocr` to fill these in
 - Vision OCR uses OpenRouter by default (`OPENROUTER_API_KEY`) and requires
   `pip install -e ".[ocr]"`; Anthropic is available as a legacy fallback
-- Requires Python 3.10+
+- Requires Python 3.11+

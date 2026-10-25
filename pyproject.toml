@@ -7,7 +7,7 @@ name = "worship-catalog"
 dynamic = ["version"]
 description = "Extract song metadata from PowerPoint worship slide decks, store in SQLite, generate CCLI reports"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 license = {text = "GPL-3.0"}
 authors = [
     {name = "Matt Shirel", email = "matt@example.local"}
@@ -60,7 +60,7 @@ dev = [
     "pygments>=2.20.0,<3",
     "requests>=2.33.0,<3",
     "cairosvg>=2.7,<3",   # rasterises the brand icon masters (#586)
-    "pillow>=11.0,<13",   # assembles the multi-frame favicon.ico (#586)
+    "pillow>=13.0.0,<14",   # favicon.ico (#586); floor clears the 13.0.0 GHSA batch
 ]
 
 [tool.hatch.version]

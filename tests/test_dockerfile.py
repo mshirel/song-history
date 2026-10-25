@@ -112,7 +112,7 @@ class TestDockerfilePythonVersion:
         """Dockerfile base image must use a GA (non-pre-release) Python version.
 
         Python 3.14 was pre-release as of 2026-05-25; GA versions are <= 3.13.
-        pyproject.toml targets 3.10 and CI runs on 3.12, so production must not
+        pyproject.toml targets 3.11 and CI runs on 3.12, so production must not
         run an untested pre-release interpreter.
         """
         import re
