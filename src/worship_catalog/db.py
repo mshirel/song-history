@@ -5,7 +5,7 @@ import sqlite3
 import warnings
 from collections.abc import Generator
 from contextlib import contextmanager
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -532,7 +532,7 @@ class Database:
         cursor.execute("SELECT version FROM schema_migrations")
         applied: set[int] = {row[0] for row in cursor.fetchall()}
 
-        now = datetime.now(tz=timezone.utc).isoformat()
+        now = datetime.now(tz=UTC).isoformat()
 
         for version in sorted(_MIGRATIONS):
             if version in applied:
@@ -625,7 +625,7 @@ class Database:
         """
         service_date = normalize_service_date(service_date) or service_date
         cursor = self._conn.cursor()
-        imported_at = datetime.now(timezone.utc).isoformat()
+        imported_at = datetime.now(UTC).isoformat()
         cursor.execute(
             """
             INSERT INTO services
@@ -897,7 +897,7 @@ class Database:
         ``services.service_date`` values regardless of the caller's separators.
         """
         normalized = normalize_service_date(service_date)
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         self._conn.execute(
             """
             INSERT INTO service_exclusions (service_date, service_slot, reason, excluded_at)
@@ -1289,7 +1289,7 @@ class Database:
         started_at: str | None = None,
     ) -> None:
         """Insert a new import job record with status='pending'."""
-        ts = started_at if started_at is not None else datetime.now(timezone.utc).isoformat()
+        ts = started_at if started_at is not None else datetime.now(UTC).isoformat()
         self._conn.execute(
             """
             INSERT INTO import_jobs (job_id, filename, status, started_at)
@@ -1344,7 +1344,7 @@ class Database:
             params.append(status)
             if status in ("complete", "failed"):
                 sets.append("completed_at = ?")
-                params.append(datetime.now(timezone.utc).isoformat())
+                params.append(datetime.now(UTC).isoformat())
         if songs_imported is not None:
             sets.append("songs_imported = ?")
             params.append(songs_imported)
@@ -1429,7 +1429,7 @@ class Database:
                 (keep,),
             )
         else:
-            threshold = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d")
+            threshold = (datetime.now(UTC) - timedelta(days=days)).strftime("%Y-%m-%d")
             self._conn.execute(
                 "DELETE FROM import_jobs WHERE date(started_at) < ?",
                 (threshold,),

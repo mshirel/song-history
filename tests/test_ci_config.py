@@ -2,6 +2,7 @@
 
 import re
 import subprocess
+import tomllib
 from datetime import date
 from pathlib import Path
 
@@ -99,11 +100,6 @@ class TestDependencyLockAuthority:
 
     def test_web_extra_declares_itsdangerous_directly(self) -> None:
         """The web code imports itsdangerous, so the web extra must declare it (#542)."""
-        try:
-            import tomllib
-        except ModuleNotFoundError:  # pragma: no cover - Python 3.10 compatibility
-            import tomli as tomllib
-
         project = tomllib.loads(PYPROJECT_PATH.read_text())["project"]
         web_dependencies = project["optional-dependencies"]["web"]
         assert any(dep.startswith("itsdangerous") for dep in web_dependencies), (
@@ -125,6 +121,42 @@ class TestDependencyLockAuthority:
         assert "uv export --frozen" in ci
         assert "pip-compile" not in ci, (
             "pip-compile independently resolves dependencies and must not be a lock validator"
+        )
+
+
+class TestPythonTargetMatchesFloor:
+    """Lint/type targets must track the requires-python floor.
+
+    The floor moved to 3.11 for Pillow 13 (#652) while ruff and mypy stayed on
+    3.10, so neither flagged code that 3.11 makes redundant and mypy checked
+    against an interpreter the project no longer supports.
+    """
+
+    @staticmethod
+    def _pyproject() -> dict:
+        return tomllib.loads(PYPROJECT_PATH.read_text())
+
+    def _floor(self) -> tuple[int, int]:
+        spec = self._pyproject()["project"]["requires-python"]
+        m = re.fullmatch(r">=\s*3\.(\d+)", spec.strip())
+        assert m, f"requires-python must be a plain '>=3.N' floor, got {spec!r}"
+        return 3, int(m.group(1))
+
+    def test_requires_python_floor_is_at_least_311(self) -> None:
+        assert self._floor() >= (3, 11), "pillow>=13 does not support Python 3.10 (#652)"
+
+    def test_ruff_target_version_matches_floor(self) -> None:
+        major, minor = self._floor()
+        target = self._pyproject()["tool"]["ruff"]["target-version"]
+        assert target == f"py{major}{minor}", (
+            f"ruff target-version {target!r} must match requires-python >={major}.{minor}"
+        )
+
+    def test_mypy_python_version_matches_floor(self) -> None:
+        major, minor = self._floor()
+        version = self._pyproject()["tool"]["mypy"]["python_version"]
+        assert version == f"{major}.{minor}", (
+            f"mypy python_version {version!r} must match requires-python >={major}.{minor}"
         )
 
 
