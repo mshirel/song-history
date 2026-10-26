@@ -203,7 +203,12 @@ services:
   cloudflared:
     # Digest-pinned (#453) — was :latest. The internet-facing tunnel daemon must
     # not silently upgrade; re-pin on a reviewed Dependabot bump.
-    image: cloudflare/cloudflared:latest@sha256:6d91c121b803126f7a5344005d17a9324788fc09d305b6e2560ec6040a7ae283
+    # Version-tagged, not :latest@sha256 — that form hid that this ran 2026.6.1,
+    # which still trusts the compromised eMudhra intermediates (Cloudflare
+    # advisory 2026-10-20; fixed in >=2026.10.2). 2026.10.4 also fixes
+    # VULN-176088 (debug endpoints on the :2000 metrics server). Digest is the
+    # multi-arch manifest list (linux/amd64 + linux/arm64).
+    image: cloudflare/cloudflared:2026.10.4@sha256:c6c7ae1d5dfdcb094ad344ed68ccffc26635c9c6be80965664c33baf064b0515
     restart: unless-stopped
     # --metrics pins the Prometheus endpoint to a stable port (default is
     # ephemeral). Published on :2000 for Prometheus to scrape (HOME-176). This
