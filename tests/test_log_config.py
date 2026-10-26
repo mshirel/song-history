@@ -1,5 +1,6 @@
 """Tests for worship_catalog.log_config — structured JSON logging."""
 
+import asyncio
 import json
 import logging
 import logging.handlers
@@ -126,55 +127,89 @@ class TestSetup:
         assert file_handlers[0].baseFilename == str(Path(log_file).resolve())
 
 
+_REQUEST_LOGGER = "worship_catalog.web.request"
+
+
+def _http_scope(query_string: bytes = b"") -> dict:
+    return {"type": "http", "method": "GET", "path": "/songs", "query_string": query_string}
+
+
+def _app_returning(status: int):
+    async def app(scope, receive, send):
+        await send({"type": "http.response.start", "status": status, "headers": []})
+        await send({"type": "http.response.body", "body": b""})
+
+    return app
+
+
+def _run(middleware, scope, sent: list) -> None:
+    """Drive the middleware with a real async send (#655).
+
+    asyncio.run() owns its loop; fetching the implicit one raises on 3.14
+    when none is running.  No try/except: a failure here must fail the test,
+    not leave caplog empty for an assertion loop to skip.
+    """
+
+    async def send(message):
+        sent.append(message)
+
+    asyncio.run(middleware(scope, None, send))
+
+
+def _request_records(caplog) -> list[logging.LogRecord]:
+    return [r for r in caplog.records if r.name == _REQUEST_LOGGER]
+
+
 class TestRequestLoggingMiddleware:
     """Tests for ASGI request logging middleware."""
 
-    def test_passes_through_non_http_scopes(self):
-        """Non-HTTP scopes (e.g. lifespan) are passed through unchanged."""
-        import asyncio
-
+    def test_passes_through_non_http_scopes(self, caplog):
+        """Non-HTTP scopes (e.g. lifespan) are passed through unchanged and not logged."""
         received = []
 
         async def app(scope, receive, send):
             received.append(scope["type"])
 
-        middleware = RequestLoggingMiddleware(app)
-
-        async def run():
-            await middleware({"type": "lifespan"}, None, None)
-
-        asyncio.get_event_loop().run_until_complete(run())
+        with caplog.at_level(logging.INFO, logger=_REQUEST_LOGGER):
+            asyncio.run(RequestLoggingMiddleware(app)({"type": "lifespan"}, None, None))
         assert received == ["lifespan"]
+        assert _request_records(caplog) == [], "non-HTTP scopes must not be logged"
 
     def test_http_request_logged(self, caplog):
-        """HTTP requests produce a log record with method, path, status."""
-        import asyncio
+        """HTTP requests produce one INFO record with method, path, status, duration."""
+        sent: list = []
+        with caplog.at_level(logging.INFO, logger=_REQUEST_LOGGER):
+            _run(RequestLoggingMiddleware(_app_returning(200)), _http_scope(), sent)
+
+        records = _request_records(caplog)
+        assert len(records) == 1
+        record = records[0]
+        assert record.levelname == "INFO"
+        assert (record.method, record.path, record.status) == ("GET", "/songs", 200)
+        assert isinstance(record.duration_ms, float)
+        assert [m["type"] for m in sent] == ["http.response.start", "http.response.body"]
+
+    def test_4xx_logged_as_warning(self, caplog):
+        """Client-error responses are logged at WARNING, not INFO."""
+        with caplog.at_level(logging.INFO, logger=_REQUEST_LOGGER):
+            _run(RequestLoggingMiddleware(_app_returning(404)), _http_scope(), [])
+
+        (record,) = _request_records(caplog)
+        assert record.levelname == "WARNING"
+        assert record.status == 404
+
+    def test_unhandled_exception_logged_and_reraised(self, caplog):
+        """An app exception is logged at ERROR, re-raised, and still gets a status-0 record."""
 
         async def app(scope, receive, send):
-            await send({"type": "http.response.start", "status": 200, "headers": []})
-            await send({"type": "http.response.body", "body": b""})
+            raise ValueError("boom")
 
-        middleware = RequestLoggingMiddleware(app)
+        with caplog.at_level(logging.INFO, logger=_REQUEST_LOGGER), pytest.raises(ValueError):
+            _run(RequestLoggingMiddleware(app), _http_scope(), [])
 
-        scope = {
-            "type": "http",
-            "method": "GET",
-            "path": "/songs",
-            "query_string": b"",
-        }
-
-        async def run():
-            await middleware(scope, None, lambda msg: asyncio.coroutine(lambda: None)())
-
-        with caplog.at_level(logging.INFO, logger="worship_catalog.web.request"):
-            try:
-                asyncio.get_event_loop().run_until_complete(run())
-            except Exception:
-                pass
-
-        # At minimum, a log record should have been emitted
-        # (the exact content depends on timing; just check it ran)
-        assert True  # middleware completed without error
+        records = _request_records(caplog)
+        assert [r.levelname for r in records] == ["ERROR", "INFO"]
+        assert records[-1].status == 0
 
 
 class TestSanitizeQueryString:
@@ -216,31 +251,19 @@ class TestSanitizeQueryString:
 
     def test_middleware_redacts_q_in_logged_path(self, caplog) -> None:
         """Query string with ?q= is sanitized before appearing in log records."""
-        import asyncio
+        with caplog.at_level(logging.INFO, logger=_REQUEST_LOGGER):
+            _run(
+                RequestLoggingMiddleware(_app_returning(200)),
+                _http_scope(b"q=PastorJohnSmith"),
+                [],
+            )
 
-        async def app(scope, receive, send):
-            await send({"type": "http.response.start", "status": 200, "headers": []})
-            await send({"type": "http.response.body", "body": b""})
-
-        middleware = RequestLoggingMiddleware(app)
-        scope = {
-            "type": "http",
-            "method": "GET",
-            "path": "/songs",
-            "query_string": b"q=PastorJohnSmith",
-        }
-
-        async def run():
-            await middleware(scope, None, lambda msg: asyncio.coroutine(lambda: None)())
-
-        with caplog.at_level(logging.INFO, logger="worship_catalog.web.request"):
-            try:
-                asyncio.get_event_loop().run_until_complete(run())
-            except Exception:
-                pass
-
-        for record in caplog.records:
-            path_logged = getattr(record, "path", "") or ""
-            assert "PastorJohnSmith" not in path_logged, (
+        records = _request_records(caplog)
+        assert records, "middleware must emit a record, or the redaction check is vacuous"
+        assert records[0].levelname == "INFO", "redaction must be checked on the normal path"
+        assert records[0].path == "/songs?q=[redacted]"
+        for record in records:
+            assert "PastorJohnSmith" not in record.path, (
                 "Search query value must not appear verbatim in log records"
             )
+            assert "PastorJohnSmith" not in record.getMessage()
