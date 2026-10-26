@@ -30,6 +30,27 @@ class TestImagePinning:
 
 
 @pytest.mark.skipif(not COMPOSE_PATH.exists(), reason="Pi compose file not present")
+class TestCloudflaredVersionFloor:
+    """cloudflared must be version-tagged at or above the eMudhra-distrust fix.
+
+    cloudflared < 2026.10.2 still trusts eight eMudhra (emSign) intermediates with
+    weak private keys (Cloudflare advisory, 2026-10-20). The old ``:latest@sha256``
+    pin hid that the Pi was on 2026.6.1; a CalVer tag keeps the version legible.
+    """
+
+    MIN_VERSION = (2026, 10, 2)
+
+    def test_cloudflared_is_version_tagged_at_or_above_floor(self) -> None:
+        image = yaml.safe_load(COMPOSE_PATH.read_text())["services"]["cloudflared"]["image"]
+        m = re.fullmatch(r"cloudflare/cloudflared:(\d+)\.(\d+)\.(\d+)@sha256:[0-9a-f]{64}", image)
+        assert m, f"cloudflared must be pinned as :<YYYY.M.P>@sha256:<digest>, got {image!r}"
+        version = tuple(int(part) for part in m.groups())
+        assert version >= self.MIN_VERSION, (
+            f"cloudflared {version} predates the eMudhra fix; need >= {self.MIN_VERSION}"
+        )
+
+
+@pytest.mark.skipif(not COMPOSE_PATH.exists(), reason="Pi compose file not present")
 class TestAppImagePinning:
     """The first-party app image must be immutably pinned, not mutable ':latest'
     (#512). ``docker compose pull`` on a bare ':latest' silently swaps the running
